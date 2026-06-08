@@ -15,10 +15,17 @@ _ghostty_zmx_queue_lock_delay=0.1
 _ghostty_zmx_ghostty_ready_attempts=10
 _ghostty_zmx_ghostty_ready_delay=0.5
 _ghostty_zmx_restore_flag_cleanup_delay=5
+# Restore lock cleanup margin covers AppleScript overhead not counted by per-step restore delays.
+_ghostty_zmx_restore_lock_margin=10
 
 _ghostty_zmx_valid_session_name() {
   typeset session="$1"
-  [[ "$session" =~ '^zmx-[[:alnum:]]+-[[:alnum:]]+-[[:alnum:]]{8}$' ]]
+  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
+}
+
+_ghostty_zmx_valid_physical_id() {
+  typeset id="$1"
+  [[ "$id" =~ ^[A-Fa-f0-9]+$ ]]
 }
 
 _ghostty_zmx_session_history_file() {
@@ -177,7 +184,7 @@ restoring="$runtimeDir/restoring-${ghosttyPID}.lock"
 
 valid_session_name() {
   local session="$1"
-  [[ "$session" =~ '^zmx-[[:alnum:]]+-[[:alnum:]]+-[[:alnum:]]{8}$' ]]
+  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
 }
 
 history_file_for_session() {
@@ -436,6 +443,10 @@ _ghostty_zmx_write_id_map() {
   typeset logicalWin="$1" logicalTab="$2" curWin="$3" curTab="$4"
   [[ -n "$logicalWin" && -n "$logicalTab" && -n "$curWin" && -n "$curTab" ]] || return 0
   typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
+  if ! _ghostty_zmx_valid_physical_id "$logicalWin" || ! _ghostty_zmx_valid_physical_id "$logicalTab" || ! _ghostty_zmx_valid_physical_id "$curWin" || ! _ghostty_zmx_valid_physical_id "$curTab"; then
+    _ghostty_zmx_debug "id-map write skipped invalid ids logical_window=$logicalWin logical_tab=$logicalTab physical_window=$curWin physical_tab=$curTab"
+    return 0
+  fi
   mkdir -p "${map:h}" 2>/dev/null
   { grep -v -E "^(W ${curWin} |T ${curWin} ${curTab} )" "$map" 2>/dev/null || true
     print -r -- "W ${curWin} ${logicalWin}"
@@ -540,8 +551,10 @@ _ghostty_zmx_restore() {
   done
 
   _ghostty_zmx_restore_ids_valid() {
-    [[ "$1" =~ '^[[:alnum:]]+$' && "$2" =~ '^[[:alnum:]]+$' ]]
+    _ghostty_zmx_valid_physical_id "$1" && _ghostty_zmx_valid_physical_id "$2"
   }
+
+  typeset restore_lock_delay=$(( ${#_layoutSessions} * GHOSTTY_ZMX_RESTORE_STEP_DELAY + _ghostty_zmx_restore_lock_margin ))
 
   typeset curWin="" curTab="" firstWindow=1 physWin="" physTab=""
   typeset paneCount
@@ -708,8 +721,8 @@ SCRIPT
     done
   done
   if [[ -n "$ghosttyPID" && -n "$runtime_dir" ]]; then
-    ( sleep "$_ghostty_zmx_restore_flag_cleanup_delay"; rmdir "$runtime_dir/restoring-${ghosttyPID}.lock" 2>/dev/null ) &!
-    _ghostty_zmx_debug "restore flag cleanup scheduled ghostty_pid=$ghosttyPID"
+    ( sleep "$restore_lock_delay"; rmdir "$runtime_dir/restoring-${ghosttyPID}.lock" 2>/dev/null ) &!
+    _ghostty_zmx_debug "restore flag cleanup scheduled ghostty_pid=$ghosttyPID delay=$restore_lock_delay"
   fi
   return 0
 }

@@ -36,7 +36,7 @@ timestamp() { date +%Y%m%d-%H%M%S; }
 
 valid_session_name() {
   local session="$1"
-  [[ "$session" =~ '^zmx-[[:alnum:]]+-[[:alnum:]]+-[[:alnum:]]{8}$' ]]
+  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
 }
 
 backup_file() {

@@ -60,7 +60,7 @@ grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$
 ! grep -q 'confirm-close-surface = false' "$config" || { print -u2 "experimental confirm-close remained"; exit 1; }
 grep -q 'window-save-state = always' "$config" || { print -u2 "conflict setting not preserved"; exit 1; }
 grep -q 'Warning: .*window-save-state' "$workdir/install.out" || { print -u2 "conflict warning missing"; exit 1; }
-[[ "$(wc -l < "$data/sessions" | tr -d ' ')" == 2 ]] || { print -u2 "invalid migrated sessions were not filtered"; exit 1; }
+[[ "$(wc -l < "$data/sessions" | tr -d ' ')" == 1 ]] || { print -u2 "invalid migrated sessions were not filtered"; exit 1; }
 
 run_install "$home" "$config" "$data" --yes > /dev/null
 [[ "$(grep -cF 'session-manager.zsh' "$home/.zshrc")" == 1 ]] || { print -u2 "source line not idempotent"; exit 1; }
