@@ -514,6 +514,10 @@ _ghostty_zmx_restore() {
     _ghostty_zmx_debug "queue push session=${_layoutSessions[$i]} queue=$queue"
   done
 
+  _ghostty_zmx_restore_ids_valid() {
+    [[ "$1" =~ '^[[:alnum:]]+$' && "$2" =~ '^[[:alnum:]]+$' ]]
+  }
+
   typeset curWin="" curTab="" firstWindow=1 physWin="" physTab=""
   typeset paneCount
   for key in "${_keys[@]}"; do
@@ -527,7 +531,11 @@ _ghostty_zmx_restore() {
         typeset pos=$(_ghostty_zmx_current_position)
         physWin=$(print -r -- "$pos" | awk '{print $1}')
         physTab=$(print -r -- "$pos" | awk '{print $2}')
-        _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+        if _ghostty_zmx_restore_ids_valid "$physWin" "$physTab"; then
+          _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+        else
+          _ghostty_zmx_debug "restore failed step=current-position logical_window=$winHex logical_tab=$tabHex result=$pos"
+        fi
       else
         typeset created=$(osascript <<'SCRIPT' 2>/dev/null
 tell application "Ghostty"
@@ -536,14 +544,32 @@ tell application "Ghostty"
     set tb to selected tab of w
     set winStr to id of w as string
     set tabStr to id of tb as string
-    return (text 11 thru (count of characters of winStr) of winStr) & " " & (text 5 thru (count of characters of tabStr) of tabStr)
+    set winLen to count of characters of winStr
+    set tabLen to count of characters of tabStr
+    if winLen > 10 then
+      set winHash to text 11 thru winLen of winStr
+    else
+      set winHash to winStr
+    end if
+    if tabLen > 4 then
+      set tabHash to text 5 thru tabLen of tabStr
+    else
+      set tabHash to tabStr
+    end if
+    set index of w to 1
+    set selected tab of w to tb
+    return winHash & " " & tabHash
 end tell
 SCRIPT
 )
         physWin=$(print -r -- "$created" | awk '{print $1}')
         physTab=$(print -r -- "$created" | awk '{print $2}')
-        _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
-        _ghostty_zmx_debug "AppleScript new-window logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+        if _ghostty_zmx_restore_ids_valid "$physWin" "$physTab"; then
+          _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+          _ghostty_zmx_debug "AppleScript new-window logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+        else
+          _ghostty_zmx_debug "restore failed step=new-window logical_window=$winHex logical_tab=$tabHex result=$created"
+        fi
         sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
       fi
       curWin="$winHex"
@@ -552,21 +578,54 @@ SCRIPT
 
     if [[ "$tabHex" != "$curTab" ]]; then
       if [[ -n "$curTab" ]]; then
-        typeset created=$(osascript <<'SCRIPT' 2>/dev/null
+        typeset created=$(osascript <<SCRIPT 2>/dev/null
 tell application "Ghostty"
+    set targetWindow to missing value
+    repeat with w in windows
+      set winStr to id of w as string
+      set winLen to count of characters of winStr
+      if winLen > 10 then
+        set winHash to text 11 thru winLen of winStr
+      else
+        set winHash to winStr
+      end if
+      if winHash is "$physWin" then
+        set targetWindow to w
+        exit repeat
+      end if
+    end repeat
+    if targetWindow is missing value then error "target window not found"
+    set index of targetWindow to 1
     set cfg to new surface configuration
-    set tb to new tab in front window with configuration cfg
-    set w to front window
-    set winStr to id of w as string
+    set tb to new tab in targetWindow with configuration cfg
+    set selected tab of targetWindow to tb
+    set winStr to id of targetWindow as string
     set tabStr to id of tb as string
-    return (text 11 thru (count of characters of winStr) of winStr) & " " & (text 5 thru (count of characters of tabStr) of tabStr)
+    set winLen to count of characters of winStr
+    set tabLen to count of characters of tabStr
+    if winLen > 10 then
+      set winHash to text 11 thru winLen of winStr
+    else
+      set winHash to winStr
+    end if
+    if tabLen > 4 then
+      set tabHash to text 5 thru tabLen of tabStr
+    else
+      set tabHash to tabStr
+    end if
+    return winHash & " " & tabHash
 end tell
 SCRIPT
 )
-        physWin=$(print -r -- "$created" | awk '{print $1}')
-        physTab=$(print -r -- "$created" | awk '{print $2}')
-        _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
-        _ghostty_zmx_debug "AppleScript new-tab logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+        typeset createdWin=$(print -r -- "$created" | awk '{print $1}')
+        typeset createdTab=$(print -r -- "$created" | awk '{print $2}')
+        if [[ "$createdWin" == "$physWin" ]] && _ghostty_zmx_restore_ids_valid "$createdWin" "$createdTab"; then
+          physTab="$createdTab"
+          _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+          _ghostty_zmx_debug "AppleScript new-tab logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+        else
+          _ghostty_zmx_debug "restore failed step=new-tab logical_window=$winHex logical_tab=$tabHex expected_window=$physWin result=$created"
+        fi
         sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
       fi
       curTab="$tabHex"
@@ -576,14 +635,50 @@ SCRIPT
     for ((p=2; p<=paneCount; p++)); do
       typeset d="right"
       [[ $((p % 2)) -eq 0 ]] && d="down"
-      osascript >/dev/null 2>&1 <<SCRIPT
-tell application "Ghostty"
+      if osascript >/dev/null 2>&1 <<SCRIPT
+ tell application "Ghostty"
+    set targetWindow to missing value
+    repeat with w in windows
+      set winStr to id of w as string
+      set winLen to count of characters of winStr
+      if winLen > 10 then
+        set winHash to text 11 thru winLen of winStr
+      else
+        set winHash to winStr
+      end if
+      if winHash is "$physWin" then
+        set targetWindow to w
+        exit repeat
+      end if
+    end repeat
+    if targetWindow is missing value then error "target window not found"
+    set targetTab to missing value
+    repeat with tb in tabs of targetWindow
+      set tabStr to id of tb as string
+      set tabLen to count of characters of tabStr
+      if tabLen > 4 then
+        set tabHash to text 5 thru tabLen of tabStr
+      else
+        set tabHash to tabStr
+      end if
+      if tabHash is "$physTab" then
+        set targetTab to tb
+        exit repeat
+      end if
+    end repeat
+    if targetTab is missing value then error "target tab not found"
+    set index of targetWindow to 1
+    set selected tab of targetWindow to targetTab
     set cfg to new surface configuration
-    set t to focused terminal of selected tab of front window
+    set t to focused terminal of targetTab
     split t direction ${d} with configuration cfg
 end tell
 SCRIPT
-      _ghostty_zmx_debug "AppleScript split logical_window=$winHex logical_tab=$tabHex pane_index=$p direction=$d delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+      then
+        _ghostty_zmx_debug "AppleScript split logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab pane_index=$p direction=$d delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+      else
+        _ghostty_zmx_debug "restore failed step=split logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab pane_index=$p direction=$d"
+      fi
       sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
     done
   done
