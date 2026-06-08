@@ -57,6 +57,27 @@ _ghostty_zmx_snapshot_history() {
   fi
 }
 
+_ghostty_zmx_restore_saved_scrollback() {
+  typeset session="$1"
+  [[ -n "$session" ]] || return 0
+  typeset history_file="$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
+  if zmx list --short 2>/dev/null | grep -qxF "$session"; then
+    _ghostty_zmx_debug "fresh-session detection session=$session exists=1"
+    return 0
+  fi
+  _ghostty_zmx_debug "fresh-session detection session=$session exists=0 snapshot=$history_file"
+  [[ -s "$history_file" ]] || return 0
+  if ! zmx run "$session" true >/dev/null 2>&1; then
+    _ghostty_zmx_debug "zmx run failed session=$session"
+  fi
+  typeset banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
+  if ! { print -r -- "$banner"; cat "$history_file"; } | zmx print "$session"; then
+    _ghostty_zmx_debug "zmx print failed session=$session file=$history_file"
+  else
+    _ghostty_zmx_debug "zmx print restored scrollback session=$session file=$history_file"
+  fi
+}
+
 _ghostty_zmx_start_reaper() {
   typeset ghosttyPID="$1"
   [[ -n "$ghosttyPID" ]] || return 0
@@ -501,6 +522,7 @@ if [[ -o interactive ]] \
     [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$SESSION_NAME" "$(_ghostty_zmx_current_position)"
     _ghostty_zmx_log_session "$SESSION_NAME"
     _ghostty_zmx_start_reaper "$ghosttyPID"
+    _ghostty_zmx_restore_saved_scrollback "$SESSION_NAME"
     _ghostty_zmx_debug "attach session=$SESSION_NAME from_restore=$sessionFromRestore"
     if ! zmx attach "$SESSION_NAME"; then
       _ghostty_zmx_debug "zmx attach failed session=$SESSION_NAME status=$?"
