@@ -1,0 +1,424 @@
+# ghostty-zmx session manager for zsh.
+# Source this file from an interactive zsh launched by Ghostty.
+
+: ${GHOSTTY_ZMX_DATA_HOME:=${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}
+: ${GHOSTTY_ZMX_STATE_HOME:=${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}
+: ${GHOSTTY_ZMX_REAPER_INTERVAL:=2}
+: ${GHOSTTY_ZMX_ZERO_WINDOWS_GRACE:=6}
+: ${GHOSTTY_ZMX_RESTORE_STEP_DELAY:=1}
+: ${GHOSTTY_ZMX_SCROLLBACK_LINES:=1000}
+
+_ghostty_zmx_sessions_file() {
+  print -r -- "$GHOSTTY_ZMX_DATA_HOME/sessions"
+}
+
+_ghostty_zmx_log_session() {
+  typeset session="$1"
+  typeset log="$(_ghostty_zmx_sessions_file)"
+  mkdir -p "${log:h}" 2>/dev/null
+  if [[ ! -f "$log" ]] || ! grep -qxF "$session" "$log" 2>/dev/null; then
+    print -r -- "$session" >> "$log"
+  fi
+}
+
+_ghostty_zmx_unlog_session() {
+  typeset session="$1"
+  typeset log="$(_ghostty_zmx_sessions_file)"
+  [[ -f "$log" && -n "$session" ]] || return 0
+  grep -vxF "$session" "$log" > "${log}.tmp" 2>/dev/null || true
+  mv "${log}.tmp" "$log" 2>/dev/null
+}
+
+_ghostty_zmx_cleanup_after_detach() {
+  return 0
+}
+
+_ghostty_zmx_start_reaper() {
+  typeset ghosttyPID="$1"
+  [[ -n "$ghosttyPID" ]] || return 0
+  typeset flag="/tmp/ghostty-zmx-reaper-${ghosttyPID}"
+  mkdir "$flag" 2>/dev/null || return 0
+
+  typeset script="/tmp/ghostty-zmx-reaper-${ghosttyPID}.zsh"
+  cat > "$script" <<'EOS'
+#!/bin/zsh
+ghosttyPID="$1"
+flag="$2"
+dataHome="$3"
+interval="$4"
+zeroWindowGrace="$5"
+log="$dataHome/sessions"
+queue="$dataHome/restore-queue"
+firstFile="$dataHome/restore-first"
+restoring="/tmp/ghostty-zmx-restoring-${ghosttyPID}"
+
+cleanup_log() {
+  local session="$1"
+  [[ -f "$log" && -n "$session" ]] || return 0
+  grep -vxF "$session" "$log" > "${log}.tmp" 2>/dev/null || true
+  mv "${log}.tmp" "$log" 2>/dev/null
+}
+
+managed_detached_sessions() {
+  [[ -f "$log" ]] || return 0
+  zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ && $3=="clients=0" { sub(/^[→ ]*name=/, "", $1); print $1 }' |
+  while IFS= read -r orphan; do
+    [[ -n "$orphan" ]] || continue
+    grep -qxF "$orphan" "$log" 2>/dev/null || continue
+    print -r -- "$orphan"
+  done
+}
+
+sleep 5
+zeroWindowsSeen=0
+while kill -0 "$ghosttyPID" 2>/dev/null; do
+  windows=$(osascript -e 'tell application "Ghostty" to count of windows' 2>/dev/null)
+  [[ "$windows" =~ '^[0-9]+$' ]] || break
+
+  if [[ "$windows" -eq 0 ]]; then
+    zeroWindowsSeen=$((zeroWindowsSeen + interval))
+    if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
+      managed_detached_sessions | while IFS= read -r orphan; do
+        zmx kill "$orphan" >/dev/null 2>&1
+        cleanup_log "$orphan"
+      done
+    fi
+    sleep "$interval"
+    continue
+  fi
+  zeroWindowsSeen=0
+
+  if [[ -f "$restoring" || -s "$queue" || -s "$firstFile" ]]; then
+    sleep "$interval"
+    continue
+  fi
+
+  attached=0
+  if [[ -f "$log" ]]; then
+    while IFS= read -r managed; do
+      [[ -n "$managed" ]] || continue
+      clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
+      [[ "$clients" == "1" ]] && attached=$((attached + 1))
+    done < "$log"
+  fi
+  [[ "$attached" -gt 0 ]] || { sleep "$interval"; continue; }
+
+  managed_detached_sessions | while IFS= read -r orphan; do
+    zmx kill "$orphan" >/dev/null 2>&1
+    cleanup_log "$orphan"
+  done
+  sleep "$interval"
+done
+rmdir "$flag" 2>/dev/null
+rm -f "$0" 2>/dev/null
+EOS
+  chmod +x "$script" 2>/dev/null
+  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" >/tmp/ghostty-zmx-reaper-${ghosttyPID}.log 2>&1 </dev/null &!
+}
+
+_ghostty_zmx_pop_restore_queue() {
+  typeset queue="$GHOSTTY_ZMX_DATA_HOME/restore-queue"
+  [[ -f "$queue" && -s "$queue" ]] || return 1
+  typeset lockdir="${queue}.lock"
+  typeset name
+  for attempt in $(seq 1 50); do
+    if mkdir "$lockdir" 2>/dev/null; then
+      [[ -s "$queue" ]] || { rmdir "$lockdir" 2>/dev/null; return 1; }
+      IFS= read -r name < "$queue"
+      tail -n +2 "$queue" > "${queue}.tmp" 2>/dev/null
+      mv "${queue}.tmp" "$queue" 2>/dev/null
+      rmdir "$lockdir" 2>/dev/null
+      [[ -n "$name" ]] && print -r -- "$name" && return 0
+      return 1
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+_ghostty_zmx_current_position() {
+  osascript <<'EOF' 2>/dev/null
+tell application "Ghostty"
+  set fw to front window
+  set winUID to id of fw
+  set uidStr to winUID as string
+  set uidLen to count of characters of uidStr
+  if uidLen > 10 then
+    set winHash to text 11 thru uidLen of uidStr
+  else
+    set winHash to uidStr
+  end if
+  set tabObj to selected tab of fw
+  set tabUID to id of tabObj
+  set tabStr to tabUID as string
+  set tabLen to count of characters of tabStr
+  if tabLen > 4 then
+    set tabHash to text 5 thru tabLen of tabStr
+  else
+    set tabHash to tabStr
+  end if
+  set termUID to id of (focused terminal of tabObj)
+  set termStr to termUID as string
+  set termLen to count of characters of termStr
+  if termLen >= 8 then
+    set termHash to text 1 thru 8 of termStr
+  else
+    set termHash to termStr
+  end if
+  return winHash & " " & tabHash & " " & termHash
+end tell
+EOF
+}
+
+_ghostty_zmx_apply_position_map() {
+  typeset position="$1"
+  typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
+  typeset curWin=$(print -r -- "$position" | awk '{print $1}')
+  typeset curTab=$(print -r -- "$position" | awk '{print $2}')
+  typeset termHash=$(print -r -- "$position" | awk '{print $3}')
+  typeset winHash="$curWin"
+  typeset tabHash="$curTab"
+  if [[ -f "$map" ]]; then
+    typeset mappedWin=$(awk -v w="$curWin" '$1=="W" && $2==w {print $3; exit}' "$map" 2>/dev/null)
+    typeset mappedTab=$(awk -v w="$curWin" -v t="$curTab" '$1=="T" && $2==w && $3==t {print $5; exit}' "$map" 2>/dev/null)
+    [[ -n "$mappedWin" ]] && winHash="$mappedWin"
+    [[ -n "$mappedTab" ]] && tabHash="$mappedTab"
+  fi
+  print -r -- "$winHash $tabHash $termHash"
+}
+
+_ghostty_zmx_write_id_map() {
+  typeset logicalWin="$1" logicalTab="$2" curWin="$3" curTab="$4"
+  [[ -n "$logicalWin" && -n "$logicalTab" && -n "$curWin" && -n "$curTab" ]] || return 0
+  typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
+  mkdir -p "${map:h}" 2>/dev/null
+  { grep -v -E "^(W ${curWin} |T ${curWin} ${curTab} )" "$map" 2>/dev/null || true
+    print -r -- "W ${curWin} ${logicalWin}"
+    print -r -- "T ${curWin} ${curTab} ${logicalWin} ${logicalTab}"
+  } > "${map}.tmp"
+  mv "${map}.tmp" "$map" 2>/dev/null
+}
+
+_ghostty_zmx_record_position_map() {
+  typeset session="$1"
+  typeset position="$2"
+  [[ "$session" == zmx-* && -n "$position" ]] || return 0
+  typeset rest="${session#zmx-}"
+  typeset logicalWin="${rest%%-*}"
+  rest="${rest#*-}"
+  typeset logicalTab="${rest%%-*}"
+  typeset curWin=$(print -r -- "$position" | awk '{print $1}')
+  typeset curTab=$(print -r -- "$position" | awk '{print $2}')
+  _ghostty_zmx_write_id_map "$logicalWin" "$logicalTab" "$curWin" "$curTab"
+}
+
+_ghostty_zmx_restore() {
+  typeset log="$(_ghostty_zmx_sessions_file)"
+  [[ -f "$log" ]] || return 1
+  typeset -a sessions
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && sessions+=("$line")
+  done < "$log"
+  typeset count=${#sessions}
+  [[ $count -gt 0 ]] || return 1
+
+  typeset queue="$GHOSTTY_ZMX_DATA_HOME/restore-queue"
+  typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
+  typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
+  mkdir -p "${queue:h}" 2>/dev/null
+  : > "$map"
+  [[ -n "$ghosttyPID" ]] && touch "/tmp/ghostty-zmx-restoring-${ghosttyPID}" 2>/dev/null
+
+  typeset -a _keys=()
+  typeset -a _winKeys=()
+  typeset -A _tabPanes=()
+  typeset -A _tabSessions=()
+  typeset -A _seen=()
+  typeset -A _seenWin=()
+  typeset -A _tabsByWin=()
+  typeset s rest winHex tabHex key
+  for s in "${sessions[@]}"; do
+    rest="${s#zmx-}"
+    winHex="${rest%%-*}"
+    rest="${rest#*-}"
+    tabHex="${rest%%-*}"
+    key="${winHex}:${tabHex}"
+    if [[ -z "${_seen[$key]}" ]]; then
+      _seen[$key]=1
+      _keys+=("$key")
+      _tabPanes[$key]=0
+      _tabSessions[$key]=""
+      if [[ -z "${_seenWin[$winHex]}" ]]; then
+        _seenWin[$winHex]=1
+        _winKeys+=("$winHex")
+        _tabsByWin[$winHex]=""
+      fi
+      _tabsByWin[$winHex]="${_tabsByWin[$winHex]} ${key}"
+    fi
+    _tabPanes[$key]=$(( ${_tabPanes[$key]} + 1 ))
+    _tabSessions[$key]="${_tabSessions[$key]} ${s}"
+  done
+
+  typeset -a _groupedKeys=()
+  typeset w groupedKey
+  for w in "${_winKeys[@]}"; do
+    for groupedKey in ${=_tabsByWin[$w]}; do
+      _groupedKeys+=("$groupedKey")
+    done
+  done
+  _keys=("${_groupedKeys[@]}")
+
+  typeset -a _layoutSessions=()
+  typeset layoutSes
+  for key in "${_keys[@]}"; do
+    for layoutSes in ${=_tabSessions[$key]}; do
+      _layoutSessions+=("$layoutSes")
+    done
+  done
+  print -r -- "${_layoutSessions[1]}" > "$firstFile"
+  : > "$queue"
+  typeset i
+  for ((i=2; i<=${#_layoutSessions}; i++)); do
+    print -r -- "${_layoutSessions[$i]}" >> "$queue"
+  done
+
+  typeset curWin="" curTab="" firstWindow=1 physWin="" physTab=""
+  typeset paneCount
+  for key in "${_keys[@]}"; do
+    winHex="${key%%:*}"
+    tabHex="${key#*:}"
+    paneCount="${_tabPanes[$key]}"
+
+    if [[ "$winHex" != "$curWin" ]]; then
+      if [[ $firstWindow -eq 1 ]]; then
+        firstWindow=0
+        typeset pos=$(_ghostty_zmx_current_position)
+        physWin=$(print -r -- "$pos" | awk '{print $1}')
+        physTab=$(print -r -- "$pos" | awk '{print $2}')
+        _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+      else
+        typeset created=$(osascript <<'SCRIPT' 2>/dev/null
+tell application "Ghostty"
+    set cfg to new surface configuration
+    set w to new window with configuration cfg
+    set tb to selected tab of w
+    set winStr to id of w as string
+    set tabStr to id of tb as string
+    return (text 11 thru (count of characters of winStr) of winStr) & " " & (text 5 thru (count of characters of tabStr) of tabStr)
+end tell
+SCRIPT
+)
+        physWin=$(print -r -- "$created" | awk '{print $1}')
+        physTab=$(print -r -- "$created" | awk '{print $2}')
+        _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+        sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+      fi
+      curWin="$winHex"
+      curTab=""
+    fi
+
+    if [[ "$tabHex" != "$curTab" ]]; then
+      if [[ -n "$curTab" ]]; then
+        typeset created=$(osascript <<'SCRIPT' 2>/dev/null
+tell application "Ghostty"
+    set cfg to new surface configuration
+    set tb to new tab in front window with configuration cfg
+    set w to front window
+    set winStr to id of w as string
+    set tabStr to id of tb as string
+    return (text 11 thru (count of characters of winStr) of winStr) & " " & (text 5 thru (count of characters of tabStr) of tabStr)
+end tell
+SCRIPT
+)
+        physWin=$(print -r -- "$created" | awk '{print $1}')
+        physTab=$(print -r -- "$created" | awk '{print $2}')
+        _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+        sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+      fi
+      curTab="$tabHex"
+    fi
+
+    typeset p
+    for ((p=2; p<=paneCount; p++)); do
+      typeset d="right"
+      [[ $((p % 2)) -eq 0 ]] && d="down"
+      osascript >/dev/null 2>&1 <<SCRIPT
+tell application "Ghostty"
+    set cfg to new surface configuration
+    set t to focused terminal of selected tab of front window
+    split t direction ${d} with configuration cfg
+end tell
+SCRIPT
+      sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+    done
+  done
+  if [[ -n "$ghosttyPID" ]]; then
+    ( sleep 5; rm -f "/tmp/ghostty-zmx-restoring-${ghosttyPID}" 2>/dev/null ) &!
+  fi
+  return 0
+}
+
+if [[ -o interactive ]] \
+   && [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" ]] \
+   && [[ -z "$ZMX_SESSION" ]] \
+   && [[ -z "$TMUX" ]] \
+   && command -v zmx >/dev/null 2>&1; then
+
+  typeset -i asReady=0
+  typeset -i attempt=0
+  typeset ghosttyPID=""
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    typeset p=$$
+    while [[ $p -gt 1 ]]; do
+      typeset cmd=$(ps -o comm= -p $p 2>/dev/null)
+      if [[ "$cmd" == *ghostty* ]]; then
+        ghosttyPID=$p
+        break
+      fi
+      p=$(ps -o ppid= -p $p 2>/dev/null | tr -d ' ')
+    done
+    if [[ -n "$ghosttyPID" ]] && osascript -e 'tell application "Ghostty" to get version' >/dev/null 2>&1; then
+      asReady=1
+      break
+    fi
+    ghosttyPID=""
+    sleep 0.5
+  done
+  [[ "$asReady" -eq 0 ]] && return 0
+
+  typeset restoreFlag="/tmp/ghostty-zmx-restore-${ghosttyPID}"
+  SESSION_NAME=""
+  typeset sessionFromRestore=0
+  if [[ -n "$ghosttyPID" ]] && [[ ! -f "$restoreFlag" ]]; then
+    touch "$restoreFlag" 2>/dev/null
+    _ghostty_zmx_restore
+    typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
+    if [[ -s "$firstFile" ]]; then
+      IFS= read -r SESSION_NAME < "$firstFile"
+      rm -f "$firstFile" 2>/dev/null
+      sessionFromRestore=1
+    fi
+  fi
+
+  if [[ -z "$SESSION_NAME" ]]; then
+    SESSION_NAME=$(_ghostty_zmx_pop_restore_queue)
+    [[ -n "$SESSION_NAME" ]] && sessionFromRestore=1
+  fi
+
+  POSITION=$(_ghostty_zmx_current_position)
+  if [[ -z "$SESSION_NAME" && -n "$POSITION" ]]; then
+    POSITION=$(_ghostty_zmx_apply_position_map "$POSITION")
+    typeset WIN_HASH=$(print -r -- "$POSITION" | awk '{print $1}')
+    typeset TAB_HASH=$(print -r -- "$POSITION" | awk '{print $2}')
+    typeset TERM_ID=$(print -r -- "$POSITION" | awk '{print $3}')
+    SESSION_NAME="zmx-${WIN_HASH}-${TAB_HASH}-${TERM_ID}"
+  fi
+
+  if [[ -n "$SESSION_NAME" ]]; then
+    [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$SESSION_NAME" "$(_ghostty_zmx_current_position)"
+    _ghostty_zmx_log_session "$SESSION_NAME"
+    _ghostty_zmx_start_reaper "$ghosttyPID"
+    zmx attach "$SESSION_NAME"
+    _ghostty_zmx_cleanup_after_detach "$SESSION_NAME"
+  fi
+fi
