@@ -53,7 +53,7 @@ confirm-close-surface = true
 # END ghostty-zmx
 ```
 
-Conflicting `env`, `window-save-state`, or `confirm-close-surface` settings outside the managed section are left untouched and reported as warnings. `confirm-close-surface = true` is required because closing a managed surface is destructive.
+Conflicting `env = GHOSTTY_ZMX_AUTO_ATTACH=...`, `window-save-state`, or `confirm-close-surface` settings outside the managed section are left untouched and reported as warnings. `confirm-close-surface = true` is required because closing a managed surface is destructive.
 
 `quit-after-last-window-closed = true` is unsupported for v0.1 because close-all-windows cleanup relies on Ghostty remaining alive with zero windows. Remove that setting or set it to false.
 
@@ -67,18 +67,11 @@ split-inherit-working-directory = true
 
 ghostty-zmx observes Ghostty's chosen working-directory behavior. It does not override it.
 
-## Migration from the experimental setup
+## Experimental setup cleanup
 
-The installer migrates the experimental Ghostty+zmx setup used before this package:
+v0.1 is packaged as a new integration. It does not automate migration from the earlier experimental inline `.zshrc` block or the old `~/.local/share/zmx/sessions` file.
 
-- removes the inline `.zshrc` block headed by `zmx session management` and ending at `# end zmx session management`,
-- removes the old experimental auto-attach env line and, when that old experimental env is present, removes the exact experimental `confirm-close-surface = false` line from Ghostty config, then replaces them with the managed ghostty-zmx block,
-- copies valid managed session names from `~/.local/share/zmx/sessions` to `~/.local/share/ghostty-zmx/sessions` when present,
-- does not migrate old queue, first-session, or id-map runtime files,
-- removes stale `/tmp/zmx-restore-*`, `/tmp/zmx-restoring-*`, and `/tmp/zmx-reaper-*` flags,
-- preserves live zmx sessions.
-
-After testing the new integration, clean up old experimental files under `~/.local/share/zmx/` and old config backups if they are no longer needed.
+If you previously used the experiment, manually remove the old inline `.zshrc` block, remove or leave unmanaged any old `ZMX_AUTO_ATTACH=1` Ghostty env line, and clean up old experimental files under `~/.local/share/zmx/` only after you have confirmed the new integration works.
 
 ## Usage model
 
@@ -105,7 +98,7 @@ GHOSTTY_ZMX_RESTORE_STEP_DELAY=1
 GHOSTTY_ZMX_SCROLLBACK_LINES=1000
 ```
 
-Advanced installer/uninstaller test harnesses may set `GHOSTTY_ZMX_GHOSTTY_CONFIG` to point at a temporary Ghostty config file. Normal users should leave it unset so the scripts edit Ghostty's default config path.
+Advanced installer/uninstaller test harnesses may set `GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG` to point at a temporary Ghostty config file. Normal users should leave it unset so the scripts edit Ghostty's default config path.
 
 Runtime files are internal implementation state, not a public API:
 

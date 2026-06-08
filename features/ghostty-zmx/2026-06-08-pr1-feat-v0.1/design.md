@@ -58,10 +58,14 @@ Installed files for v0.1:
   uninstall.sh
 ```
 
-Optional generated runtime scripts:
+Optional generated runtime scripts and locks:
 
 ```text
-/tmp/ghostty-zmx-reaper-${ghosttyPID}.zsh
+${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID}/
+  restore-${ghostty_pid}.lock
+  restoring-${ghostty_pid}.lock
+  reaper-${ghostty_pid}.zsh
+  reaper-${ghostty_pid}.log
 ```
 
 State files:
@@ -163,40 +167,16 @@ split-inherit-working-directory = true
 
 ghostty-zmx observes Ghostty's behavior. If users disable or customize these settings, new managed zmx sessions should follow Ghostty's chosen working-directory behavior rather than ghostty-zmx overriding it.
 
-## Migration from the experimental setup
+## Experimental setup cleanup
 
-The installer must support migrating the current experimental setup used during design.
+v0.1 is packaged as a new integration and should not include production migration code for the earlier experimental setup. Migration is maintainer/user-specific manual work only.
 
-Known experimental state:
+If a maintainer or user previously ran the experiment, clean it up manually after confirming the new package works:
 
-- `~/.zshrc` contains an inline block headed `zmx session management` and ending with `# end zmx session management`.
-- Ghostty config may contain `env = ZMX_AUTO_ATTACH=1`.
-- Ghostty config may contain `confirm-close-surface = false`.
-- state lives under `~/.local/share/zmx/`:
-  - `sessions`,
-  - `restore-queue`,
-  - `restore-first`,
-  - `id-map`.
-- runtime flags use `/tmp/zmx-*` names.
-
-Migration behavior:
-
-1. Back up `~/.zshrc` and Ghostty config before editing.
-2. Detect and remove the experimental inline `.zshrc` block by its begin/end comments.
-3. Add the single `source ~/.config/ghostty-zmx/session-manager.zsh` line.
-4. Replace experimental Ghostty config entries with the managed ghostty-zmx section:
-   - remove `env = ZMX_AUTO_ATTACH=1`,
-   - replace with `env = GHOSTTY_ZMX_AUTO_ATTACH=1`,
-   - set `confirm-close-surface = true` in the managed section,
-   - leave working-directory inheritance settings under user control,
-   - leave unrelated user config unchanged.
-5. Copy `~/.local/share/zmx/sessions` to `~/.local/share/ghostty-zmx/sessions`; do not move it during v0.1 migration.
-6. Do not migrate old `restore-queue`, `restore-first`, or `id-map`; they are process/runtime state and should be recreated.
-7. Remove stale `/tmp/zmx-restore-*`, `/tmp/zmx-restoring-*`, and `/tmp/zmx-reaper-*` flags.
-8. Preserve existing live zmx sessions; the migrated sessions file continues to reference their existing names.
-9. At the end of migration/testing, remind the user to clean up the old experimental files after both maintainer and agent have tested the new version.
-
-The installer should print the migration plan and ask for confirmation before applying it.
+1. Remove the old inline `.zshrc` block headed by `zmx session management` and ending at `# end zmx session management`.
+2. Remove or leave unmanaged any old `env = ZMX_AUTO_ATTACH=1` Ghostty config line.
+3. Clean up old experimental files under `~/.local/share/zmx/` only after confirming the new integration works.
+4. Do not move or depend on old `restore-queue`, `restore-first`, or `id-map` runtime files; ghostty-zmx recreates its own runtime state.
 
 ## Uninstall behavior
 
@@ -204,7 +184,7 @@ The installer should print the migration plan and ask for confirmation before ap
 
 - remove the source line from `~/.zshrc`,
 - optionally remove the Ghostty config lines it added,
-- remove generated runtime files under `/tmp/ghostty-zmx-*`,
+- remove generated runtime files under the expected current per-user runtime directory, refusing symlinked unsafe targets,
 - remove `~/.config/ghostty-zmx/` if requested,
 - leave zmx sessions alive by default,
 - ask before deleting `~/.local/share/ghostty-zmx/` or `~/.local/state/ghostty-zmx/`.
@@ -285,7 +265,7 @@ Restore is serial for v0.1.
 
 1. First Ghostty startup shell sees `GHOSTTY_ZMX_AUTO_ATTACH=1`.
 2. It identifies the Ghostty process by walking its parent process tree.
-3. It creates a process flag under `/tmp/ghostty-zmx-restore-${ghosttyPID}` so only one shell acts as restore driver.
+3. It creates a process lock under the per-user runtime directory so only one shell acts as restore driver.
 4. It reads `sessions`.
 5. It groups sessions by logical window and tab.
 6. It writes `restore-first` and `restore-queue`.
@@ -479,12 +459,12 @@ Implementation commits:
 
 1. Add release metadata and a release workflow using `cad0p/semver-calver-release/release@v1`, with `package.json` as the version source and no npm publishing.
 2. Extract current zsh integration into `session-manager.zsh` with XDG paths under `ghostty-zmx`.
-3. Add interactive installer and uninstall script with backups, `--yes` non-interactive mode, idempotent source-line/config handling, experimental-config migration, conflict warnings, and an automatically managed Ghostty config section.
+3. Add interactive installer and uninstall script with backups, `--yes` non-interactive mode, idempotent source-line/config handling, conflict warnings, symlink-safe file handling, and an automatically managed Ghostty config section.
 4. Add debug logging controlled by `GHOSTTY_ZMX_DEBUG`.
 5. Observe Ghostty's local working-directory behavior for new splits, tabs, and windows through managed zmx sessions; document recommended Ghostty inheritance settings without managing them.
 6. Add reaper-owned scrollback snapshots on detach.
 7. Add reboot/fresh-session detection and scrollback injection into new zmx sessions using `zmx run "$session" true` followed by `zmx print`.
-8. Add README with install, uninstall, `--yes` usage, migration from the experimental setup, release-control behavior, required Ghostty config, conflict-warning behavior, cleanup reminder for old experimental files, usage, and known limitations.
+8. Add README with install, uninstall, `--yes` usage, release-control behavior, required Ghostty config, conflict-warning behavior, manual experimental-cleanup guidance, usage, and known limitations.
 9. Add manual E2E script snippets or a test checklist, including the automated-test override for `confirm-close-surface = false`.
 
 Implementation review should use correctness, coverage, cleanness/API surface, and security/adversarial lenses. E2E should use e2e-tester and adversarial lenses. Bloat review should use bloat-production, bloat-docs, and correctness for over-trim.
@@ -510,7 +490,7 @@ Implementation review should use correctness, coverage, cleanness/API surface, a
 3. History snapshots are plain `.txt` files.
 4. Reboot scrollback banner is exactly: `[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]`.
 5. Installer is interactive by default and supports a non-interactive `--yes` path. Both paths must be tested.
-6. Experimental state migration copies `~/.local/share/zmx/sessions`; it does not move it. The installer should remind the user to clean up old experimental files after both maintainer and agent have tested the new version.
+6. Experimental setup cleanup is manual/out-of-band for this new package; do not add production migration code. Clean old `~/.local/share/zmx/sessions` only after confirming the new integration works.
 7. v0.1 implementation language is zsh + shell scripts only.
 8. If conflicting Ghostty settings exist outside the managed section, leave them untouched and warn; only manage the ghostty-zmx block.
 9. `zmx print <missing-session>` does not create the session. Use `zmx run "$session" true` or an equivalent tested primitive before `zmx print`.
