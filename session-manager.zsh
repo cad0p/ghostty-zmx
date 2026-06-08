@@ -57,6 +57,17 @@ _ghostty_zmx_debug() {
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$GHOSTTY_ZMX_STATE_HOME/debug.log"
 }
 
+_ghostty_zmx_scrollback_line_count() {
+  typeset value="${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}"
+  if [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]]; then
+    print -r -- "$value"
+  else
+    _ghostty_zmx_debug "invalid scrollback line count value=$value defaulting=1000"
+    print -r -- 1000
+  fi
+}
+typeset GHOSTTY_ZMX_SCROLLBACK_LINES="$(_ghostty_zmx_scrollback_line_count)"
+
 _ghostty_zmx_debug "shell init data_home=$GHOSTTY_ZMX_DATA_HOME state_home=$GHOSTTY_ZMX_STATE_HOME"
 
 _ghostty_zmx_sessions_file() {
@@ -85,13 +96,20 @@ _ghostty_zmx_snapshot_history() {
   fi
   mkdir -p "$GHOSTTY_ZMX_STATE_HOME/history" 2>/dev/null
   typeset history_file="$(_ghostty_zmx_session_history_file "$session")" || return 1
-  if zmx history "$session" 2>/dev/null | tail -n "$GHOSTTY_ZMX_SCROLLBACK_LINES" > "${history_file}.tmp"; then
-    mv "${history_file}.tmp" "$history_file"
-    _ghostty_zmx_debug "scrollback snapshot session=$session file=$history_file lines=$GHOSTTY_ZMX_SCROLLBACK_LINES"
+  typeset tmp_file="${history_file}.tmp.$$"
+  rm -f "$tmp_file" "${history_file}.tmp.final.$$" 2>/dev/null
+  if zmx history "$session" > "$tmp_file" 2>/dev/null; then
+    if tail -n "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$tmp_file" > "${history_file}.tmp.final.$$"; then
+      mv "${history_file}.tmp.final.$$" "$history_file"
+      _ghostty_zmx_debug "scrollback snapshot session=$session file=$history_file lines=$GHOSTTY_ZMX_SCROLLBACK_LINES"
+    else
+      rm -f "${history_file}.tmp.final.$$" 2>/dev/null
+      _ghostty_zmx_debug "scrollback snapshot tail failed session=$session"
+    fi
   else
-    rm -f "${history_file}.tmp" 2>/dev/null
     _ghostty_zmx_debug "scrollback snapshot failed session=$session"
   fi
+  rm -f "$tmp_file" 2>/dev/null
 }
 
 _ghostty_zmx_restore_saved_scrollback() {
@@ -101,10 +119,19 @@ _ghostty_zmx_restore_saved_scrollback() {
     return 1
   fi
   typeset history_file="$(_ghostty_zmx_session_history_file "$session")" || return 1
-  if zmx list --short 2>/dev/null | grep -qxF "$session"; then
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 1
+  typeset list_file="$runtime_dir/list.short.${session}.$$"
+  if ! zmx list --short > "$list_file" 2>/dev/null; then
+    rm -f "$list_file" 2>/dev/null
+    _ghostty_zmx_debug "zmx list --short failed session=$session"
+    return 0
+  fi
+  if grep -qxF "$session" "$list_file"; then
+    rm -f "$list_file" 2>/dev/null
     _ghostty_zmx_debug "fresh-session detection session=$session exists=1"
     return 0
   fi
+  rm -f "$list_file" 2>/dev/null
   _ghostty_zmx_debug "fresh-session detection session=$session exists=0 snapshot=$history_file"
   [[ -s "$history_file" ]] || return 0
   if ! zmx run "$session" true >/dev/null 2>&1; then
@@ -186,13 +213,21 @@ snapshot_history() {
   fi
   mkdir -p "$stateHome/history" 2>/dev/null
   local historyFile="$(history_file_for_session "$session")" || return 1
-  if zmx history "$session" 2>/dev/null | tail -n "$scrollbackLines" > "${historyFile}.tmp"; then
-    mv "${historyFile}.tmp" "$historyFile"
-    debug_log "scrollback snapshot session=$session file=$historyFile lines=$scrollbackLines"
+  local tmpFile="${historyFile}.tmp.$$"
+  local finalFile="${historyFile}.tmp.final.$$"
+  rm -f "$tmpFile" "$finalFile" 2>/dev/null
+  if zmx history "$session" > "$tmpFile" 2>/dev/null; then
+    if tail -n "$scrollbackLines" "$tmpFile" > "$finalFile"; then
+      mv "$finalFile" "$historyFile"
+      debug_log "scrollback snapshot session=$session file=$historyFile lines=$scrollbackLines"
+    else
+      rm -f "$finalFile" 2>/dev/null
+      debug_log "scrollback snapshot tail failed session=$session"
+    fi
   else
-    rm -f "${historyFile}.tmp" 2>/dev/null
     debug_log "scrollback snapshot failed session=$session"
   fi
+  rm -f "$tmpFile" 2>/dev/null
 }
 
 forget_snapshot() {
@@ -233,9 +268,16 @@ managed_detached_sessions() {
 
 managed_existing_sessions() {
   managed_sessions_from_log | while IFS= read -r managed; do
-    if zmx list --short 2>/dev/null | grep -qxF "$managed"; then
+    local listFile="$runtimeDir/list.short.${managed}.$$"
+    if ! zmx list --short > "$listFile" 2>/dev/null; then
+      rm -f "$listFile" 2>/dev/null
+      debug_log "zmx list --short failed action=managed-existing session=$managed"
+      continue
+    fi
+    if grep -qxF "$managed" "$listFile"; then
       print -r -- "$managed"
     fi
+    rm -f "$listFile" 2>/dev/null
   done
 }
 
