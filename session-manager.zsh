@@ -14,7 +14,6 @@ _ghostty_zmx_queue_lock_attempts=50
 _ghostty_zmx_queue_lock_delay=0.1
 _ghostty_zmx_ghostty_ready_attempts=10
 _ghostty_zmx_ghostty_ready_delay=0.5
-_ghostty_zmx_restore_flag_cleanup_delay=5
 # Restore lock cleanup margin covers AppleScript overhead not counted by per-step restore delays.
 _ghostty_zmx_restore_lock_margin=10
 

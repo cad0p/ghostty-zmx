@@ -46,7 +46,6 @@ SESS
 
 source "$repo_dir/session-manager.zsh"
 ghosttyPID=123
-_ghostty_zmx_restore_flag_cleanup_delay=0
 _ghostty_zmx_restore
 
 [[ "$(cat "$GHOSTTY_ZMX_DATA_HOME/restore-first")" == 'zmx-11111111-22222222-aaaaaaaa' ]] || { print -u2 'restore first session mismatch'; exit 1; }
