@@ -77,23 +77,6 @@ _ghostty_zmx_log_session() {
   fi
 }
 
-_ghostty_zmx_unlog_session() {
-  typeset session="$1"
-  if ! _ghostty_zmx_valid_session_name "$session"; then
-    _ghostty_zmx_debug "invalid session skipped action=unlog session=$session"
-    return 1
-  fi
-  typeset log="$(_ghostty_zmx_sessions_file)"
-  [[ -f "$log" ]] || return 0
-  grep -vxF "$session" "$log" > "${log}.tmp" 2>/dev/null || true
-  mv "${log}.tmp" "$log" 2>/dev/null
-  _ghostty_zmx_debug "session unlogged session=$session file=$log"
-}
-
-_ghostty_zmx_cleanup_after_detach() {
-  return 0
-}
-
 _ghostty_zmx_snapshot_history() {
   typeset session="$1"
   if ! _ghostty_zmx_valid_session_name "$session"; then
@@ -689,11 +672,11 @@ SCRIPT
   return 0
 }
 
-if [[ -o interactive ]] \
-   && [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" ]] \
-   && [[ -z "$ZMX_SESSION" ]] \
-   && [[ -z "$TMUX" ]] \
-   && command -v zmx >/dev/null 2>&1; then
+_ghostty_zmx_auto_attach() {
+  [[ -o interactive ]] || return 0
+  [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" ]] || return 0
+  [[ -z "$ZMX_SESSION" && -z "$TMUX" ]] || return 0
+  command -v zmx >/dev/null 2>&1 || return 0
 
   typeset -i asReady=0
   typeset -i attempt=0
@@ -719,48 +702,50 @@ if [[ -o interactive ]] \
   [[ "$asReady" -eq 0 ]] && { _ghostty_zmx_debug "Ghostty PID detection failed"; return 0; }
 
   typeset restoreFlag="$(_ghostty_zmx_runtime_path "restore-${ghosttyPID}.lock")"
-  typeset SESSION_NAME=""
+  typeset sessionName=""
   typeset sessionFromRestore=0
   if [[ -n "$ghosttyPID" && -n "$restoreFlag" ]] && mkdir "$restoreFlag" 2>/dev/null; then
     _ghostty_zmx_debug "restore-driver elected ghostty_pid=$ghosttyPID flag=$restoreFlag"
     _ghostty_zmx_restore
     typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
     if [[ -s "$firstFile" ]]; then
-      IFS= read -r SESSION_NAME < "$firstFile"
+      IFS= read -r sessionName < "$firstFile"
       rm -f "$firstFile" 2>/dev/null
-      if _ghostty_zmx_valid_session_name "$SESSION_NAME"; then
+      if _ghostty_zmx_valid_session_name "$sessionName"; then
         sessionFromRestore=1
       else
-        _ghostty_zmx_debug "invalid session skipped action=restore-first session=$SESSION_NAME"
-        SESSION_NAME=""
+        _ghostty_zmx_debug "invalid session skipped action=restore-first session=$sessionName"
+        sessionName=""
       fi
     fi
   fi
 
-  if [[ -z "$SESSION_NAME" ]]; then
-    SESSION_NAME=$(_ghostty_zmx_pop_restore_queue)
-    [[ -n "$SESSION_NAME" ]] && sessionFromRestore=1
+  if [[ -z "$sessionName" ]]; then
+    sessionName=$(_ghostty_zmx_pop_restore_queue)
+    [[ -n "$sessionName" ]] && sessionFromRestore=1
   fi
 
-  typeset POSITION=$(_ghostty_zmx_current_position)
-  if [[ -z "$SESSION_NAME" && -n "$POSITION" ]]; then
-    POSITION=$(_ghostty_zmx_apply_position_map "$POSITION")
-    typeset WIN_HASH=$(print -r -- "$POSITION" | awk '{print $1}')
-    typeset TAB_HASH=$(print -r -- "$POSITION" | awk '{print $2}')
-    typeset TERM_ID=$(print -r -- "$POSITION" | awk '{print $3}')
-    SESSION_NAME="zmx-${WIN_HASH}-${TAB_HASH}-${TERM_ID}"
-    _ghostty_zmx_valid_session_name "$SESSION_NAME" || { _ghostty_zmx_debug "invalid session skipped action=generated session=$SESSION_NAME"; SESSION_NAME=""; }
+  typeset position=$(_ghostty_zmx_current_position)
+  if [[ -z "$sessionName" && -n "$position" ]]; then
+    position=$(_ghostty_zmx_apply_position_map "$position")
+    typeset winHash=$(print -r -- "$position" | awk '{print $1}')
+    typeset tabHash=$(print -r -- "$position" | awk '{print $2}')
+    typeset termId=$(print -r -- "$position" | awk '{print $3}')
+    sessionName="zmx-${winHash}-${tabHash}-${termId}"
+    _ghostty_zmx_valid_session_name "$sessionName" || { _ghostty_zmx_debug "invalid session skipped action=generated session=$sessionName"; sessionName=""; }
   fi
 
-  if [[ -n "$SESSION_NAME" ]]; then
-    [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$SESSION_NAME" "$(_ghostty_zmx_current_position)"
-    _ghostty_zmx_log_session "$SESSION_NAME"
+  if [[ -n "$sessionName" ]]; then
+    [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$sessionName" "$(_ghostty_zmx_current_position)"
+    _ghostty_zmx_log_session "$sessionName"
     _ghostty_zmx_start_reaper "$ghosttyPID"
-    _ghostty_zmx_restore_saved_scrollback "$SESSION_NAME"
-    _ghostty_zmx_debug "attach session=$SESSION_NAME from_restore=$sessionFromRestore"
-    if ! zmx attach "$SESSION_NAME"; then
-      _ghostty_zmx_debug "zmx attach failed session=$SESSION_NAME status=$?"
+    _ghostty_zmx_restore_saved_scrollback "$sessionName"
+    _ghostty_zmx_debug "attach session=$sessionName from_restore=$sessionFromRestore"
+    if ! zmx attach "$sessionName"; then
+      _ghostty_zmx_debug "zmx attach failed session=$sessionName status=$?"
     fi
-    _ghostty_zmx_cleanup_after_detach "$SESSION_NAME"
   fi
-fi
+}
+
+_ghostty_zmx_auto_attach
+unfunction _ghostty_zmx_auto_attach 2>/dev/null || unset -f _ghostty_zmx_auto_attach 2>/dev/null || true
