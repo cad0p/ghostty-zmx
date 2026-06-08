@@ -223,8 +223,19 @@ forget_snapshot() {
   debug_log "scrollback snapshot deleted session=$session"
 }
 
-managed_detached_sessions() {
+managed_sessions_from_log() {
   [[ -f "$log" ]] || return 0
+  while IFS= read -r managed; do
+    [[ -n "$managed" ]] || continue
+    if ! valid_session_name "$managed"; then
+      debug_log "invalid session skipped action=managed-log session=$managed"
+      continue
+    fi
+    print -r -- "$managed"
+  done < "$log"
+}
+
+managed_detached_sessions() {
   zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ && $3=="clients=0" { sub(/^[→ ]*name=/, "", $1); print $1 }' |
   while IFS= read -r orphan; do
     [[ -n "$orphan" ]] || continue
@@ -237,8 +248,24 @@ managed_detached_sessions() {
   done
 }
 
+managed_existing_sessions() {
+  managed_sessions_from_log | while IFS= read -r managed; do
+    if zmx list --short 2>/dev/null | grep -qxF "$managed"; then
+      print -r -- "$managed"
+    fi
+  done
+}
+
+snapshot_existing_sessions() {
+  managed_existing_sessions | while IFS= read -r preserved; do
+    snapshot_history "$preserved"
+    debug_log "preserving session=$preserved reason=$1"
+  done
+}
+
 sleep "$reaperStartupDelay"
 zeroWindowsSeen=0
+typeset -A detachedSeen
 while kill -0 "$ghosttyPID" 2>/dev/null; do
   windows=$(osascript -e 'tell application "Ghostty" to count of windows' 2>/dev/null)
   [[ "$windows" =~ '^[0-9]+$' ]] || break
@@ -266,35 +293,33 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   fi
 
   attached=0
-  if [[ -f "$log" ]]; then
-    while IFS= read -r managed; do
-      [[ -n "$managed" ]] || continue
-      if ! valid_session_name "$managed"; then
-        debug_log "invalid session skipped action=attached-count session=$managed"
-        continue
-      fi
-      clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
-      [[ "$clients" == "1" ]] && attached=$((attached + 1))
-    done < "$log"
-  fi
+  managed_sessions_from_log | while IFS= read -r managed; do
+    clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
+    [[ "$clients" == "1" ]] && attached=$((attached + 1))
+  done
   if [[ "$attached" -eq 0 ]]; then
-    managed_detached_sessions | while IFS= read -r preserved; do
-      snapshot_history "$preserved"
-      debug_log "preserving detached session=$preserved"
-    done
+    snapshot_existing_sessions "all-detached"
     sleep "$interval"
     continue
   fi
 
   managed_detached_sessions | while IFS= read -r orphan; do
+    detachedSeen[$orphan]=$(( ${detachedSeen[$orphan]:-0} + interval ))
+    if [[ "${detachedSeen[$orphan]}" -lt "$zeroWindowGrace" ]]; then
+      snapshot_history "$orphan"
+      debug_log "detached pending session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
+      continue
+    fi
     snapshot_history "$orphan"
-    debug_log "detached cleanup session=$orphan attached_managed=$attached"
+    debug_log "detached cleanup session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
     zmx kill "$orphan" >/dev/null 2>&1
     cleanup_log "$orphan"
     forget_snapshot "$orphan"
+    unset "detachedSeen[$orphan]"
   done
   sleep "$interval"
 done
+snapshot_existing_sessions "ghostty-exit"
 debug_log "stopped ghostty_pid=$ghosttyPID"
 rmdir "$flag" 2>/dev/null
 rm -f "$0" 2>/dev/null
