@@ -8,8 +8,9 @@ trap 'rm -rf "$workdir"' EXIT
 export HOME="$workdir/home"
 export GHOSTTY_ZMX_DATA_HOME="$workdir/data"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state"
+export XDG_RUNTIME_DIR="$workdir/runtime"
 export GHOSTTY_ZMX_SCROLLBACK_LINES=3
-mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$workdir/bin"
+mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$XDG_RUNTIME_DIR" "$workdir/bin"
 
 cat > "$workdir/bin/zmx" <<'STUB'
 #!/bin/zsh
