@@ -107,6 +107,20 @@ GHOSTTY_ZMX_SCROLLBACK_LINES=1000
 
 Advanced installer/uninstaller test harnesses may set `GHOSTTY_ZMX_GHOSTTY_CONFIG` to point at a temporary Ghostty config file. Normal users should leave it unset so the scripts edit Ghostty's default config path.
 
+Runtime files are internal implementation state, not a public API:
+
+```text
+${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID}/
+  restore-${ghostty_pid}.lock
+  restoring-${ghostty_pid}.lock
+  reaper-${ghostty_pid}.zsh
+  reaper-${ghostty_pid}.log
+```
+
+The runtime directory is created with mode `0700` for the current user. The reaper removes its script and lock on normal shutdown, and uninstall removes the current per-user runtime directory only when it is the expected owned `ghostty-zmx-${UID}` directory and not a symlink.
+
+The sourced manager defines private `_ghostty_zmx_*` helpers during startup. They are implementation details and are not stable APIs; installers should add only the guarded source line shown above to `.zshrc`.
+
 Data files:
 
 ```text
@@ -165,7 +179,7 @@ or non-interactively:
 ~/.config/ghostty-zmx/uninstall.sh --yes
 ```
 
-Uninstall removes the `.zshrc` source line, optionally removes the managed Ghostty block, removes generated runtime files, and leaves zmx sessions alive by default. `--yes` is non-interactive but still preserves installed files, data, and state unless explicit destructive flags are provided:
+Uninstall removes the `.zshrc` source line, removes the managed Ghostty block when accepted interactively or when `--yes` is used, removes generated runtime files, and leaves zmx sessions alive by default. `--yes` is non-interactive but still preserves installed files, data, and state unless explicit destructive flags are provided:
 
 ```sh
 ~/.config/ghostty-zmx/uninstall.sh --yes --remove-install-dir --remove-data --remove-state

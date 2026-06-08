@@ -10,9 +10,13 @@ Run these checks before publishing a release candidate:
 
 ```sh
 zsh -n session-manager.zsh install.sh uninstall.sh tests/*.zsh
+zsh tests/install-uninstall.zsh
+zsh tests/snapshot-scrollback.zsh
+zsh tests/restore-id-map.zsh
+zsh tests/release-control.zsh
 jq . package.json
 ```
 
-Installer and uninstaller smoke tests should run with a temporary `HOME`, stubbed external commands, and `GHOSTTY_ZMX_GHOSTTY_CONFIG` pointed at a temporary file. Cover interactive decline, `./install.sh --yes`, repeated install idempotency, migration cleanup of the old env line and exact experimental `confirm-close-surface = false`, valid-session migration, conflict warnings, `uninstall.sh --yes` preserving data/state/install directories, and explicit `--remove-install-dir --remove-data --remove-state` deletion flags.
+Installer and uninstaller smoke tests should run with a temporary `HOME`, stubbed external commands, and `GHOSTTY_ZMX_GHOSTTY_CONFIG` pointed at a temporary file. Cover interactive decline, interactive acceptance, `./install.sh --yes`, repeated install idempotency, unterminated experimental `.zshrc` block failure, migration cleanup of the old env line and exact experimental `confirm-close-surface = false`, valid-session migration, existing sessions-file preservation, stale runtime flag cleanup, conflict warnings, `uninstall.sh --yes` preserving data/state/install directories, interactive uninstall decline/acceptance, runtime-directory cleanup, and explicit `--remove-install-dir --remove-data --remove-state` deletion flags.
 
 Before merging, sanity-check `.github/workflows/release.yml` for YAML validity in the repository's workflow tooling and confirm the draft release job still targets GitHub releases only.
