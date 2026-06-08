@@ -23,7 +23,7 @@ uninstall_dest="$install_dir/uninstall.sh"
 zshrc="$HOME/.zshrc"
 ghostty_config="${GHOSTTY_ZMX_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
 data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
-old_data_home="${XDG_DATA_HOME:-$HOME/.local/share}/zmx"
+canonical_old_data_home="$HOME/.local/share/zmx"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
 managed_block='# BEGIN ghostty-zmx
 # Managed by ghostty-zmx. Re-run the installer to update this block.
@@ -150,13 +150,28 @@ ensure_ghostty_block() {
 }
 
 migrate_sessions() {
-  local old_sessions="$old_data_home/sessions"
   local new_sessions="$data_home/sessions"
-  [[ -f "$old_sessions" ]] || return 0
+  local old_sessions
+  local seen=()
   mkdir -p "${new_sessions:h}"
   if [[ -f "$new_sessions" ]]; then
     print "Existing ghostty-zmx sessions file found at $new_sessions; leaving migrated copy unchanged."
-  else
+    return 0
+  fi
+  for old_sessions in "$canonical_old_data_home/sessions"; do
+    [[ -f "$old_sessions" ]] || continue
+    seen+=("$old_sessions")
+  done
+  if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+    old_sessions="$XDG_DATA_HOME/zmx/sessions"
+    [[ -f "$old_sessions" ]] || continue
+    local path
+    for path in "${seen[@]}"; do
+      [[ "$path" == "$old_sessions" ]] && continue 2
+    done
+    seen+=("$old_sessions")
+  fi
+  for old_sessions in "${seen[@]}"; do
     while IFS= read -r session; do
       [[ -n "$session" ]] || continue
       if valid_session_name "$session"; then
@@ -165,8 +180,8 @@ migrate_sessions() {
         print "Skipped invalid experimental session name during migration: $session"
       fi
     done < "$old_sessions"
-    print "Copied experimental sessions file to $new_sessions"
-  fi
+  done
+  [[ ${#seen[@]} -gt 0 ]] && print "Copied experimental sessions file to $new_sessions"
 }
 
 clean_old_runtime_flags() {
@@ -180,7 +195,7 @@ print_plan() {
   print "  - install files under $install_dir"
   print "  - update $zshrc with one guarded source line"
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
-  print "  - migrate $old_data_home/sessions if present"
+  print "  - migrate $canonical_old_data_home/sessions and any different XDG_DATA_HOME/zmx/sessions if present"
   print "  - remove stale experimental /tmp/zmx-* flags"
   print "  - remove exact experimental confirm-close-surface = false settings when present"
   print ""
@@ -215,4 +230,4 @@ clean_old_runtime_flags
 
 print ""
 print "ghostty-zmx installation complete. Restart Ghostty or open a new Ghostty window to start managed sessions."
-print "After testing the new integration, clean up old experimental files under $old_data_home and any old inline zmx config backups."
+print "After testing the new integration, clean up old experimental files under $canonical_old_data_home and any old inline zmx config backups."

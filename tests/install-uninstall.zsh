@@ -108,6 +108,18 @@ run_install "$home_existing" "$config_existing" "$data_existing" --yes > /dev/nu
 grep -qxF 'zmx-existing-11112222-33334444-aaaaaaaa' "$data_existing/sessions" || { print -u2 "existing sessions file was overwritten"; exit 1; }
 [[ "$(wc -l < "$data_existing/sessions" | tr -d ' ')" == 1 ]] || { print -u2 "existing sessions file gained migrated entries"; exit 1; }
 
+home_xdg="$workdir/home-xdg"
+config_xdg="$workdir/config-xdg/config.ghostty"
+data_xdg="$workdir/share-xdg/ghostty-zmx"
+canonical_old_xdg="$home_xdg/.local/share/zmx"
+xdg_old="$workdir/xdg-data/zmx"
+mkdir -p "$home_xdg" "${config_xdg:h}" "$canonical_old_xdg" "$xdg_old" "$data_xdg"
+print -r -- zmx-11111111-22222222-aaaaaaaa > "$canonical_old_xdg/sessions"
+print -r -- zmx-33333333-44444444-bbbbbbbb > "$xdg_old/sessions"
+HOME="$home_xdg" XDG_DATA_HOME="$workdir/xdg-data" GHOSTTY_ZMX_GHOSTTY_CONFIG="$config_xdg" GHOSTTY_ZMX_DATA_HOME="$data_xdg" "$repo_dir/install.sh" --yes > /dev/null
+grep -qxF 'zmx-11111111-22222222-aaaaaaaa' "$data_xdg/sessions" || { print -u2 "canonical legacy sessions were not migrated"; exit 1; }
+grep -qxF 'zmx-33333333-44444444-bbbbbbbb' "$data_xdg/sessions" || { print -u2 "XDG_DATA_HOME legacy sessions were not migrated"; exit 1; }
+
 run_uninstall "$home" "$config" "$data" "$state" --yes > "$workdir/uninstall.out"
 [[ -d "$home/.config/ghostty-zmx" ]] || { print -u2 "--yes removed install dir"; exit 1; }
 [[ -d "$data" ]] || { print -u2 "--yes removed data"; exit 1; }

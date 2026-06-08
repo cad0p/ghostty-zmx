@@ -23,6 +23,35 @@ _ghostty_zmx_valid_session_name() {
   [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
 }
 
+_ghostty_zmx_hex_suffix() {
+  typeset id="$1" suffix="" i ch
+  [[ -n "$id" ]] || return 1
+  for (( i=${#id}; i>=1; i-- )); do
+    ch="${id:$((i-1)):1}"
+    [[ "$ch" == [0-9a-fA-F] ]] || break
+    suffix="${ch}${suffix}"
+  done
+  [[ -n "$suffix" ]] || return 1
+  print -r -- "$suffix"
+}
+
+_ghostty_zmx_terminal_hash() {
+  typeset suffix="$(_ghostty_zmx_hex_suffix "$1")" || return 1
+  if [[ ${#suffix} -ge 8 ]]; then
+    print -r -- "${suffix[1,8]}"
+  else
+    print -r -- "$suffix"
+  fi
+}
+
+_ghostty_zmx_applescript_ids() {
+  typeset raw="$1" win tab term
+  win="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $1}')")" || return 1
+  tab="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $2}')")" || return 1
+  term="$(_ghostty_zmx_terminal_hash "$(print -r -- "$raw" | awk '{print $3}')")" || return 1
+  print -r -- "$win $tab $term"
+}
+
 _ghostty_zmx_valid_physical_id() {
   typeset id="$1"
   [[ "$id" =~ ^[A-Fa-f0-9]+$ ]]
@@ -198,6 +227,26 @@ log="$dataHome/sessions"
 queue="$dataHome/restore-queue"
 firstFile="$dataHome/restore-first"
 restoring="$runtimeDir/restoring-${ghosttyPID}.lock"
+
+on hex_suffix(idText)
+  set suffix to ""
+  repeat with i from (count of characters of idText) down to 1
+    set ch to character i of idText
+    if ch is not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "A", "B", "C", "D", "E", "F"} then
+      exit repeat
+    end if
+    set suffix to ch & suffix
+  end repeat
+  return suffix
+end hex_suffix
+
+on terminal_hash(idText)
+  set suffix to hex_suffix(idText)
+  if (count of characters of suffix) >= 8 then
+    return text 1 thru 8 of suffix
+  end if
+  return suffix
+end terminal_hash
 
 valid_session_name() {
   local session="$1"
@@ -431,37 +480,25 @@ _ghostty_zmx_pop_restore_queue() {
 }
 
 _ghostty_zmx_current_position() {
-  osascript <<'EOF' 2>/dev/null
+  typeset raw win tab term
+  raw="$(osascript <<'EOF' 2>/dev/null
 tell application "Ghostty"
   set fw to front window
   set winUID to id of fw
   set uidStr to winUID as string
-  set uidLen to count of characters of uidStr
-  if uidLen > 10 then
-    set winHash to text 11 thru uidLen of uidStr
-  else
-    set winHash to uidStr
-  end if
+  set winHash to hex_suffix(uidStr)
   set tabObj to selected tab of fw
   set tabUID to id of tabObj
   set tabStr to tabUID as string
-  set tabLen to count of characters of tabStr
-  if tabLen > 4 then
-    set tabHash to text 5 thru tabLen of tabStr
-  else
-    set tabHash to tabStr
-  end if
+  set tabHash to hex_suffix(tabStr)
   set termUID to id of (focused terminal of tabObj)
   set termStr to termUID as string
-  set termLen to count of characters of termStr
-  if termLen >= 8 then
-    set termHash to text 1 thru 8 of termStr
-  else
-    set termHash to termStr
-  end if
+  set termHash to terminal_hash(termStr)
   return winHash & " " & tabHash & " " & termHash
 end tell
 EOF
+)" || return 1
+  _ghostty_zmx_applescript_ids "$raw"
 }
 
 _ghostty_zmx_apply_position_map() {
@@ -618,31 +655,26 @@ _ghostty_zmx_restore() {
           _ghostty_zmx_debug "restore failed step=current-position logical_window=$winHex logical_tab=$tabHex result=$pos"
         fi
       else
-        typeset created=$(osascript <<'SCRIPT' 2>/dev/null
+        typeset created=""
+        created="$(_ghostty_zmx_applescript_ids "$(osascript <<'SCRIPT' 2>/dev/null
 tell application "Ghostty"
     set cfg to new surface configuration
     set w to new window with configuration cfg
     set tb to selected tab of w
     set winStr to id of w as string
     set tabStr to id of tb as string
-    set winLen to count of characters of winStr
-    set tabLen to count of characters of tabStr
-    if winLen > 10 then
-      set winHash to text 11 thru winLen of winStr
-    else
-      set winHash to winStr
-    end if
-    if tabLen > 4 then
-      set tabHash to text 5 thru tabLen of tabStr
-    else
-      set tabHash to tabStr
-    end if
+    set winHash to hex_suffix(winStr)
+    set tabHash to hex_suffix(tabStr)
     set index of w to 1
     set selected tab of w to tb
     return winHash & " " & tabHash
 end tell
 SCRIPT
-)
+)")" || {
+          _ghostty_zmx_debug "restore failed step=new-window logical_window=$winHex logical_tab=$tabHex"
+          sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+          continue
+        }
         physWin=$(print -r -- "$created" | awk '{print $1}')
         physTab=$(print -r -- "$created" | awk '{print $2}')
         if _ghostty_zmx_restore_ids_valid "$physWin" "$physTab"; then
@@ -659,17 +691,13 @@ SCRIPT
 
     if [[ "$tabHex" != "$curTab" ]]; then
       if [[ -n "$curTab" ]]; then
-        typeset created=$(osascript <<SCRIPT 2>/dev/null
+        typeset created=""
+        created="$(_ghostty_zmx_applescript_ids "$(osascript <<SCRIPT 2>/dev/null
 tell application "Ghostty"
     set targetWindow to missing value
     repeat with w in windows
       set winStr to id of w as string
-      set winLen to count of characters of winStr
-      if winLen > 10 then
-        set winHash to text 11 thru winLen of winStr
-      else
-        set winHash to winStr
-      end if
+      set winHash to hex_suffix(winStr)
       if winHash is "$physWin" then
         set targetWindow to w
         exit repeat
@@ -682,22 +710,16 @@ tell application "Ghostty"
     set selected tab of targetWindow to tb
     set winStr to id of targetWindow as string
     set tabStr to id of tb as string
-    set winLen to count of characters of winStr
-    set tabLen to count of characters of tabStr
-    if winLen > 10 then
-      set winHash to text 11 thru winLen of winStr
-    else
-      set winHash to winStr
-    end if
-    if tabLen > 4 then
-      set tabHash to text 5 thru tabLen of tabStr
-    else
-      set tabHash to tabStr
-    end if
+    set winHash to hex_suffix(winStr)
+    set tabHash to hex_suffix(tabStr)
     return winHash & " " & tabHash
 end tell
 SCRIPT
-)
+)")" || {
+          _ghostty_zmx_debug "restore failed step=new-tab logical_window=$winHex logical_tab=$tabHex expected_window=$physWin"
+          sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+          continue
+        }
         typeset createdWin=$(print -r -- "$created" | awk '{print $1}')
         typeset createdTab=$(print -r -- "$created" | awk '{print $2}')
         if [[ "$createdWin" == "$physWin" ]] && _ghostty_zmx_restore_ids_valid "$createdWin" "$createdTab"; then
@@ -721,12 +743,7 @@ SCRIPT
     set targetWindow to missing value
     repeat with w in windows
       set winStr to id of w as string
-      set winLen to count of characters of winStr
-      if winLen > 10 then
-        set winHash to text 11 thru winLen of winStr
-      else
-        set winHash to winStr
-      end if
+      set winHash to hex_suffix(winStr)
       if winHash is "$physWin" then
         set targetWindow to w
         exit repeat
@@ -736,12 +753,7 @@ SCRIPT
     set targetTab to missing value
     repeat with tb in tabs of targetWindow
       set tabStr to id of tb as string
-      set tabLen to count of characters of tabStr
-      if tabLen > 4 then
-        set tabHash to text 5 thru tabLen of tabStr
-      else
-        set tabHash to tabStr
-      end if
+      set tabHash to hex_suffix(tabStr)
       if tabHash is "$physTab" then
         set targetTab to tb
         exit repeat

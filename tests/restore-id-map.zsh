@@ -22,15 +22,15 @@ cat > "$workdir/bin/osascript" <<'STUB'
 #!/bin/zsh
 script="$(cat)"
 if [[ "$script" == *'front window'* ]]; then
-  print -r -- 'aaaaaaaaaaaaaaaa bbbbbbbb'
+  print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb term:1234abcd'
   exit 0
 fi
 if [[ "$script" == *'new window'* ]]; then
-  print -r -- 'cccccccccccccccc dddddddd'
+  print -r -- 'window:cccccccccccccccc tab-group-ghostty-zmx-test/tab-dddddddd'
   exit 0
 fi
 if [[ "$script" == *'new tab'* ]]; then
-  print -r -- 'aaaaaaaaaaaaaaaa eeeeeeee'
+  print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-eeeeeeee'
   exit 0
 fi
 exit 0
