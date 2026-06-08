@@ -551,12 +551,12 @@ _ghostty_zmx_restore() {
     rest="${rest#*-}"
     tabHex="${rest%%-*}"
     key="${winHex}:${tabHex}"
-    if [[ -z "${_seen[$key]}" ]]; then
+    if [[ -z "${_seen[$key]:-}" ]]; then
       _seen[$key]=1
       _keys+=("$key")
       _tabPanes[$key]=0
       _tabSessions[$key]=""
-      if [[ -z "${_seenWin[$winHex]}" ]]; then
+      if [[ -z "${_seenWin[$winHex]:-}" ]]; then
         _seenWin[$winHex]=1
         _winKeys+=("$winHex")
         _tabsByWin[$winHex]=""
@@ -587,7 +587,7 @@ _ghostty_zmx_restore() {
   print -r -- "${_layoutSessions[1]}" > "$firstFile"
   _ghostty_zmx_debug "restore first session=${_layoutSessions[1]} file=$firstFile"
   : > "$queue"
-  typeset i
+  typeset -i i
   for ((i=2; i<=${#_layoutSessions}; i++)); do
     print -r -- "${_layoutSessions[$i]}" >> "$queue"
     _ghostty_zmx_debug "queue push session=${_layoutSessions[$i]} queue=$queue"
@@ -712,7 +712,7 @@ SCRIPT
       curTab="$tabHex"
     fi
 
-    typeset p
+    typeset -i p
     for ((p=2; p<=paneCount; p++)); do
       typeset d="right"
       [[ $((p % 2)) -eq 0 ]] && d="down"

@@ -114,6 +114,43 @@ run_uninstall "$home" "$config" "$data" "$state" --yes > "$workdir/uninstall.out
 [[ -d "$state" ]] || { print -u2 "--yes removed state"; exit 1; }
 grep -q -- '--remove-data' "$workdir/uninstall.out" || { print -u2 "non-destructive uninstall guidance missing"; exit 1; }
 
+home_prompt="$workdir/home-prompt"
+config_prompt="$workdir/config-prompt/config.ghostty"
+data_prompt="$workdir/share-prompt/ghostty-zmx"
+state_prompt="$workdir/state-prompt/ghostty-zmx"
+mkdir -p "$home_prompt" "${config_prompt:h}" "$data_prompt" "$state_prompt"
+cat > "$home_prompt/.zshrc" <<'ZSHRC'
+[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"
+ZSHRC
+cat > "$config_prompt" <<'CFG'
+# BEGIN ghostty-zmx
+env = GHOSTTY_ZMX_AUTO_ATTACH=1
+# END ghostty-zmx
+CFG
+printf 'n\nn\n' | run_uninstall "$home_prompt" "$config_prompt" "$data_prompt" "$state_prompt" > "$workdir/uninstall-decline.out"
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home_prompt/.zshrc" || { print -u2 "interactive decline removed source line"; exit 1; }
+grep -q '^# BEGIN ghostty-zmx$' "$config_prompt" || { print -u2 "interactive decline removed Ghostty block"; exit 1; }
+printf 'y\ny\n' | run_uninstall "$home_prompt" "$config_prompt" "$data_prompt" "$state_prompt" > "$workdir/uninstall-accept.out"
+! grep -q 'session-manager.zsh' "$home_prompt/.zshrc" || { print -u2 "interactive accept left source line"; exit 1; }
+! grep -q '^# BEGIN ghostty-zmx$' "$config_prompt" || { print -u2 "interactive accept left Ghostty block"; exit 1; }
+[[ -d "$data_prompt" && -d "$state_prompt" ]] || { print -u2 "interactive accept removed data/state without flags"; exit 1; }
+
+runtime_root="$workdir/runtime-root"
+runtime_dir="$runtime_root/ghostty-zmx-${UID:-$(id -u)}"
+mkdir -p "$runtime_dir"
+touch "$runtime_dir/reaper-test.zsh"
+XDG_RUNTIME_DIR="$runtime_root" run_uninstall "$home_prompt" "$config_prompt" "$data_prompt" "$state_prompt" --yes > "$workdir/runtime-uninstall.out"
+[[ ! -d "$runtime_dir" ]] || { print -u2 "current runtime directory was not removed"; exit 1; }
+
+unsafe_runtime_root="$workdir/unsafe-runtime-root"
+mkdir -p "$unsafe_runtime_root"
+ln -s "$home_prompt" "$unsafe_runtime_root/ghostty-zmx-${UID:-$(id -u)}"
+if XDG_RUNTIME_DIR="$unsafe_runtime_root" run_uninstall "$home_prompt" "$config_prompt" "$data_prompt" "$state_prompt" --yes > /dev/null 2>&1; then
+  print -u2 "unsafe runtime symlink deletion was allowed"
+  exit 1
+fi
+[[ -d "$home_prompt" ]] || { print -u2 "unsafe runtime symlink target was deleted"; exit 1; }
+
 run_uninstall "$home" "$config" "$data" "$state" --yes --remove-install-dir --remove-data --remove-state > /dev/null
 [[ ! -d "$home/.config/ghostty-zmx" ]] || { print -u2 "explicit install dir deletion failed"; exit 1; }
 [[ ! -d "$data" ]] || { print -u2 "explicit data deletion failed"; exit 1; }
