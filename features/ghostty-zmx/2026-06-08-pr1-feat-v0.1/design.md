@@ -85,6 +85,21 @@ Debug/state logs:
 
 The installer may also place a helper executable later, but v0.1 can be pure shell.
 
+## Release control
+
+ghostty-zmx uses `cad0p/semver-calver-release` for release control.
+
+Repository settings and the default-branch ruleset are mirrored from `cad0p/semver-calver-release`:
+
+- squash merge only,
+- delete branches on merge,
+- Issues/Projects/Wiki enabled to match the reference repo,
+- active default-branch ruleset for PR-only changes, signed commits, linear history, no deletion, no non-fast-forward updates, code-quality warnings, and squash-only merges.
+
+v0.1 should add repository release metadata and a release workflow using `cad0p/semver-calver-release/release@v1`. A `package.json` is required as the SemVer base version source even though v0.1 is zsh/shell only and is not an npm-published package.
+
+The `validate-package-version` workflow from `semver-calver-release` should be enabled after the first PR lands with `package.json` on `main`; enabling it before then would fail because `origin/main:package.json` does not exist yet.
+
 ## Installation behavior
 
 The installer should:
@@ -462,14 +477,15 @@ A future implementation PR should use the methodology's release-grade phases.
 
 Implementation commits:
 
-1. Extract current zsh integration into `session-manager.zsh` with XDG paths under `ghostty-zmx`.
-2. Add interactive installer and uninstall script with backups, `--yes` non-interactive mode, idempotent source-line/config handling, experimental-config migration, conflict warnings, and an automatically managed Ghostty config section.
-3. Add debug logging controlled by `GHOSTTY_ZMX_DEBUG`.
-4. Observe Ghostty's local working-directory behavior for new splits, tabs, and windows through managed zmx sessions; document recommended Ghostty inheritance settings without managing them.
-5. Add reaper-owned scrollback snapshots on detach.
-6. Add reboot/fresh-session detection and scrollback injection into new zmx sessions using `zmx run "$session" true` followed by `zmx print`.
-7. Add README with install, uninstall, `--yes` usage, migration from the experimental setup, required Ghostty config, conflict-warning behavior, cleanup reminder for old experimental files, usage, and known limitations.
-8. Add manual E2E script snippets or a test checklist, including the automated-test override for `confirm-close-surface = false`.
+1. Add release metadata and a release workflow using `cad0p/semver-calver-release/release@v1`, with `package.json` as the version source and no npm publishing.
+2. Extract current zsh integration into `session-manager.zsh` with XDG paths under `ghostty-zmx`.
+3. Add interactive installer and uninstall script with backups, `--yes` non-interactive mode, idempotent source-line/config handling, experimental-config migration, conflict warnings, and an automatically managed Ghostty config section.
+4. Add debug logging controlled by `GHOSTTY_ZMX_DEBUG`.
+5. Observe Ghostty's local working-directory behavior for new splits, tabs, and windows through managed zmx sessions; document recommended Ghostty inheritance settings without managing them.
+6. Add reaper-owned scrollback snapshots on detach.
+7. Add reboot/fresh-session detection and scrollback injection into new zmx sessions using `zmx run "$session" true` followed by `zmx print`.
+8. Add README with install, uninstall, `--yes` usage, migration from the experimental setup, release-control behavior, required Ghostty config, conflict-warning behavior, cleanup reminder for old experimental files, usage, and known limitations.
+9. Add manual E2E script snippets or a test checklist, including the automated-test override for `confirm-close-surface = false`.
 
 Implementation review should use correctness, coverage, cleanness/API surface, and security/adversarial lenses. E2E should use e2e-tester and adversarial lenses. Bloat review should use bloat-production, bloat-docs, and correctness for over-trim.
 
@@ -504,4 +520,4 @@ Implementation review should use correctness, coverage, cleanness/API surface, a
 
 ## Release readiness criteria
 
-v0.1 is ready only when install/uninstall is idempotent, interactive install and `--yes` install are both tested, `.zshrc` integration is one source line, Ghostty config guidance is explicit, conflict warnings are tested, debug logging works, Cmd-Q restore passes, close cleanup passes, unmanaged zmx sessions are untouched, reboot-scrollback simulation proves saved scrollback is inside the new zmx session history, and README documents known limitations and required config.
+v0.1 is ready only when install/uninstall is idempotent, interactive install and `--yes` install are both tested, release metadata and the semver-calver release workflow are present, `.zshrc` integration is one source line, Ghostty config guidance is explicit, conflict warnings are tested, debug logging works, Cmd-Q restore passes, close cleanup passes, unmanaged zmx sessions are untouched, reboot-scrollback simulation proves saved scrollback is inside the new zmx session history, and README documents known limitations and required config.
