@@ -22,18 +22,18 @@ done
 
 install_dir="$HOME/.config/ghostty-zmx"
 zshrc="$HOME/.zshrc"
-ghostty_config="${GHOSTTY_ZMX_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
+ghostty_config="${GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
 data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
 state_home="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
-
-timestamp() { date +%Y%m%d-%H%M%S; }
+backup_counter=0
 
 backup_file() {
   local file="$1"
   [[ -f "$file" ]] || return 0
-  local backup="${file}.ghostty-zmx.$(timestamp).bak"
-  cp "$file" "$backup"
+  backup_counter=$(( ${backup_counter:-0} + 1 ))
+  local backup="${file}.ghostty-zmx.$(date +%Y%m%d-%H%M%S).$$.${backup_counter}.bak"
+  cp "$file" "$backup" || { print -u2 "Failed to back up $file"; return 1; }
   print "Backed up $file to $backup"
 }
 
@@ -50,7 +50,11 @@ safe_remove_tree() {
   local target="$1"
   local label="$2"
   local resolved parent base
-  [[ -n "$target" && -d "$target" ]] || return 0
+  if [[ -L "$target" ]]; then
+    print -u2 "Refusing to delete $label path that is a symlink: $target"
+    return 1
+  fi
+  [[ -d "$target" ]] || return 0
   resolved="${target:A}"
   parent="${resolved:h}"
   base="${resolved:t}"
@@ -91,10 +95,44 @@ safe_remove_runtime_dir() {
   print "Deleted $resolved"
 }
 
+safe_remove_runtime_globs() {
+  local root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+  local name base
+  for name in "$root"/ghostty-zmx-restore-* "$root"/ghostty-zmx-restoring-* "$root"/ghostty-zmx-reaper-* "$root"/ghostty-zmx-reaper-*.zsh "$root"/ghostty-zmx-reaper-*.log; do
+    [[ -e "$name" || -L "$name" ]] || continue
+    base="${name:t}"
+    if [[ -L "$name" ]]; then
+      print "Skipped generated runtime symlink: $name"
+      continue
+    fi
+    if [[ ! -O "$name" ]]; then
+      print "Skipped generated runtime path not owned by current user: $name"
+      continue
+    fi
+    if [[ -d "$name" ]]; then
+      rmdir "$name" 2>/dev/null || print "Skipped generated runtime directory: $name"
+    elif [[ -f "$name" ]]; then
+      rm -f "$name" 2>/dev/null || print "Failed to remove generated runtime path: $name"
+    else
+      print "Skipped generated runtime path: $name"
+    fi
+  done
+}
+
 remove_source_line() {
   local file="$1"
   [[ -f "$file" ]] || return 0
-  grep -vxF "$source_line" "$file" > "${file}.tmp" 2>/dev/null || true
+  awk -v source_line="$source_line" '
+    $0 == "# ghostty-zmx" { next }
+    $0 == source_line { next }
+    { print }
+  ' "$file" > "${file}.tmp"
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    rm -f "${file}.tmp"
+    print -u2 "Failed to remove ghostty-zmx source line from $file"
+    return 1
+  fi
   mv "${file}.tmp" "$file"
   print "Removed ghostty-zmx source line from $file"
 }
@@ -107,6 +145,12 @@ remove_ghostty_block() {
     /^# END ghostty-zmx$/ && skip { skip=0; next }
     !skip { print }
   ' "$file" > "${file}.tmp"
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    rm -f "${file}.tmp"
+    print -u2 "Failed to remove managed ghostty-zmx block from $file"
+    return 1
+  fi
   mv "${file}.tmp" "$file"
   print "Removed managed ghostty-zmx block from $file"
 }
@@ -124,9 +168,9 @@ else
   print "Left Ghostty config unchanged."
 fi
 
-command rm -rf /tmp/ghostty-zmx-restore-* /tmp/ghostty-zmx-restoring-* /tmp/ghostty-zmx-reaper-* /tmp/ghostty-zmx-reaper-*.zsh /tmp/ghostty-zmx-reaper-*.log 2>/dev/null || true
+safe_remove_runtime_globs || exit 1
 safe_remove_runtime_dir || exit 1
-print "Removed generated ghostty-zmx runtime files under /tmp and the current per-user runtime directory."
+print "Removed or skipped generated ghostty-zmx runtime files under /tmp and the current per-user runtime directory."
 
 if [[ "$REMOVE_INSTALL_DIR" -eq 1 ]]; then
   safe_remove_tree "$install_dir" "install" || exit 1

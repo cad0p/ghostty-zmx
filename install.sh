@@ -21,10 +21,10 @@ install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
 uninstall_dest="$install_dir/uninstall.sh"
 zshrc="$HOME/.zshrc"
-ghostty_config="${GHOSTTY_ZMX_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
+ghostty_config="${GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
 data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
-canonical_old_data_home="$HOME/.local/share/zmx"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
+backup_counter=0
 managed_block='# BEGIN ghostty-zmx
 # Managed by ghostty-zmx. Re-run the installer to update this block.
 env = GHOSTTY_ZMX_AUTO_ATTACH=1
@@ -32,18 +32,12 @@ window-save-state = never
 confirm-close-surface = true
 # END ghostty-zmx'
 
-timestamp() { date +%Y%m%d-%H%M%S; }
-
-valid_session_name() {
-  local session="$1"
-  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
-}
-
 backup_file() {
   local file="$1"
   [[ -f "$file" ]] || return 0
-  local backup="${file}.ghostty-zmx.$(timestamp).bak"
-  cp "$file" "$backup"
+  backup_counter=$(( ${backup_counter:-0} + 1 ))
+  local backup="${file}.ghostty-zmx.$(date +%Y%m%d-%H%M%S).$$.${backup_counter}.bak"
+  cp "$file" "$backup" || { print -u2 "Failed to back up $file"; return 1; }
   print "Backed up $file to $backup"
 }
 
@@ -64,33 +58,16 @@ require_command() {
   fi
 }
 
-remove_experimental_zsh_block() {
-  local file="$1"
-  [[ -f "$file" ]] || return 0
-  awk '
-    skip && /^# end zmx session management$/ { skip=0; next }
-    /zmx session management/ { skip=1; changed=1; next }
-    !skip { print }
-    END { if (skip) exit 3; if (changed) exit 2; exit 0 }
-  ' "$file" > "${file}.tmp"
-  local rc=$?
-  if [[ $rc -eq 3 ]]; then
-    rm -f "${file}.tmp"
-    print -u2 "Found an unterminated experimental zmx block in $file; leaving it unchanged."
-    return 1
-  fi
-  if [[ $rc -eq 2 ]]; then
-    mv "${file}.tmp" "$file"
-    print "Removed experimental inline zmx block from $file"
-  else
-    rm -f "${file}.tmp"
+refuse_symlinked_install_dir() {
+  if [[ -L "$install_dir" ]]; then
+    print -u2 "Refusing to install into symlinked install directory: $install_dir"
+    exit 1
   fi
 }
 
 ensure_source_line() {
   local file="$1"
-  touch "$file"
-  remove_experimental_zsh_block "$file" || return 1
+  touch "$file" || return 1
   if grep -qxF "$source_line" "$file" 2>/dev/null; then
     print "Source line already present in $file"
     return 0
@@ -103,30 +80,14 @@ ensure_source_line() {
   print "Added ghostty-zmx source line to $file"
 }
 
-strip_managed_block_and_experimental_env() {
+strip_managed_block() {
   local file="$1"
-  local has_experimental_env=0
-  if grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$' "$file" 2>/dev/null; then
-    has_experimental_env=1
-  fi
-  if [[ $has_experimental_env -eq 1 ]]; then
-    awk '
-      /^# BEGIN ghostty-zmx$/ { skip=1; next }
-      /^# END ghostty-zmx$/ && skip { skip=0; next }
-      skip { next }
-      /^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$/ { next }
-      /^[[:space:]]*confirm-close-surface[[:space:]]*=[[:space:]]*false[[:space:]]*$/ { next }
-      { print }
-    ' "$file" > "${file}.tmp"
-  else
-    awk '
-      /^# BEGIN ghostty-zmx$/ { skip=1; next }
-      /^# END ghostty-zmx$/ && skip { skip=0; next }
-      skip { next }
-      /^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$/ { next }
-      { print }
-    ' "$file" > "${file}.tmp"
-  fi
+  awk '
+    /^# BEGIN ghostty-zmx$/ { skip=1; next }
+    /^# END ghostty-zmx$/ && skip { skip=0; next }
+    skip { next }
+    { print }
+  ' "$file" > "${file}.tmp"
   local rc=$?
   if [[ $rc -ne 0 ]]; then
     rm -f "${file}.tmp"
@@ -139,16 +100,16 @@ strip_managed_block_and_experimental_env() {
 warn_ghostty_conflicts() {
   local file="$1"
   local warned=0
-  while IFS= read -r key; do
+  if grep -nE '^[[:space:]]*env[[:space:]]*=[[:space:]]*(GHOSTTY_ZMX_AUTO_ATTACH|ZMX_AUTO_ATTACH)=[^[:space:]]*[[:space:]]*$' "$file" >/dev/null 2>&1; then
+    print "Warning: $file contains an auto-attach env setting outside the managed ghostty-zmx section; leaving it untouched."
+    warned=1
+  fi
+  for key in window-save-state confirm-close-surface; do
     if grep -nE "^[[:space:]]*${key}[[:space:]]*=" "$file" >/dev/null 2>&1; then
       print "Warning: $file contains $key outside the managed ghostty-zmx section; leaving it untouched."
       warned=1
     fi
-  done <<'EOF'
-env
-window-save-state
-confirm-close-surface
-EOF
+  done
   if grep -nE '^[[:space:]]*quit-after-last-window-closed[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$file" >/dev/null 2>&1; then
     print "Warning: quit-after-last-window-closed = true is unsupported by ghostty-zmx v0.1; remove it or set it to false."
     warned=1
@@ -158,9 +119,9 @@ EOF
 
 ensure_ghostty_block() {
   local file="$1"
-  mkdir -p "${file:h}"
-  touch "$file"
-  strip_managed_block_and_experimental_env "$file"
+  mkdir -p "${file:h}" || return 1
+  touch "$file" || return 1
+  strip_managed_block "$file" || return 1
   warn_ghostty_conflicts "$file" || true
   {
     print ""
@@ -169,44 +130,29 @@ ensure_ghostty_block() {
   print "Updated managed ghostty-zmx block in $file"
 }
 
-migrate_sessions() {
-  local new_sessions="$data_home/sessions"
-  local old_sessions
-  local seen=()
-  mkdir -p "${new_sessions:h}"
-  if [[ -f "$new_sessions" ]]; then
-    print "Existing ghostty-zmx sessions file found at $new_sessions; leaving migrated copy unchanged."
-    return 0
-  fi
-  for old_sessions in "$canonical_old_data_home/sessions"; do
-    [[ -f "$old_sessions" ]] || continue
-    seen+=("$old_sessions")
-  done
-  if [[ -n "${XDG_DATA_HOME:-}" ]]; then
-    old_sessions="$XDG_DATA_HOME/zmx/sessions"
-    [[ -f "$old_sessions" ]] || continue
-    local path
-    for path in "${seen[@]}"; do
-      [[ "$path" == "$old_sessions" ]] && continue 2
-    done
-    seen+=("$old_sessions")
-  fi
-  for old_sessions in "${seen[@]}"; do
-    while IFS= read -r session; do
-      [[ -n "$session" ]] || continue
-      if valid_session_name "$session"; then
-        print -r -- "$session" >> "$new_sessions"
-      else
-        print "Skipped invalid experimental session name during migration: $session"
-      fi
-    done < "$old_sessions"
-  done
-  [[ ${#seen[@]} -gt 0 ]] && print "Copied experimental sessions file to $new_sessions"
-}
-
 clean_old_runtime_flags() {
-  command rm -rf /tmp/zmx-restore-* /tmp/zmx-restoring-* /tmp/zmx-reaper-* 2>/dev/null || true
-  print "Removed stale experimental /tmp/zmx-* runtime flags."
+  local root="${TMPDIR:-/tmp}"
+  local name base
+  for name in "$root"/zmx-restore-* "$root"/zmx-restoring-* "$root"/zmx-reaper-*; do
+    [[ -e "$name" || -L "$name" ]] || continue
+    base="${name:t}"
+    if [[ -L "$name" ]]; then
+      print "Skipped stale experimental runtime symlink: $name"
+      continue
+    fi
+    if [[ ! -O "$name" ]]; then
+      print "Skipped stale experimental runtime path not owned by current user: $name"
+      continue
+    fi
+    if [[ -d "$name" ]]; then
+      rmdir "$name" 2>/dev/null || print "Skipped stale experimental runtime directory: $name"
+    elif [[ -f "$name" ]]; then
+      rm -f "$name" 2>/dev/null || print "Failed to remove stale experimental runtime path: $name"
+    else
+      print "Skipped stale experimental runtime path: $name"
+    fi
+  done
+  print "Removed or skipped stale experimental /tmp/zmx-* runtime flags."
 }
 
 print_plan() {
@@ -215,9 +161,8 @@ print_plan() {
   print "  - install files under $install_dir"
   print "  - update $zshrc with one guarded source line"
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
-  print "  - migrate $canonical_old_data_home/sessions and any different XDG_DATA_HOME/zmx/sessions if present"
-  print "  - remove stale experimental /tmp/zmx-* flags"
-  print "  - remove the experimental confirm-close-surface = false setting when the old experimental env is present"
+  print "  - warn about unsupported or conflicting Ghostty settings outside the managed section"
+  print "  - remove stale experimental /tmp/zmx-* runtime flags"
   print ""
   print "Managed Ghostty block to add:"
   print -r -- "$managed_block"
@@ -229,6 +174,7 @@ print_plan() {
 require_command zmx
 require_command osascript
 require_command zsh
+refuse_symlinked_install_dir
 
 print_plan
 confirm "Apply this installation plan?" || { print "Installation declined; no files changed."; exit 0; }
@@ -245,9 +191,7 @@ print "Installed $uninstall_dest"
 backup_file "$ghostty_config"
 ensure_ghostty_block "$ghostty_config"
 
-migrate_sessions
 clean_old_runtime_flags
 
 print ""
 print "ghostty-zmx installation complete. Restart Ghostty or open a new Ghostty window to start managed sessions."
-print "After testing the new integration, clean up old experimental files under $canonical_old_data_home and any old inline zmx config backups."
