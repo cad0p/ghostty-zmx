@@ -43,6 +43,20 @@ _ghostty_zmx_cleanup_after_detach() {
   return 0
 }
 
+_ghostty_zmx_snapshot_history() {
+  typeset session="$1"
+  [[ -n "$session" ]] || return 0
+  mkdir -p "$GHOSTTY_ZMX_STATE_HOME/history" 2>/dev/null
+  typeset history_file="$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
+  if zmx history "$session" 2>/dev/null | tail -n "$GHOSTTY_ZMX_SCROLLBACK_LINES" > "${history_file}.tmp"; then
+    mv "${history_file}.tmp" "$history_file"
+    _ghostty_zmx_debug "scrollback snapshot session=$session file=$history_file lines=$GHOSTTY_ZMX_SCROLLBACK_LINES"
+  else
+    rm -f "${history_file}.tmp" 2>/dev/null
+    _ghostty_zmx_debug "scrollback snapshot failed session=$session"
+  fi
+}
+
 _ghostty_zmx_start_reaper() {
   typeset ghosttyPID="$1"
   [[ -n "$ghosttyPID" ]] || return 0
@@ -60,6 +74,7 @@ interval="$4"
 zeroWindowGrace="$5"
 stateHome="$6"
 debugEnabled="$7"
+scrollbackLines="$8"
 log="$dataHome/sessions"
 queue="$dataHome/restore-queue"
 firstFile="$dataHome/restore-first"
@@ -78,6 +93,26 @@ cleanup_log() {
   [[ -f "$log" && -n "$session" ]] || return 0
   grep -vxF "$session" "$log" > "${log}.tmp" 2>/dev/null || true
   mv "${log}.tmp" "$log" 2>/dev/null
+}
+
+snapshot_history() {
+  local session="$1"
+  [[ -n "$session" ]] || return 0
+  mkdir -p "$stateHome/history" 2>/dev/null
+  local historyFile="$stateHome/history/${session}.txt"
+  if zmx history "$session" 2>/dev/null | tail -n "$scrollbackLines" > "${historyFile}.tmp"; then
+    mv "${historyFile}.tmp" "$historyFile"
+    debug_log "scrollback snapshot session=$session file=$historyFile lines=$scrollbackLines"
+  else
+    rm -f "${historyFile}.tmp" 2>/dev/null
+    debug_log "scrollback snapshot failed session=$session"
+  fi
+}
+
+forget_snapshot() {
+  local session="$1"
+  rm -f "$stateHome/history/${session}.txt" 2>/dev/null
+  debug_log "scrollback snapshot deleted session=$session"
 }
 
 managed_detached_sessions() {
@@ -100,9 +135,11 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
     zeroWindowsSeen=$((zeroWindowsSeen + interval))
     if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
       managed_detached_sessions | while IFS= read -r orphan; do
+        snapshot_history "$orphan"
         debug_log "zero-window cleanup session=$orphan"
         zmx kill "$orphan" >/dev/null 2>&1
         cleanup_log "$orphan"
+        forget_snapshot "$orphan"
       done
     fi
     sleep "$interval"
@@ -124,12 +161,21 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
       [[ "$clients" == "1" ]] && attached=$((attached + 1))
     done < "$log"
   fi
-  [[ "$attached" -gt 0 ]] || { sleep "$interval"; continue; }
+  if [[ "$attached" -eq 0 ]]; then
+    managed_detached_sessions | while IFS= read -r preserved; do
+      snapshot_history "$preserved"
+      debug_log "preserving detached session=$preserved"
+    done
+    sleep "$interval"
+    continue
+  fi
 
   managed_detached_sessions | while IFS= read -r orphan; do
+    snapshot_history "$orphan"
     debug_log "detached cleanup session=$orphan attached_managed=$attached"
     zmx kill "$orphan" >/dev/null 2>&1
     cleanup_log "$orphan"
+    forget_snapshot "$orphan"
   done
   sleep "$interval"
 done
@@ -138,7 +184,7 @@ rmdir "$flag" 2>/dev/null
 rm -f "$0" 2>/dev/null
 EOS
   chmod +x "$script" 2>/dev/null
-  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" >/tmp/ghostty-zmx-reaper-${ghosttyPID}.log 2>&1 </dev/null &!
+  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" >/tmp/ghostty-zmx-reaper-${ghosttyPID}.log 2>&1 </dev/null &!
 }
 
 _ghostty_zmx_pop_restore_queue() {
