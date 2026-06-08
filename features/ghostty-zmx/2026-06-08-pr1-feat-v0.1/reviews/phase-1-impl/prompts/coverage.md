@@ -38,7 +38,7 @@ Findings must cite file:line for every block/high/medium. Include low/nit findin
 
 # Output-shape constraints
 
-Do not read other review reports. Do not make patches or commits. Do not decide convergence. Your report is input for orchestrator triage.
+Do not read other review reports. Do not make patches or commits. Do not decide phase status. Your report is input for orchestrator triage.
 
 Avoid orchestration-internal vocabulary in your report except simple local finding IDs in the report itself.
 
