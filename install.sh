@@ -34,6 +34,11 @@ confirm-close-surface = true
 
 timestamp() { date +%Y%m%d-%H%M%S; }
 
+valid_session_name() {
+  local session="$1"
+  [[ "$session" =~ '^zmx-[[:alnum:]]+-[[:alnum:]]+-[[:alnum:]]{8}$' ]]
+}
+
 backup_file() {
   local file="$1"
   [[ -f "$file" ]] || return 0
@@ -151,7 +156,14 @@ migrate_sessions() {
   if [[ -f "$new_sessions" ]]; then
     print "Existing ghostty-zmx sessions file found at $new_sessions; leaving migrated copy unchanged."
   else
-    cp "$old_sessions" "$new_sessions"
+    while IFS= read -r session; do
+      [[ -n "$session" ]] || continue
+      if valid_session_name "$session"; then
+        print -r -- "$session" >> "$new_sessions"
+      else
+        print "Skipped invalid experimental session name during migration: $session"
+      fi
+    done < "$old_sessions"
     print "Copied experimental sessions file to $new_sessions"
   fi
 }
