@@ -72,7 +72,7 @@ ghostty-zmx observes Ghostty's chosen working-directory behavior. It does not ov
 The installer migrates the experimental Ghostty+zmx setup used before this package:
 
 - removes the inline `.zshrc` block headed by `zmx session management` and ending at `# end zmx session management`,
-- removes the old experimental auto-attach env line and the exact experimental `confirm-close-surface = false` line from Ghostty config, then replaces them with the managed ghostty-zmx block,
+- removes the old experimental auto-attach env line and, when that old experimental env is present, removes the exact experimental `confirm-close-surface = false` line from Ghostty config, then replaces them with the managed ghostty-zmx block,
 - copies valid managed session names from `~/.local/share/zmx/sessions` to `~/.local/share/ghostty-zmx/sessions` when present,
 - does not migrate old queue, first-session, or id-map runtime files,
 - removes stale `/tmp/zmx-restore-*`, `/tmp/zmx-restoring-*`, and `/tmp/zmx-reaper-*` flags,

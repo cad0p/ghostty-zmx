@@ -105,14 +105,34 @@ ensure_source_line() {
 
 strip_managed_block_and_experimental_env() {
   local file="$1"
-  awk '
-    /^# BEGIN ghostty-zmx$/ { skip=1; next }
-    /^# END ghostty-zmx$/ && skip { skip=0; next }
-    skip { next }
-    /^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$/ { next }
-    /^[[:space:]]*confirm-close-surface[[:space:]]*=[[:space:]]*false[[:space:]]*$/ { next }
-    { print }
-  ' "$file" > "${file}.tmp"
+  local has_experimental_env=0
+  if grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$' "$file" 2>/dev/null; then
+    has_experimental_env=1
+  fi
+  if [[ $has_experimental_env -eq 1 ]]; then
+    awk '
+      /^# BEGIN ghostty-zmx$/ { skip=1; next }
+      /^# END ghostty-zmx$/ && skip { skip=0; next }
+      skip { next }
+      /^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$/ { next }
+      /^[[:space:]]*confirm-close-surface[[:space:]]*=[[:space:]]*false[[:space:]]*$/ { next }
+      { print }
+    ' "$file" > "${file}.tmp"
+  else
+    awk '
+      /^# BEGIN ghostty-zmx$/ { skip=1; next }
+      /^# END ghostty-zmx$/ && skip { skip=0; next }
+      skip { next }
+      /^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$/ { next }
+      { print }
+    ' "$file" > "${file}.tmp"
+  fi
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    rm -f "${file}.tmp"
+    print -u2 "Failed to prepare Ghostty config $file"
+    return 1
+  fi
   mv "${file}.tmp" "$file"
 }
 
@@ -197,7 +217,7 @@ print_plan() {
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
   print "  - migrate $canonical_old_data_home/sessions and any different XDG_DATA_HOME/zmx/sessions if present"
   print "  - remove stale experimental /tmp/zmx-* flags"
-  print "  - remove exact experimental confirm-close-surface = false settings when present"
+  print "  - remove the experimental confirm-close-surface = false setting when the old experimental env is present"
   print ""
   print "Managed Ghostty block to add:"
   print -r -- "$managed_block"

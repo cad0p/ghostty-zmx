@@ -93,6 +93,21 @@ grep -q 'window-save-state = always' "$config" || { print -u2 "conflict setting 
 grep -q 'Warning: .*window-save-state' "$workdir/install.out" || { print -u2 "conflict warning missing"; exit 1; }
 [[ "$(wc -l < "$data/sessions" | tr -d ' ')" == 1 ]] || { print -u2 "invalid migrated sessions were not filtered"; exit 1; }
 
+home_user_conflict="$workdir/home-user-conflict"
+config_user_conflict="$workdir/config-user-conflict/config.ghostty"
+data_user_conflict="$workdir/share-user-conflict/ghostty-zmx"
+mkdir -p "$home_user_conflict" "${config_user_conflict:h}" "$data_user_conflict"
+cat > "$config_user_conflict" <<'CFG'
+window-save-state = always
+confirm-close-surface = false
+quit-after-last-window-closed = true
+CFG
+run_install "$home_user_conflict" "$config_user_conflict" "$data_user_conflict" --yes > "$workdir/user-conflict-install.out"
+grep -qxF 'confirm-close-surface = false' "$config_user_conflict" || { print -u2 "user-controlled confirm-close-surface was removed"; exit 1; }
+grep -qxF 'quit-after-last-window-closed = true' "$config_user_conflict" || { print -u2 "quit-after-last-window-closed fixture was removed"; exit 1; }
+grep -q 'Warning: .*confirm-close-surface' "$workdir/user-conflict-install.out" || { print -u2 "user confirm-close-surface warning missing"; exit 1; }
+grep -q 'quit-after-last-window-closed = true is unsupported' "$workdir/user-conflict-install.out" || { print -u2 "quit-after-last-window-closed warning missing"; exit 1; }
+
 run_install "$home" "$config" "$data" --yes > /dev/null
 [[ "$(grep -cF 'session-manager.zsh' "$home/.zshrc")" == 1 ]] || { print -u2 "source line not idempotent"; exit 1; }
 [[ "$(grep -c '^# BEGIN ghostty-zmx$' "$config")" == 1 ]] || { print -u2 "managed block not idempotent"; exit 1; }
