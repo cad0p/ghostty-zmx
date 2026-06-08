@@ -3,7 +3,10 @@ set -eu
 
 repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
-trap 'rm -rf "$workdir"' EXIT
+stale_restore="/tmp/zmx-restore-ghostty-zmx-test-$$"
+stale_restoring="/tmp/zmx-restoring-ghostty-zmx-test-$$"
+stale_reaper="/tmp/zmx-reaper-ghostty-zmx-test-$$"
+trap 'rm -rf "$workdir" "$stale_restore" "$stale_restoring" "$stale_reaper"' EXIT
 
 stubbin="$workdir/bin"
 mkdir -p "$stubbin"
@@ -31,6 +34,33 @@ mkdir -p "$home_decline" "${config_decline:h}"
 printf 'n\n' | run_install "$home_decline" "$config_decline" "$data_decline" >/dev/null
 [[ ! -e "$home_decline/.config/ghostty-zmx/session-manager.zsh" ]] || { print -u2 "declined install changed files"; exit 1; }
 
+home_accept="$workdir/home-accept"
+config_accept="$workdir/config-accept/config.ghostty"
+data_accept="$workdir/data-accept/ghostty-zmx"
+mkdir -p "$home_accept" "${config_accept:h}" "$data_accept"
+printf 'y\n' | run_install "$home_accept" "$config_accept" "$data_accept" > "$workdir/interactive-install.out"
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home_accept/.zshrc" || { print -u2 "interactive install source line missing"; exit 1; }
+grep -q '^# BEGIN ghostty-zmx$' "$config_accept" || { print -u2 "interactive install managed block missing"; exit 1; }
+grep -q 'Managed Ghostty block to add:' "$workdir/interactive-install.out" || { print -u2 "interactive install plan missing managed block"; exit 1; }
+
+home_unterminated="$workdir/home-unterminated"
+config_unterminated="$workdir/config-unterminated/config.ghostty"
+data_unterminated="$workdir/data-unterminated/ghostty-zmx"
+mkdir -p "$home_unterminated" "${config_unterminated:h}"
+cat > "$home_unterminated/.zshrc" <<'ZSHRC'
+# zmx session management
+old experimental content
+ZSHRC
+if run_install "$home_unterminated" "$config_unterminated" "$data_unterminated" --yes > "$workdir/unterminated-install.out" 2>&1; then
+  print -u2 "unterminated experimental block was accepted"
+  exit 1
+fi
+grep -q 'unterminated experimental zmx block' "$workdir/unterminated-install.out" || { print -u2 "unterminated block error missing"; exit 1; }
+[[ ! -e "$home_unterminated/.config/ghostty-zmx" ]] || { print -u2 "unterminated block install wrote files"; exit 1; }
+grep -qxF '# zmx session management' "$home_unterminated/.zshrc" || { print -u2 "unterminated block fixture changed"; exit 1; }
+
+touch "$stale_restore" "$stale_restoring" "$stale_reaper"
+
 home="$workdir/home"
 config="$workdir/config/config.ghostty"
 data="$workdir/share/ghostty-zmx"
@@ -55,6 +85,7 @@ SESS
 rm -rf "$data"
 
 run_install "$home" "$config" "$data" --yes > "$workdir/install.out"
+[[ ! -e "$stale_restore" && ! -e "$stale_restoring" && ! -e "$stale_reaper" ]] || { print -u2 "stale experimental runtime flags remained"; exit 1; }
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home/.zshrc" || { print -u2 "source line missing"; exit 1; }
 ! grep -q 'env = ZMX_AUTO_ATTACH=1' "$config" || { print -u2 "old env line remained"; exit 1; }
 ! grep -q 'confirm-close-surface = false' "$config" || { print -u2 "experimental confirm-close remained"; exit 1; }
@@ -65,6 +96,17 @@ grep -q 'Warning: .*window-save-state' "$workdir/install.out" || { print -u2 "co
 run_install "$home" "$config" "$data" --yes > /dev/null
 [[ "$(grep -cF 'session-manager.zsh' "$home/.zshrc")" == 1 ]] || { print -u2 "source line not idempotent"; exit 1; }
 [[ "$(grep -c '^# BEGIN ghostty-zmx$' "$config")" == 1 ]] || { print -u2 "managed block not idempotent"; exit 1; }
+
+home_existing="$workdir/home-existing"
+config_existing="$workdir/config-existing/config.ghostty"
+data_existing="$workdir/share-existing/ghostty-zmx"
+old_data_existing="$home_existing/.local/share/zmx"
+mkdir -p "$home_existing" "${config_existing:h}" "$old_data_existing" "$data_existing"
+print -r -- zmx-existing-11112222-33334444-aaaaaaaa > "$data_existing/sessions"
+print -r -- zmx-old-55556666-77778888-bbbbbbbb > "$old_data_existing/sessions"
+run_install "$home_existing" "$config_existing" "$data_existing" --yes > /dev/null
+grep -qxF 'zmx-existing-11112222-33334444-aaaaaaaa' "$data_existing/sessions" || { print -u2 "existing sessions file was overwritten"; exit 1; }
+[[ "$(wc -l < "$data_existing/sessions" | tr -d ' ')" == 1 ]] || { print -u2 "existing sessions file gained migrated entries"; exit 1; }
 
 run_uninstall "$home" "$config" "$data" "$state" --yes > "$workdir/uninstall.out"
 [[ -d "$home/.config/ghostty-zmx" ]] || { print -u2 "--yes removed install dir"; exit 1; }

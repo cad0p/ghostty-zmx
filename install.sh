@@ -90,7 +90,7 @@ remove_experimental_zsh_block() {
 ensure_source_line() {
   local file="$1"
   touch "$file"
-  remove_experimental_zsh_block "$file" || true
+  remove_experimental_zsh_block "$file" || return 1
   if grep -qxF "$source_line" "$file" 2>/dev/null; then
     print "Source line already present in $file"
     return 0
@@ -182,6 +182,7 @@ print_plan() {
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
   print "  - migrate $old_data_home/sessions if present"
   print "  - remove stale experimental /tmp/zmx-* flags"
+  print "  - remove exact experimental confirm-close-surface = false settings when present"
   print ""
   print "Managed Ghostty block to add:"
   print -r -- "$managed_block"
@@ -197,14 +198,14 @@ require_command zsh
 print_plan
 confirm "Apply this installation plan?" || { print "Installation declined; no files changed."; exit 0; }
 
+backup_file "$zshrc"
+ensure_source_line "$zshrc" || exit 1
+
 mkdir -p "$install_dir"
 install -m 0644 "$source_manager" "$manager_dest"
 install -m 0755 "$source_uninstall" "$uninstall_dest"
 print "Installed $manager_dest"
 print "Installed $uninstall_dest"
-
-backup_file "$zshrc"
-ensure_source_line "$zshrc"
 
 backup_file "$ghostty_config"
 ensure_ghostty_block "$ghostty_config"
