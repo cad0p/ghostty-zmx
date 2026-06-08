@@ -8,6 +8,14 @@
 : ${GHOSTTY_ZMX_RESTORE_STEP_DELAY:=1}
 : ${GHOSTTY_ZMX_SCROLLBACK_LINES:=1000}
 
+_ghostty_zmx_debug() {
+  [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
+  mkdir -p "$GHOSTTY_ZMX_STATE_HOME" 2>/dev/null
+  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$GHOSTTY_ZMX_STATE_HOME/debug.log"
+}
+
+_ghostty_zmx_debug "shell init data_home=$GHOSTTY_ZMX_DATA_HOME state_home=$GHOSTTY_ZMX_STATE_HOME"
+
 _ghostty_zmx_sessions_file() {
   print -r -- "$GHOSTTY_ZMX_DATA_HOME/sessions"
 }
@@ -18,6 +26,7 @@ _ghostty_zmx_log_session() {
   mkdir -p "${log:h}" 2>/dev/null
   if [[ ! -f "$log" ]] || ! grep -qxF "$session" "$log" 2>/dev/null; then
     print -r -- "$session" >> "$log"
+    _ghostty_zmx_debug "session logged session=$session file=$log"
   fi
 }
 
@@ -27,6 +36,7 @@ _ghostty_zmx_unlog_session() {
   [[ -f "$log" && -n "$session" ]] || return 0
   grep -vxF "$session" "$log" > "${log}.tmp" 2>/dev/null || true
   mv "${log}.tmp" "$log" 2>/dev/null
+  _ghostty_zmx_debug "session unlogged session=$session file=$log"
 }
 
 _ghostty_zmx_cleanup_after_detach() {
@@ -38,6 +48,7 @@ _ghostty_zmx_start_reaper() {
   [[ -n "$ghosttyPID" ]] || return 0
   typeset flag="/tmp/ghostty-zmx-reaper-${ghosttyPID}"
   mkdir "$flag" 2>/dev/null || return 0
+  _ghostty_zmx_debug "reaper start ghostty_pid=$ghosttyPID flag=$flag"
 
   typeset script="/tmp/ghostty-zmx-reaper-${ghosttyPID}.zsh"
   cat > "$script" <<'EOS'
@@ -47,10 +58,20 @@ flag="$2"
 dataHome="$3"
 interval="$4"
 zeroWindowGrace="$5"
+stateHome="$6"
+debugEnabled="$7"
 log="$dataHome/sessions"
 queue="$dataHome/restore-queue"
 firstFile="$dataHome/restore-first"
 restoring="/tmp/ghostty-zmx-restoring-${ghosttyPID}"
+
+debug_log() {
+  [[ "$debugEnabled" == "1" ]] || return 0
+  mkdir -p "$stateHome" 2>/dev/null
+  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') reaper $*" >> "$stateHome/debug.log"
+}
+
+debug_log "started ghostty_pid=$ghosttyPID sessions_file=$log"
 
 cleanup_log() {
   local session="$1"
@@ -79,6 +100,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
     zeroWindowsSeen=$((zeroWindowsSeen + interval))
     if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
       managed_detached_sessions | while IFS= read -r orphan; do
+        debug_log "zero-window cleanup session=$orphan"
         zmx kill "$orphan" >/dev/null 2>&1
         cleanup_log "$orphan"
       done
@@ -89,6 +111,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   zeroWindowsSeen=0
 
   if [[ -f "$restoring" || -s "$queue" || -s "$firstFile" ]]; then
+    debug_log "restore active; skipping cleanup"
     sleep "$interval"
     continue
   fi
@@ -104,16 +127,18 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   [[ "$attached" -gt 0 ]] || { sleep "$interval"; continue; }
 
   managed_detached_sessions | while IFS= read -r orphan; do
+    debug_log "detached cleanup session=$orphan attached_managed=$attached"
     zmx kill "$orphan" >/dev/null 2>&1
     cleanup_log "$orphan"
   done
   sleep "$interval"
 done
+debug_log "stopped ghostty_pid=$ghosttyPID"
 rmdir "$flag" 2>/dev/null
 rm -f "$0" 2>/dev/null
 EOS
   chmod +x "$script" 2>/dev/null
-  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" >/tmp/ghostty-zmx-reaper-${ghosttyPID}.log 2>&1 </dev/null &!
+  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" >/tmp/ghostty-zmx-reaper-${ghosttyPID}.log 2>&1 </dev/null &!
 }
 
 _ghostty_zmx_pop_restore_queue() {
@@ -128,7 +153,7 @@ _ghostty_zmx_pop_restore_queue() {
       tail -n +2 "$queue" > "${queue}.tmp" 2>/dev/null
       mv "${queue}.tmp" "$queue" 2>/dev/null
       rmdir "$lockdir" 2>/dev/null
-      [[ -n "$name" ]] && print -r -- "$name" && return 0
+      [[ -n "$name" ]] && _ghostty_zmx_debug "queue pop session=$name queue=$queue" && print -r -- "$name" && return 0
       return 1
     fi
     sleep 0.1
@@ -184,6 +209,7 @@ _ghostty_zmx_apply_position_map() {
     [[ -n "$mappedWin" ]] && winHash="$mappedWin"
     [[ -n "$mappedTab" ]] && tabHash="$mappedTab"
   fi
+  _ghostty_zmx_debug "position map physical_window=$curWin physical_tab=$curTab logical_window=$winHash logical_tab=$tabHash terminal=$termHash"
   print -r -- "$winHash $tabHash $termHash"
 }
 
@@ -197,6 +223,7 @@ _ghostty_zmx_write_id_map() {
     print -r -- "T ${curWin} ${curTab} ${logicalWin} ${logicalTab}"
   } > "${map}.tmp"
   mv "${map}.tmp" "$map" 2>/dev/null
+  _ghostty_zmx_debug "id-map write physical_window=$curWin physical_tab=$curTab logical_window=$logicalWin logical_tab=$logicalTab"
 }
 
 _ghostty_zmx_record_position_map() {
@@ -221,6 +248,7 @@ _ghostty_zmx_restore() {
   done < "$log"
   typeset count=${#sessions}
   [[ $count -gt 0 ]] || return 1
+  _ghostty_zmx_debug "restore sessions loaded count=$count file=$log"
 
   typeset queue="$GHOSTTY_ZMX_DATA_HOME/restore-queue"
   typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
@@ -275,11 +303,14 @@ _ghostty_zmx_restore() {
       _layoutSessions+=("$layoutSes")
     done
   done
+  _ghostty_zmx_debug "session grouping windows=${#_winKeys} tabs=${#_keys} sessions=${#_layoutSessions}"
   print -r -- "${_layoutSessions[1]}" > "$firstFile"
+  _ghostty_zmx_debug "restore first session=${_layoutSessions[1]} file=$firstFile"
   : > "$queue"
   typeset i
   for ((i=2; i<=${#_layoutSessions}; i++)); do
     print -r -- "${_layoutSessions[$i]}" >> "$queue"
+    _ghostty_zmx_debug "queue push session=${_layoutSessions[$i]} queue=$queue"
   done
 
   typeset curWin="" curTab="" firstWindow=1 physWin="" physTab=""
@@ -311,6 +342,7 @@ SCRIPT
         physWin=$(print -r -- "$created" | awk '{print $1}')
         physTab=$(print -r -- "$created" | awk '{print $2}')
         _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+        _ghostty_zmx_debug "AppleScript new-window logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
         sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
       fi
       curWin="$winHex"
@@ -333,6 +365,7 @@ SCRIPT
         physWin=$(print -r -- "$created" | awk '{print $1}')
         physTab=$(print -r -- "$created" | awk '{print $2}')
         _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+        _ghostty_zmx_debug "AppleScript new-tab logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
         sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
       fi
       curTab="$tabHex"
@@ -349,11 +382,13 @@ tell application "Ghostty"
     split t direction ${d} with configuration cfg
 end tell
 SCRIPT
+      _ghostty_zmx_debug "AppleScript split logical_window=$winHex logical_tab=$tabHex pane_index=$p direction=$d delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
       sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
     done
   done
   if [[ -n "$ghosttyPID" ]]; then
     ( sleep 5; rm -f "/tmp/ghostty-zmx-restoring-${ghosttyPID}" 2>/dev/null ) &!
+    _ghostty_zmx_debug "restore flag cleanup scheduled ghostty_pid=$ghosttyPID"
   fi
   return 0
 }
@@ -378,19 +413,21 @@ if [[ -o interactive ]] \
       p=$(ps -o ppid= -p $p 2>/dev/null | tr -d ' ')
     done
     if [[ -n "$ghosttyPID" ]] && osascript -e 'tell application "Ghostty" to get version' >/dev/null 2>&1; then
+      _ghostty_zmx_debug "Ghostty PID detected ghostty_pid=$ghosttyPID attempt=$attempt"
       asReady=1
       break
     fi
     ghosttyPID=""
     sleep 0.5
   done
-  [[ "$asReady" -eq 0 ]] && return 0
+  [[ "$asReady" -eq 0 ]] && { _ghostty_zmx_debug "Ghostty PID detection failed"; return 0; }
 
   typeset restoreFlag="/tmp/ghostty-zmx-restore-${ghosttyPID}"
   SESSION_NAME=""
   typeset sessionFromRestore=0
   if [[ -n "$ghosttyPID" ]] && [[ ! -f "$restoreFlag" ]]; then
     touch "$restoreFlag" 2>/dev/null
+    _ghostty_zmx_debug "restore-driver elected ghostty_pid=$ghosttyPID flag=$restoreFlag"
     _ghostty_zmx_restore
     typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
     if [[ -s "$firstFile" ]]; then
@@ -418,7 +455,10 @@ if [[ -o interactive ]] \
     [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$SESSION_NAME" "$(_ghostty_zmx_current_position)"
     _ghostty_zmx_log_session "$SESSION_NAME"
     _ghostty_zmx_start_reaper "$ghosttyPID"
-    zmx attach "$SESSION_NAME"
+    _ghostty_zmx_debug "attach session=$SESSION_NAME from_restore=$sessionFromRestore"
+    if ! zmx attach "$SESSION_NAME"; then
+      _ghostty_zmx_debug "zmx attach failed session=$SESSION_NAME status=$?"
+    fi
     _ghostty_zmx_cleanup_after_detach "$SESSION_NAME"
   fi
 fi
