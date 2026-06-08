@@ -58,6 +58,20 @@ _ghostty_zmx_runtime_path() {
   print -r -- "$dir/$name"
 }
 
+_ghostty_zmx_ghostty_elapsed_seconds() {
+  typeset pid="$1" elapsed days hours minutes seconds
+  elapsed="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+  [[ -n "$elapsed" ]] || return 1
+  days=0
+  if [[ "$elapsed" == *-* ]]; then
+    days="${elapsed%%-*}"
+    elapsed="${elapsed#*-}"
+  fi
+  IFS=':' read -r hours minutes seconds <<< "$elapsed"
+  [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
+  print -r -- $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
+}
+
 _ghostty_zmx_debug() {
   [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
   mkdir -p "$GHOSTTY_ZMX_STATE_HOME" 2>/dev/null
@@ -162,6 +176,8 @@ _ghostty_zmx_start_reaper() {
 
   typeset script="$runtime_dir/reaper-${ghosttyPID}.zsh"
   typeset reaper_log="$runtime_dir/reaper-${ghosttyPID}.log"
+  typeset ghosttyElapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghosttyPID")"
+  [[ -n "$ghosttyElapsed" ]] || ghosttyElapsed=0
   set -o noclobber
   { print '#!/bin/zsh' > "$script"; } 2>/dev/null || { set +o noclobber; rmdir "$flag" 2>/dev/null; return 0; }
   set +o noclobber
@@ -177,6 +193,7 @@ debugEnabled="$7"
 scrollbackLines="$8"
 reaperStartupDelay="$9"
 runtimeDir="${10}"
+ghosttyElapsed="${11}"
 log="$dataHome/sessions"
 queue="$dataHome/restore-queue"
 firstFile="$dataHome/restore-first"
@@ -197,6 +214,19 @@ debug_log() {
   [[ "$debugEnabled" == "1" ]] || return 0
   mkdir -p "$stateHome" 2>/dev/null
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') reaper $*" >> "$stateHome/debug.log"
+}
+
+elapsed_seconds() {
+  local elapsed="$1" days=0 hours minutes seconds
+  elapsed="$(ps -o etime= -p "$ghosttyPID" 2>/dev/null | tr -d ' ')" || return 1
+  [[ -n "$elapsed" ]] || return 1
+  if [[ "$elapsed" == *-* ]]; then
+    days="${elapsed%%-*}"
+    elapsed="${elapsed#*-}"
+  fi
+  IFS=':' read -r hours minutes seconds <<< "$elapsed"
+  [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
+  print $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
 }
 
 debug_log "started ghostty_pid=$ghosttyPID sessions_file=$log"
@@ -299,6 +329,19 @@ sleep "$reaperStartupDelay"
 zeroWindowsSeen=0
 typeset -A detachedSeen
 while kill -0 "$ghosttyPID" 2>/dev/null; do
+  typeset currentElapsed
+  currentElapsed="$(elapsed_seconds "$ghosttyPID")"
+  if [[ -n "$currentElapsed" && "$currentElapsed" -lt "$ghosttyElapsed" ]]; then
+    snapshot_existing_sessions "ghostty-pid-reuse"
+    debug_log "stopped ghostty_pid=$ghosttyPID reason=pid-reuse"
+    break
+  fi
+  if [[ -z "$currentElapsed" ]]; then
+    snapshot_existing_sessions "ghostty-exit"
+    debug_log "stopped ghostty_pid=$ghosttyPID reason=elapsed-check-failed"
+    break
+  fi
+
   windows=$(osascript -e 'tell application "Ghostty" to count of windows' 2>/dev/null)
   [[ "$windows" =~ '^[0-9]+$' ]] || break
 
@@ -357,7 +400,7 @@ rmdir "$flag" 2>/dev/null
 rm -f "$0" 2>/dev/null
 EOS
   chmod +x "$script" 2>/dev/null
-  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" >"$reaper_log" 2>&1 </dev/null &!
+  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" >"$reaper_log" 2>&1 </dev/null &!
 }
 
 _ghostty_zmx_pop_restore_queue() {
