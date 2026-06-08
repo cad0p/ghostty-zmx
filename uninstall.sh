@@ -3,11 +3,17 @@ set -u
 setopt NULL_GLOB
 
 YES=0
+REMOVE_INSTALL_DIR=0
+REMOVE_DATA=0
+REMOVE_STATE=0
 for arg in "$@"; do
   case "$arg" in
     --yes|-y) YES=1 ;;
+    --remove-install-dir) REMOVE_INSTALL_DIR=1 ;;
+    --remove-data) REMOVE_DATA=1 ;;
+    --remove-state) REMOVE_STATE=1 ;;
     --help|-h)
-      print "Usage: uninstall.sh [--yes]"
+      print "Usage: uninstall.sh [--yes] [--remove-install-dir] [--remove-data] [--remove-state]"
       exit 0
       ;;
     *) print -u2 "Unknown argument: $arg"; exit 2 ;;
@@ -38,6 +44,26 @@ confirm() {
   local reply
   read -r reply
   [[ "$reply" == [Yy] || "$reply" == [Yy][Ee][Ss] ]]
+}
+
+safe_remove_tree() {
+  local target="$1"
+  local label="$2"
+  local resolved parent base
+  [[ -n "$target" && -d "$target" ]] || return 0
+  resolved="${target:A}"
+  parent="${resolved:h}"
+  base="${resolved:t}"
+  if [[ "$base" != "ghostty-zmx" || "$resolved" == "/" || "$resolved" == "$HOME" || "$parent" == "/" ]]; then
+    print -u2 "Refusing to delete unsafe $label path: $target"
+    return 1
+  fi
+  if [[ ! -O "$resolved" ]]; then
+    print -u2 "Refusing to delete $label path not owned by current user: $target"
+    return 1
+  fi
+  rm -rf "$resolved"
+  print "Deleted $resolved"
 }
 
 remove_source_line() {
@@ -76,25 +102,22 @@ fi
 command rm -rf /tmp/ghostty-zmx-restore-* /tmp/ghostty-zmx-restoring-* /tmp/ghostty-zmx-reaper-* /tmp/ghostty-zmx-reaper-*.zsh /tmp/ghostty-zmx-reaper-*.log 2>/dev/null || true
 print "Removed generated ghostty-zmx runtime files under /tmp."
 
-if confirm "Remove installed files under $install_dir?"; then
-  rm -rf "$install_dir"
-  print "Removed $install_dir"
+if [[ "$REMOVE_INSTALL_DIR" -eq 1 ]]; then
+  safe_remove_tree "$install_dir" "install" || exit 1
 else
-  print "Left $install_dir in place."
+  print "Left $install_dir in place. Pass --remove-install-dir to delete it."
 fi
 
-if [[ -d "$data_home" ]] && confirm "Delete data directory $data_home? This removes the managed sessions list."; then
-  rm -rf "$data_home"
-  print "Deleted $data_home"
+if [[ "$REMOVE_DATA" -eq 1 ]]; then
+  safe_remove_tree "$data_home" "data" || exit 1
 else
-  print "Left data directory in place."
+  print "Left data directory in place. Pass --remove-data to delete it."
 fi
 
-if [[ -d "$state_home" ]] && confirm "Delete state directory $state_home? This removes debug logs and saved scrollback snapshots."; then
-  rm -rf "$state_home"
-  print "Deleted $state_home"
+if [[ "$REMOVE_STATE" -eq 1 ]]; then
+  safe_remove_tree "$state_home" "state" || exit 1
 else
-  print "Left state directory in place."
+  print "Left state directory in place. Pass --remove-state to delete it."
 fi
 
 print "ghostty-zmx uninstall complete."

@@ -110,6 +110,7 @@ strip_managed_block_and_experimental_env() {
     /^# END ghostty-zmx$/ && skip { skip=0; next }
     skip { next }
     /^[[:space:]]*env[[:space:]]*=[[:space:]]*ZMX_AUTO_ATTACH=1[[:space:]]*$/ { next }
+    /^[[:space:]]*confirm-close-surface[[:space:]]*=[[:space:]]*false[[:space:]]*$/ { next }
     { print }
   ' "$file" > "${file}.tmp"
   mv "${file}.tmp" "$file"

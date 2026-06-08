@@ -72,8 +72,8 @@ ghostty-zmx observes Ghostty's chosen working-directory behavior. It does not ov
 The installer migrates the experimental Ghostty+zmx setup used before this package:
 
 - removes the inline `.zshrc` block headed by `zmx session management` and ending at `# end zmx session management`,
-- removes the old experimental auto-attach env line from Ghostty config and replaces it with the managed ghostty-zmx block,
-- copies `~/.local/share/zmx/sessions` to `~/.local/share/ghostty-zmx/sessions` when present,
+- removes the old experimental auto-attach env line and the exact experimental `confirm-close-surface = false` line from Ghostty config, then replaces them with the managed ghostty-zmx block,
+- copies valid managed session names from `~/.local/share/zmx/sessions` to `~/.local/share/ghostty-zmx/sessions` when present,
 - does not migrate old queue, first-session, or id-map runtime files,
 - removes stale `/tmp/zmx-restore-*`, `/tmp/zmx-restoring-*`, and `/tmp/zmx-reaper-*` flags,
 - preserves live zmx sessions.
@@ -104,6 +104,8 @@ GHOSTTY_ZMX_ZERO_WINDOWS_GRACE=6
 GHOSTTY_ZMX_RESTORE_STEP_DELAY=1
 GHOSTTY_ZMX_SCROLLBACK_LINES=1000
 ```
+
+Advanced installer/uninstaller test harnesses may set `GHOSTTY_ZMX_GHOSTTY_CONFIG` to point at a temporary Ghostty config file. Normal users should leave it unset so the scripts edit Ghostty's default config path.
 
 Data files:
 
@@ -163,7 +165,13 @@ or non-interactively:
 ~/.config/ghostty-zmx/uninstall.sh --yes
 ```
 
-Uninstall removes the `.zshrc` source line, optionally removes the managed Ghostty block, removes generated `/tmp/ghostty-zmx-*` runtime files, and leaves zmx sessions alive by default. It asks before deleting data or state directories.
+Uninstall removes the `.zshrc` source line, optionally removes the managed Ghostty block, removes generated runtime files, and leaves zmx sessions alive by default. `--yes` is non-interactive but still preserves installed files, data, and state unless explicit destructive flags are provided:
+
+```sh
+~/.config/ghostty-zmx/uninstall.sh --yes --remove-install-dir --remove-data --remove-state
+```
+
+Deletion flags refuse unsafe targets such as `$HOME`, `/`, parent directories, paths not owned by the current user, or paths whose final component is not `ghostty-zmx`.
 
 ## Release control
 
