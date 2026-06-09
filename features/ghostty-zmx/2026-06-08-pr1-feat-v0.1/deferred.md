@@ -22,7 +22,7 @@ None.
 | R3-CLEAN-C1 | medium | `reviews/phase-1-impl/r3-cumulative-cleanness.md` | Sourced manager exposes a broad private helper surface. | Helpers are prefixed private implementation details; removing them requires a larger testability refactor. | Maintainer / v0.2 |
 | R3-CLEAN-C2 | medium | `reviews/phase-1-impl/r3-cumulative-cleanness.md` | Generated reaper duplicates core logic and uses unprefixed names. | Standalone reaper is generated to survive terminal/window close; centralizing it is a larger refactor. | Maintainer / v0.2 |
 | R3-CLEAN-C5 | medium | `reviews/phase-1-impl/r3-cumulative-cleanness.md` | Restore/layout logic is intermixed and has a nested helper seam. | v0.1 keeps the serial restore algorithm in one auditable path; helper extraction can be revisited after manual E2E stabilizes behavior. | Maintainer / v0.2 |
-| R3-CLEAN-C6 | low | `reviews/phase-1-impl/r3-cumulative-cleanness.md` | Noisey `env =` conflict warnings for unrelated settings. | Installer now warns only on auto-attach env conflicts; broader env warning cleanup is not needed for v0.1. | Maintainer / v0.2 |
+| R3-CLEAN-C6 | low | `reviews/phase-1-impl/r3-cumulative-cleanness.md` | Noisy `env =` conflict warnings for unrelated settings. | Installer now warns only on auto-attach env conflicts; broader env warning cleanup is not needed for v0.1. | Maintainer / v0.2 |
 
 ## Declined — wrong, non-applicable, or out-of-scope, with rationale citing contradicting evidence
 
