@@ -354,7 +354,7 @@ managed_detached_sessions() {
 }
 
 managed_existing_sessions() {
-  managed_sessions_from_log | while IFS= read -r managed; do
+  while IFS= read -r managed; do
     local listFile="$runtimeDir/list.short.${managed}.$$"
     if ! zmx list --short > "$listFile" 2>/dev/null; then
       rm -f "$listFile" 2>/dev/null
@@ -365,14 +365,14 @@ managed_existing_sessions() {
       print -r -- "$managed"
     fi
     rm -f "$listFile" 2>/dev/null
-  done
+  done < <(managed_sessions_from_log)
 }
 
 snapshot_existing_sessions() {
-  managed_existing_sessions | while IFS= read -r preserved; do
+  while IFS= read -r preserved; do
     snapshot_history "$preserved"
     debug_log "preserving session=$preserved reason=$1"
-  done
+  done < <(managed_existing_sessions)
 }
 
 sleep "$reaperStartupDelay"
@@ -398,13 +398,13 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   if [[ "$windows" -eq 0 ]]; then
     zeroWindowsSeen=$((zeroWindowsSeen + interval))
     if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
-      managed_detached_sessions | while IFS= read -r orphan; do
+      while IFS= read -r orphan; do
         snapshot_history "$orphan"
         debug_log "zero-window cleanup session=$orphan"
         zmx kill "$orphan" >/dev/null 2>&1
         cleanup_log "$orphan"
         forget_snapshot "$orphan"
-      done
+      done < <(managed_detached_sessions)
     fi
     sleep "$interval"
     continue
@@ -418,17 +418,17 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   fi
 
   attached=0
-  managed_sessions_from_log | while IFS= read -r managed; do
+  while IFS= read -r managed; do
     clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
     [[ "$clients" == "1" ]] && attached=$((attached + 1))
-  done
+  done < <(managed_sessions_from_log)
   if [[ "$attached" -eq 0 ]]; then
     snapshot_existing_sessions "all-detached"
     sleep "$interval"
     continue
   fi
 
-  managed_detached_sessions | while IFS= read -r orphan; do
+  while IFS= read -r orphan; do
     detachedSeen[$orphan]=$(( ${detachedSeen[$orphan]:-0} + interval ))
     if [[ "${detachedSeen[$orphan]}" -lt "$zeroWindowGrace" ]]; then
       snapshot_history "$orphan"
@@ -441,7 +441,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
     cleanup_log "$orphan"
     forget_snapshot "$orphan"
     unset "detachedSeen[$orphan]"
-  done
+  done < <(managed_detached_sessions)
   sleep "$interval"
 done
 snapshot_existing_sessions "ghostty-exit"
@@ -487,15 +487,12 @@ tell application "Ghostty"
   set fw to front window
   set winUID to id of fw
   set uidStr to winUID as string
-  set winHash to hex_suffix(uidStr)
   set tabObj to selected tab of fw
   set tabUID to id of tabObj
   set tabStr to tabUID as string
-  set tabHash to hex_suffix(tabStr)
   set termUID to id of (focused terminal of tabObj)
   set termStr to termUID as string
-  set termHash to terminal_hash(termStr)
-  return winHash & " " & tabHash & " " & termHash
+  return uidStr & " " & tabStr & " " & termStr
 end tell
 EOF
 )" || return 1
@@ -664,11 +661,9 @@ tell application "Ghostty"
     set tb to selected tab of w
     set winStr to id of w as string
     set tabStr to id of tb as string
-    set winHash to hex_suffix(winStr)
-    set tabHash to hex_suffix(tabStr)
     set index of w to 1
     set selected tab of w to tb
-    return winHash & " " & tabHash
+    return winStr & " " & tabStr
 end tell
 SCRIPT
 )")" || {
@@ -698,8 +693,7 @@ tell application "Ghostty"
     set targetWindow to missing value
     repeat with w in windows
       set winStr to id of w as string
-      set winHash to hex_suffix(winStr)
-      if winHash is "$physWin" then
+      if winStr is "$physWin" then
         set targetWindow to w
         exit repeat
       end if
@@ -711,9 +705,7 @@ tell application "Ghostty"
     set selected tab of targetWindow to tb
     set winStr to id of targetWindow as string
     set tabStr to id of tb as string
-    set winHash to hex_suffix(winStr)
-    set tabHash to hex_suffix(tabStr)
-    return winHash & " " & tabHash
+    return winStr & " " & tabStr
 end tell
 SCRIPT
 )")" || {
@@ -744,8 +736,7 @@ SCRIPT
     set targetWindow to missing value
     repeat with w in windows
       set winStr to id of w as string
-      set winHash to hex_suffix(winStr)
-      if winHash is "$physWin" then
+      if winStr is "$physWin" then
         set targetWindow to w
         exit repeat
       end if
@@ -754,8 +745,7 @@ SCRIPT
     set targetTab to missing value
     repeat with tb in tabs of targetWindow
       set tabStr to id of tb as string
-      set tabHash to hex_suffix(tabStr)
-      if tabHash is "$physTab" then
+      if tabStr is "$physTab" then
         set targetTab to tb
         exit repeat
       end if
