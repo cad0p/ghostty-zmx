@@ -3,13 +3,7 @@ set -eu
 
 repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
-legacy_tmp="$workdir/legacy-tmp"
-mkdir -p "$legacy_tmp"
-export TMPDIR="$legacy_tmp"
-stale_restore="$legacy_tmp/zmx-restore-ghostty-zmx-test-$$"
-stale_restoring="$legacy_tmp/zmx-restoring-ghostty-zmx-test-$$"
-stale_reaper="$legacy_tmp/zmx-reaper-ghostty-zmx-test-$$"
-trap 'rm -rf "$workdir" "$stale_restore" "$stale_restoring" "$stale_reaper"' EXIT
+trap 'rm -rf "$workdir"' EXIT
 
 stubbin="$workdir/bin"
 mkdir -p "$stubbin"
@@ -23,11 +17,11 @@ done
 export PATH="$stubbin:$PATH"
 
 run_install() {
-  HOME="$1" GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG="$2" GHOSTTY_ZMX_DATA_HOME="$3" "$repo_dir/install.sh" "${@:4}"
+  HOME="$1" GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG="$2" GHOSTTY_ZMX_DATA_HOME="$3" "$repo_dir/install.sh" "${@:4}"
 }
 
 run_uninstall() {
-  HOME="$1" GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG="$2" GHOSTTY_ZMX_DATA_HOME="$3" GHOSTTY_ZMX_STATE_HOME="$4" "$repo_dir/uninstall.sh" "${@:5}"
+  HOME="$1" GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG="$2" GHOSTTY_ZMX_DATA_HOME="$3" GHOSTTY_ZMX_STATE_HOME="$4" "$repo_dir/uninstall.sh" "${@:5}"
 }
 
 home_decline="$workdir/home-decline"
@@ -66,13 +60,6 @@ fi
 grep -q 'Refusing to install into symlinked install directory' "$workdir/symlink-install.out" || { print -u2 "symlinked install directory refusal missing"; exit 1; }
 [[ ! -e "$install_target/session-manager.zsh" ]] || { print -u2 "symlinked install target was written"; exit 1; }
 
-touch "$stale_restore" "$stale_restoring" "$stale_reaper"
-stale_decoy="$legacy_tmp/zmx-restore-decoy-$$"
-stale_symlink="$legacy_tmp/zmx-reaper-symlink-$$"
-mkdir -p "$stale_decoy"
-touch "$stale_decoy/nested"
-ln -s "$stale_decoy" "$stale_symlink"
-
 home="$workdir/home"
 config="$workdir/config/config.ghostty"
 data="$workdir/share/ghostty-zmx"
@@ -86,10 +73,6 @@ quit-after-last-window-closed = true
 CFG
 
 run_install "$home" "$config" "$data" --yes > "$workdir/install.out"
-[[ ! -e "$stale_restore" && ! -e "$stale_restoring" && ! -e "$stale_reaper" ]] || { print -u2 "stale experimental runtime flags remained"; exit 1; }
-[[ -e "$stale_decoy/nested" ]] || { print -u2 "stale runtime decoy was removed"; exit 1; }
-[[ -L "$stale_symlink" ]] || { print -u2 "stale runtime symlink was removed"; exit 1; }
-grep -q 'Skipped stale experimental runtime symlink' "$workdir/install.out" || { print -u2 "stale runtime symlink skip message missing"; exit 1; }
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home/.zshrc" || { print -u2 "source line missing"; exit 1; }
 grep -qxF 'env = GHOSTTY_ZMX_AUTO_ATTACH=1' "$config" || { print -u2 "user auto-attach env was removed"; exit 1; }
 grep -qxF 'confirm-close-surface = false' "$config" || { print -u2 "user confirm-close-surface was removed"; exit 1; }
@@ -216,3 +199,4 @@ if run_uninstall "$unsafe_home" "$workdir/unsafe-config" "$unsafe_home" "$workdi
   print -u2 "unsafe data deletion was allowed"
   exit 1
 fi
+

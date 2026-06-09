@@ -49,11 +49,14 @@ print -r -- zmx-other > "$ZMX_EXISTS_FILE"
 export ZMX_RUN_LOG="$workdir/run.log"
 export ZMX_PRINT_LOG="$workdir/print.log"
 
+export GHOSTTY_ZMX_KEEP_HELPERS=1
+
 source "$repo_dir/session-manager.zsh"
 
 [[ "$GHOSTTY_ZMX_SCROLLBACK_LINES" == 3 ]] || { print -u2 "scrollback limit was not preserved"; exit 1; }
 GHOSTTY_ZMX_SCROLLBACK_LINES=bad
 GHOSTTY_ZMX_DEBUG=1
+export GHOSTTY_ZMX_KEEP_HELPERS=1
 source "$repo_dir/session-manager.zsh"
 [[ "$GHOSTTY_ZMX_SCROLLBACK_LINES" == 1000 ]] || { print -u2 "invalid scrollback limit did not default"; exit 1; }
 grep -q 'invalid scrollback line count value=bad defaulting=1000' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 "missing invalid scrollback fallback log"; exit 1; }

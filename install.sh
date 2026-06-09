@@ -21,8 +21,7 @@ install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
 uninstall_dest="$install_dir/uninstall.sh"
 zshrc="$HOME/.zshrc"
-ghostty_config="${GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
-data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
+ghostty_config="${GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
 backup_counter=0
 managed_block='# BEGIN ghostty-zmx
@@ -130,31 +129,6 @@ ensure_ghostty_block() {
   print "Updated managed ghostty-zmx block in $file"
 }
 
-clean_old_runtime_flags() {
-  local root="${TMPDIR:-/tmp}"
-  local name base
-  for name in "$root"/zmx-restore-* "$root"/zmx-restoring-* "$root"/zmx-reaper-*; do
-    [[ -e "$name" || -L "$name" ]] || continue
-    base="${name:t}"
-    if [[ -L "$name" ]]; then
-      print "Skipped stale experimental runtime symlink: $name"
-      continue
-    fi
-    if [[ ! -O "$name" ]]; then
-      print "Skipped stale experimental runtime path not owned by current user: $name"
-      continue
-    fi
-    if [[ -d "$name" ]]; then
-      rmdir "$name" 2>/dev/null || print "Skipped stale experimental runtime directory: $name"
-    elif [[ -f "$name" ]]; then
-      rm -f "$name" 2>/dev/null || print "Failed to remove stale experimental runtime path: $name"
-    else
-      print "Skipped stale experimental runtime path: $name"
-    fi
-  done
-  print "Removed or skipped stale experimental /tmp/zmx-* runtime flags."
-}
-
 print_plan() {
   print "ghostty-zmx installer will:"
   print "  - verify zmx, osascript, and zsh"
@@ -162,7 +136,6 @@ print_plan() {
   print "  - update $zshrc with one guarded source line"
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
   print "  - warn about unsupported or conflicting Ghostty settings outside the managed section"
-  print "  - remove stale experimental /tmp/zmx-* runtime flags"
   print ""
   print "Managed Ghostty block to add:"
   print -r -- "$managed_block"
@@ -190,8 +163,6 @@ print "Installed $uninstall_dest"
 
 backup_file "$ghostty_config"
 ensure_ghostty_block "$ghostty_config"
-
-clean_old_runtime_flags
 
 print ""
 print "ghostty-zmx installation complete. Restart Ghostty or open a new Ghostty window to start managed sessions."

@@ -44,6 +44,8 @@ zmx-11111111-33333333-bbbbbbbb
 zmx-44444444-22222222-cccccccc
 SESS
 
+export GHOSTTY_ZMX_KEEP_HELPERS=1
+
 source "$repo_dir/session-manager.zsh"
 ghosttyPID=123
 _ghostty_zmx_restore

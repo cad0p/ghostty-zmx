@@ -247,6 +247,8 @@ on terminal_hash(idText)
   return suffix
 end terminal_hash
 
+# The generated reaper is standalone because it is executed by nohup after the
+# attaching shell may have exited. Keep its helpers private and mirrored here.
 valid_session_name() {
   local session="$1"
   [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
@@ -857,4 +859,6 @@ _ghostty_zmx_auto_attach() {
 }
 
 _ghostty_zmx_auto_attach
-unfunction _ghostty_zmx_auto_attach 2>/dev/null || unset -f _ghostty_zmx_auto_attach 2>/dev/null || true
+if [[ "${GHOSTTY_ZMX_KEEP_HELPERS:-0}" != "1" ]]; then
+  unfunction -m '_ghostty_zmx_*' 2>/dev/null || true
+fi
