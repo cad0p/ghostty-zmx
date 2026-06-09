@@ -137,9 +137,21 @@ remove_source_line() {
   print "Removed ghostty-zmx source line from $file"
 }
 
+validate_managed_block_pairs() {
+  local file="$1" begins ends
+  [[ -f "$file" ]] || return 0
+  begins=$(awk '/^# BEGIN ghostty-zmx$/ { count++ } END { print count + 0 }' "$file") || return 1
+  ends=$(awk '/^# END ghostty-zmx$/ { count++ } END { print count + 0 }' "$file") || return 1
+  if [[ "$begins" -ne "$ends" ]]; then
+    print -u2 "Refusing to edit $file: managed ghostty-zmx block is malformed (BEGIN count: $begins, END count: $ends)."
+    return 1
+  fi
+}
+
 remove_ghostty_block() {
   local file="$1"
   [[ -f "$file" ]] || return 0
+  validate_managed_block_pairs "$file" || return 1
   awk '
     /^# BEGIN ghostty-zmx$/ { skip=1; next }
     /^# END ghostty-zmx$/ && skip { skip=0; next }

@@ -96,6 +96,17 @@ strip_managed_block() {
   mv "${file}.tmp" "$file"
 }
 
+validate_managed_block_pairs() {
+  local file="$1" begins ends
+  [[ -f "$file" ]] || return 0
+  begins=$(awk '/^# BEGIN ghostty-zmx$/ { count++ } END { print count + 0 }' "$file") || return 1
+  ends=$(awk '/^# END ghostty-zmx$/ { count++ } END { print count + 0 }' "$file") || return 1
+  if [[ "$begins" -ne "$ends" ]]; then
+    print -u2 "Refusing to edit $file: managed ghostty-zmx block is malformed (BEGIN count: $begins, END count: $ends)."
+    return 1
+  fi
+}
+
 warn_ghostty_conflicts() {
   local file="$1"
   local warned=0
@@ -120,6 +131,7 @@ ensure_ghostty_block() {
   local file="$1"
   mkdir -p "${file:h}" || return 1
   touch "$file" || return 1
+  validate_managed_block_pairs "$file" || return 1
   strip_managed_block "$file" || return 1
   warn_ghostty_conflicts "$file" || true
   {
@@ -156,6 +168,10 @@ backup_file "$zshrc"
 ensure_source_line "$zshrc" || exit 1
 
 mkdir -p "$install_dir"
+if [[ -L "$install_dir" ]]; then
+  print -u2 "Refusing to install into symlinked install directory: $install_dir"
+  exit 1
+fi
 install -m 0644 "$source_manager" "$manager_dest"
 install -m 0755 "$source_uninstall" "$uninstall_dest"
 print "Installed $manager_dest"
