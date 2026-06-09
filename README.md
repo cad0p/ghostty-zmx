@@ -98,19 +98,9 @@ GHOSTTY_ZMX_RESTORE_STEP_DELAY=1
 GHOSTTY_ZMX_SCROLLBACK_LINES=1000
 ```
 
-Advanced installer/uninstaller test harnesses may set `GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG` to point at a temporary Ghostty config file. Normal users should leave it unset so the scripts edit Ghostty's default config path.
+Advanced installer/uninstaller test harnesses may set `GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG` to point at a temporary Ghostty config file. Normal users should leave it unset so the scripts edit Ghostty's default config path.
 
-Runtime files are internal implementation state, not a public API:
-
-```text
-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID}/
-  restore-${ghostty_pid}.lock
-  restoring-${ghostty_pid}.lock
-  reaper-${ghostty_pid}.zsh
-  reaper-${ghostty_pid}.log
-```
-
-The runtime directory is created with mode `0700` for the current user. The reaper removes its script and lock on normal shutdown, and uninstall removes the current per-user runtime directory only when it is the expected owned `ghostty-zmx-${UID}` directory and not a symlink.
+Runtime files are internal implementation state, not a public API. They live under the per-user runtime directory and are cleaned up by the reaper on normal shutdown and by uninstall when explicitly requested.
 
 The sourced manager defines private `_ghostty_zmx_*` helpers during startup. They are implementation details and are not stable APIs; installers should add only the guarded source line shown above to `.zshrc`.
 
