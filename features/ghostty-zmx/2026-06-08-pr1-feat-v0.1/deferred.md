@@ -32,6 +32,10 @@ None.
 | R4-COV-6 | low | `reviews/phase-1-impl/r4-cumulative-coverage.md` | Release-control validation is shallow. | Current smoke test checks package metadata, workflow action, permissions, branch trigger, and deferred package-version docs; full YAML schema validation can be added when CI tooling is established. | Maintainer / v0.2 |
 | R4-SA-03 | medium | `reviews/phase-1-impl/r4-cumulative-security-adversarial.md` | User-controlled XDG/TMP roots can redirect runtime, state, and map files. | v0.1 intentionally uses XDG/TMP-derived per-user paths and validates the runtime directory; broader root hardening is a larger refactor. | Maintainer / v0.2 |
 | R4-SA-07 | low | `reviews/phase-1-impl/r4-cumulative-security-adversarial.md` | Debug log path metadata is user-controlled and state dir permissions are not hardened. | Debug logging is opt-in and records metadata, not terminal history content. State-dir hardening can be added if users run with hostile shared XDG paths. | Maintainer / v0.2 |
+| R2-E2E-ADV-1 | medium | `reviews/phase-2-e2e/r2-adversarial.md` | Reboot scrollback path can log successful restore after `zmx run` failure. | Live E2E proves the success path; failure-path hardening can re-check session existence before `zmx print` in v0.2. | Maintainer / v0.2 |
+| R2-E2E-ADV-2 | medium | `reviews/phase-2-e2e/r2-adversarial.md` | Stale restore-in-progress flag can suppress cleanup if the restore driver is killed mid-restore. | Live E2E passed; add TTL/self-expiring restore flags in v0.2 for crash resilience. | Maintainer / v0.2 |
+| R2-E2E-ADV-3 | low | `reviews/phase-2-e2e/r2-adversarial.md` | Session log updates are not serialized between attach and reaper cleanup. | No live race observed; shared locking around all `sessions` mutations can be added in v0.2. | Maintainer / v0.2 |
+| R2-E2E-ADV-4 | low | `reviews/phase-2-e2e/r2-adversarial.md` | Reaper depends on current tabular `zmx list` field ordering. | Tested zmx 0.6.x output matches parser; key-based parsing can be added in v0.2 if zmx CLI shape changes. | Maintainer / v0.2 |
 
 ## Declined — wrong, non-applicable, or out-of-scope, with rationale citing contradicting evidence
 
@@ -100,3 +104,4 @@ None yet.
 - A cumulative review was run after the second fixer pass; accepted medium/high findings were fixed, and migration-specific findings were reclassified after maintainer clarification that v0.1 should not contain production migration code.
 - A fresh r4 review caught real high-severity correctness regressions in AppleScript handler scope and zsh pipeline subshell state handling; both were fixed before tracker reconciliation.
 - Phase 2 E2E required supervised live Ghostty runs with byte-for-byte config/install restoration. Harness failures were separated from implementation failures; implementation fixes landed for restore re-election and reaper elapsed parsing before all eight E2E scenarios passed.
+- Phase 2 adversarial review found no fix-now blockers after the passing supervised run; four hardening items were deferred to v0.2 with owner/deadline.
