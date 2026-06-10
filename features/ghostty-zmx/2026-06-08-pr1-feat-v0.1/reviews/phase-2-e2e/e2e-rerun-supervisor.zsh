@@ -289,7 +289,7 @@ else scenario_result cmd-q-does-not-clean FAIL "could not start fresh Ghostty"; 
 
 section "Scenario 7 Reboot scrollback simulation"
 if start_fresh; then
-  rb_s=$(read_sessions | tail -n 1); rb_marker="${RUN_ID}-rb"
+  rb_s=$(read_sessions | tail -n 1); rb_marker="rb${$}"
   print_marker "$rb_s" "$rb_marker" || true
   quit_ghostty || true; sleep 5
   snap="$STATE_HOME/history/${rb_s}.txt"; [[ -s "$snap" ]] && snap_ok=1 || snap_ok=0
