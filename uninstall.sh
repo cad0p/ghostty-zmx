@@ -95,30 +95,6 @@ safe_remove_runtime_dir() {
   print "Deleted $resolved"
 }
 
-safe_remove_runtime_globs() {
-  local root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-  local name base
-  for name in "$root"/ghostty-zmx-restore-* "$root"/ghostty-zmx-restoring-* "$root"/ghostty-zmx-reaper-* "$root"/ghostty-zmx-reaper-*.zsh "$root"/ghostty-zmx-reaper-*.log; do
-    [[ -e "$name" || -L "$name" ]] || continue
-    base="${name:t}"
-    if [[ -L "$name" ]]; then
-      print "Skipped generated runtime symlink: $name"
-      continue
-    fi
-    if [[ ! -O "$name" ]]; then
-      print "Skipped generated runtime path not owned by current user: $name"
-      continue
-    fi
-    if [[ -d "$name" ]]; then
-      rmdir "$name" 2>/dev/null || print "Skipped generated runtime directory: $name"
-    elif [[ -f "$name" ]]; then
-      rm -f "$name" 2>/dev/null || print "Failed to remove generated runtime path: $name"
-    else
-      print "Skipped generated runtime path: $name"
-    fi
-  done
-}
-
 remove_source_line() {
   local file="$1"
   [[ -f "$file" ]] || return 0
@@ -180,9 +156,8 @@ else
   print "Left Ghostty config unchanged."
 fi
 
-safe_remove_runtime_globs || exit 1
 safe_remove_runtime_dir || exit 1
-print "Removed or skipped generated ghostty-zmx runtime files under /tmp and the current per-user runtime directory."
+print "Removed generated ghostty-zmx runtime files under the current per-user runtime directory."
 
 if [[ "$REMOVE_INSTALL_DIR" -eq 1 ]]; then
   safe_remove_tree "$install_dir" "install" || exit 1

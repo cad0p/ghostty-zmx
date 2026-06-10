@@ -145,16 +145,12 @@ runtime_root="$workdir/runtime-root"
 runtime_dir="$runtime_root/ghostty-zmx-${UID:-$(id -u)}"
 mkdir -p "$runtime_dir"
 touch "$runtime_dir/reaper-test.zsh"
-runtime_decoy="$runtime_root/ghostty-zmx-reaper-decoy-$$"
-runtime_symlink="$runtime_root/ghostty-zmx-reaper-symlink-$$"
-mkdir -p "$runtime_decoy"
-touch "$runtime_decoy/nested"
-ln -s "$runtime_decoy" "$runtime_symlink"
+flat_runtime_decoy="$runtime_root/ghostty-zmx-reaper-decoy-$$"
+mkdir -p "$flat_runtime_decoy"
+touch "$flat_runtime_decoy/nested"
 XDG_RUNTIME_DIR="$runtime_root" run_uninstall "$home_prompt" "$config_prompt" "$data_prompt" "$state_prompt" --yes > "$workdir/runtime-uninstall.out"
 [[ ! -d "$runtime_dir" ]] || { print -u2 "current runtime directory was not removed"; exit 1; }
-[[ -e "$runtime_decoy/nested" ]] || { print -u2 "runtime decoy was removed"; exit 1; }
-[[ -L "$runtime_symlink" ]] || { print -u2 "runtime symlink was removed"; exit 1; }
-grep -q 'Skipped generated runtime symlink' "$workdir/runtime-uninstall.out" || { print -u2 "runtime symlink skip message missing"; exit 1; }
+[[ -e "$flat_runtime_decoy/nested" ]] || { print -u2 "flat runtime decoy was removed"; exit 1; }
 
 unsafe_runtime_root="$workdir/unsafe-runtime-root"
 mkdir -p "$unsafe_runtime_root"
