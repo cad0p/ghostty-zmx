@@ -6,6 +6,7 @@
 |---|---:|---|---|---|
 | E2E-RERUN-1 | high | `reviews/phase-2-e2e/r2-e2e-tester.md` | Live E2E harness stalled on blocking `zmx run ... echo ...` marker injection. | E2E-gate fix-now: rerun with bounded, nonblocking marker injection (`zmx send` plus polling or manual markers), short `ZMX_DIR`, and a supervisor wrapper that restores config/installed files independently of scenario progress. |
 | E2E-RERUN-2 | medium | `reviews/phase-2-e2e/r2-e2e-tester.md` | E2E harness requires temporary config and installed-manager replacement; prior run needed orchestrator restoration. | E2E-gate fix-now: before rerun, use a minimal outer wrapper with traps and hashes for config plus installed files; never let the scenario process own restoration alone. |
+| E2E-IMPL-1 | high | `reviews/phase-2-e2e/e2e-rerun-supervisor.zsh` log `ghostty-zmx-e2e-rerun-1781106951` | New split/tab/window shells can re-elect themselves as restore drivers after the first startup shell releases `restore-${ghosttyPID}.lock`, then attach to the first existing managed session instead of generating a fresh per-surface session. | Implementation fix-now: restore election must be one-shot per Ghostty process. Preserve stale-lock cleanup without allowing ordinary new surfaces in the same Ghostty process to re-run restore. |
 
 ## Open, defer further (`defer`)
 
