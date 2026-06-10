@@ -91,6 +91,59 @@ grep -qxF 'T aaaaaaaaaaaaaaaa eeeeeeee 11111111 33333333' "$GHOSTTY_ZMX_DATA_HOM
 grep -qxF 'W cccccccccccccccc 44444444' "$GHOSTTY_ZMX_DATA_HOME/id-map" || { print -u2 'missing second window id-map entry'; exit 1; }
 grep -qxF 'T cccccccccccccccc dddddddd 44444444 22222222' "$GHOSTTY_ZMX_DATA_HOME/id-map" || { print -u2 'missing second window tab id-map entry'; exit 1; }
 
+cat > "$workdir/bin/osascript" <<'STUB'
+#!/bin/zsh
+if [[ "${1:-}" == "-e" ]]; then
+  [[ "$*" == *'get version'* ]] && exit 0
+fi
+script="$(cat)"
+if [[ "$script" == *'front window'* ]]; then
+  print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb term:1234abcd'
+  exit 0
+fi
+if [[ "$script" == *'new tab'* ]]; then
+  exit 1
+fi
+exit 0
+STUB
+chmod +x "$workdir/bin/osascript"
+rm -f "$GHOSTTY_ZMX_DATA_HOME/id-map" "$GHOSTTY_ZMX_DATA_HOME/restore-first" "$GHOSTTY_ZMX_DATA_HOME/restore-queue"
+GHOSTTY_ZMX_DEBUG=1
+: > "$GHOSTTY_ZMX_STATE_HOME/debug.log"
+cat > "$GHOSTTY_ZMX_DATA_HOME/sessions" <<'SESS'
+zmx-11111111-22222222-aaaaaaaa
+zmx-11111111-33333333-bbbbbbbb
+SESS
+if _ghostty_zmx_restore; then
+  print -u2 'restore succeeded despite failed surface creation'
+  exit 1
+fi
+[[ "$(cat "$GHOSTTY_ZMX_DATA_HOME/restore-queue")" == '' ]] || { print -u2 'failed surface session remained queued'; exit 1; }
+grep -q 'restore failed step=new-tab' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'restore surface failure was not logged'; exit 1; }
+grep -q 'restore failed status=incomplete' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'incomplete restore status was not logged'; exit 1; }
+
+cat > "$workdir/bin/osascript" <<'STUB'
+#!/bin/zsh
+if [[ "${1:-}" == "-e" ]]; then
+  [[ "$*" == *'get version'* ]] && exit 0
+fi
+script="$(cat)"
+if [[ "$script" == *'front window'* ]]; then
+  print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb term:1234abcd'
+  exit 0
+fi
+if [[ "$script" == *'new window'* ]]; then
+  print -r -- 'window:cccccccccccccccc tab-group-ghostty-zmx-test/tab-dddddddd'
+  exit 0
+fi
+if [[ "$script" == *'new tab'* ]]; then
+  print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-eeeeeeee'
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$workdir/bin/osascript"
+
 rm -f "$ZMX_ATTACH_LOG" "$GHOSTTY_ZMX_DATA_HOME/sessions" "$GHOSTTY_ZMX_DATA_HOME/restore-first" "$GHOSTTY_ZMX_DATA_HOME/restore-queue" "$GHOSTTY_ZMX_DATA_HOME/id-map"
 rm -rf "$XDG_RUNTIME_DIR/ghostty-zmx-${UID:-$(id -u)}"
 GHOSTTY_ZMX_DEBUG=1 GHOSTTY_ZMX_AUTO_ATTACH=1 zsh -fic "source ${(q)repo_dir}/session-manager.zsh"

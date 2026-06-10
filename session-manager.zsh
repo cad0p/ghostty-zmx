@@ -51,6 +51,13 @@ _ghostty_zmx_applescript_ids() {
   print -r -- "$win $tab $term"
 }
 
+_ghostty_zmx_applescript_surface_ids() {
+  typeset raw="$1" win tab
+  win="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $1}')")" || return 1
+  tab="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $2}')")" || return 1
+  print -r -- "$win $tab"
+}
+
 _ghostty_zmx_valid_physical_id() {
   typeset id="$1"
   [[ "$id" =~ ^[A-Fa-f0-9]+$ ]]
@@ -628,6 +635,7 @@ _ghostty_zmx_restore() {
   typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
   mkdir -p "${queue:h}" 2>/dev/null
   : > "$map"
+  : > "$queue"
   typeset runtime_dir="$(_ghostty_zmx_runtime_dir)"
   [[ -n "$ghosttyPID" && -n "$runtime_dir" ]] && mkdir "$runtime_dir/restoring-${ghosttyPID}.lock" 2>/dev/null
 
@@ -680,25 +688,33 @@ _ghostty_zmx_restore() {
   _ghostty_zmx_debug "session grouping windows=${#_winKeys} tabs=${#_keys} sessions=${#_layoutSessions}"
   print -r -- "${_layoutSessions[1]}" > "$firstFile"
   _ghostty_zmx_debug "restore first session=${_layoutSessions[1]} file=$firstFile"
-  : > "$queue"
-  typeset -i i
-  for ((i=2; i<=${#_layoutSessions}; i++)); do
-    print -r -- "${_layoutSessions[$i]}" >> "$queue"
-    _ghostty_zmx_debug "queue push session=${_layoutSessions[$i]} queue=$queue"
-  done
 
   _ghostty_zmx_restore_ids_valid() {
     _ghostty_zmx_valid_physical_id "$1" && _ghostty_zmx_valid_physical_id "$2"
   }
+  _ghostty_zmx_restore_queue_push() {
+    typeset session="$1"
+    _ghostty_zmx_valid_session_name "$session" || return 1
+    print -r -- "$session" >> "$queue"
+    _ghostty_zmx_debug "queue push session=$session queue=$queue"
+  }
+  _ghostty_zmx_restore_queue_remove() {
+    typeset session="$1"
+    [[ -f "$queue" ]] || return 0
+    awk -v session="$session" '$0 != session { print }' "$queue" > "${queue}.tmp.$$" 2>/dev/null && mv "${queue}.tmp.$$" "$queue" 2>/dev/null
+  }
 
   typeset restore_lock_delay=$(( ${#_layoutSessions} * GHOSTTY_ZMX_RESTORE_STEP_DELAY + _ghostty_zmx_restore_lock_margin ))
-
+  typeset restore_failed=0
   typeset curWin="" curTab="" firstWindow=1 physWin="" physTab=""
-  typeset paneCount
+  typeset paneCount queuedSession initialSession created createdWin createdTab splitTerm
+  typeset -a keySessions
   for key in "${_keys[@]}"; do
     winHex="${key%%:*}"
     tabHex="${key#*:}"
     paneCount="${_tabPanes[$key]}"
+    keySessions=(${=_tabSessions[$key]})
+    initialSession="${keySessions[1]}"
 
     if [[ "$winHex" != "$curWin" ]]; then
       if [[ $firstWindow -eq 1 ]]; then
@@ -709,23 +725,25 @@ _ghostty_zmx_restore() {
         if _ghostty_zmx_restore_ids_valid "$physWin" "$physTab"; then
           _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
         else
+          restore_failed=1
           _ghostty_zmx_debug "restore failed step=current-position logical_window=$winHex logical_tab=$tabHex result=$pos"
         fi
       else
-        typeset created=""
-        created="$(_ghostty_zmx_applescript_ids "$(osascript <<'SCRIPT' 2>/dev/null
+        _ghostty_zmx_restore_queue_push "$initialSession"
+        created="$(_ghostty_zmx_applescript_surface_ids "$(osascript <<'SCRIPT' 2>/dev/null
 tell application "Ghostty"
     set cfg to new surface configuration
     set w to new window with configuration cfg
     set tb to selected tab of w
+    activate window w
     set winStr to id of w as string
     set tabStr to id of tb as string
-    set index of w to 1
-    set selected tab of w to tb
     return winStr & " " & tabStr
 end tell
 SCRIPT
 )")" || {
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
           _ghostty_zmx_debug "restore failed step=new-window logical_window=$winHex logical_tab=$tabHex"
           sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
           continue
@@ -736,6 +754,8 @@ SCRIPT
           _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
           _ghostty_zmx_debug "AppleScript new-window logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
         else
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
           _ghostty_zmx_debug "restore failed step=new-window logical_window=$winHex logical_tab=$tabHex result=$created"
         fi
         sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
@@ -746,39 +766,43 @@ SCRIPT
 
     if [[ "$tabHex" != "$curTab" ]]; then
       if [[ -n "$curTab" ]]; then
-        typeset created=""
-        created="$(_ghostty_zmx_applescript_ids "$(osascript <<SCRIPT 2>/dev/null
+        _ghostty_zmx_restore_queue_push "$initialSession"
+        created="$(_ghostty_zmx_applescript_surface_ids "$(osascript <<SCRIPT 2>/dev/null
 tell application "Ghostty"
     set targetWindow to missing value
     repeat with w in windows
       set winStr to id of w as string
-      if winStr is "$physWin" then
+      if winStr ends with "$physWin" then
         set targetWindow to w
         exit repeat
       end if
     end repeat
     if targetWindow is missing value then error "target window not found"
-    set index of targetWindow to 1
+    activate window targetWindow
     set cfg to new surface configuration
     set tb to new tab in targetWindow with configuration cfg
-    set selected tab of targetWindow to tb
+    select tab tb
     set winStr to id of targetWindow as string
     set tabStr to id of tb as string
     return winStr & " " & tabStr
 end tell
 SCRIPT
 )")" || {
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
           _ghostty_zmx_debug "restore failed step=new-tab logical_window=$winHex logical_tab=$tabHex expected_window=$physWin"
           sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
           continue
         }
-        typeset createdWin=$(print -r -- "$created" | awk '{print $1}')
-        typeset createdTab=$(print -r -- "$created" | awk '{print $2}')
+        createdWin=$(print -r -- "$created" | awk '{print $1}')
+        createdTab=$(print -r -- "$created" | awk '{print $2}')
         if [[ "$createdWin" == "$physWin" ]] && _ghostty_zmx_restore_ids_valid "$createdWin" "$createdTab"; then
           physTab="$createdTab"
           _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
           _ghostty_zmx_debug "AppleScript new-tab logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
         else
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
           _ghostty_zmx_debug "restore failed step=new-tab logical_window=$winHex logical_tab=$tabHex expected_window=$physWin result=$created"
         fi
         sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
@@ -790,12 +814,14 @@ SCRIPT
     for ((p=2; p<=paneCount; p++)); do
       typeset d="right"
       [[ $((p % 2)) -eq 0 ]] && d="down"
-      if osascript >/dev/null 2>&1 <<SCRIPT
- tell application "Ghostty"
+      queuedSession="${keySessions[$p]}"
+      _ghostty_zmx_restore_queue_push "$queuedSession"
+      splitTerm="$(osascript <<SCRIPT 2>/dev/null
+tell application "Ghostty"
     set targetWindow to missing value
     repeat with w in windows
       set winStr to id of w as string
-      if winStr is "$physWin" then
+      if winStr ends with "$physWin" then
         set targetWindow to w
         exit repeat
       end if
@@ -804,32 +830,38 @@ SCRIPT
     set targetTab to missing value
     repeat with tb in tabs of targetWindow
       set tabStr to id of tb as string
-      if tabStr is "$physTab" then
+      if tabStr ends with "$physTab" then
         set targetTab to tb
         exit repeat
       end if
     end repeat
     if targetTab is missing value then error "target tab not found"
-    set index of targetWindow to 1
-    set selected tab of targetWindow to targetTab
+    select tab targetTab
     set cfg to new surface configuration
     set t to focused terminal of targetTab
-    split t direction ${d} with configuration cfg
+    set newTerminal to split t direction ${d} with configuration cfg
+    return id of newTerminal as string
 end tell
 SCRIPT
-      then
+)" && _ghostty_zmx_terminal_hash "$splitTerm" >/dev/null 2>&1
+      if [[ $? -eq 0 ]]; then
         _ghostty_zmx_debug "AppleScript split logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab pane_index=$p direction=$d delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
       else
+        restore_failed=1
+        _ghostty_zmx_restore_queue_remove "$queuedSession"
         _ghostty_zmx_debug "restore failed step=split logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab pane_index=$p direction=$d"
       fi
       sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
     done
   done
+  if [[ "$restore_failed" -eq 1 ]]; then
+    _ghostty_zmx_debug "restore failed status=incomplete expected_sessions=${#_layoutSessions}"
+  fi
   if [[ -n "$ghosttyPID" && -n "$runtime_dir" ]]; then
     ( sleep "$restore_lock_delay"; rmdir "$runtime_dir/restoring-${ghosttyPID}.lock" 2>/dev/null ) &!
     _ghostty_zmx_debug "restore flag cleanup scheduled ghostty_pid=$ghosttyPID delay=$restore_lock_delay"
   fi
-  return 0
+  return $restore_failed
 }
 
 _ghostty_zmx_auto_attach() {
