@@ -14,12 +14,32 @@ mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$XDG_RUNTIM
 
 cat > "$workdir/bin/zmx" <<'STUB'
 #!/bin/zsh
-exit 0
+set -eu
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  attach)
+    print -r -- "$1" >> "$ZMX_ATTACH_LOG"
+    ;;
+  list)
+    ;;
+  run)
+    ;;
+  print)
+    cat >/dev/null
+    ;;
+  *)
+    exit 0
+    ;;
+esac
 STUB
 chmod +x "$workdir/bin/zmx"
+export ZMX_ATTACH_LOG="$workdir/zmx-attach.log"
 
 cat > "$workdir/bin/osascript" <<'STUB'
 #!/bin/zsh
+if [[ "${1:-}" == "-e" ]]; then
+  [[ "$*" == *'get version'* ]] && exit 0
+fi
 script="$(cat)"
 if [[ "$script" == *'front window'* ]]; then
   print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb term:1234abcd'
@@ -36,6 +56,17 @@ fi
 exit 0
 STUB
 chmod +x "$workdir/bin/osascript"
+cat > "$workdir/bin/ps" <<'STUB'
+#!/bin/zsh
+if [[ "$*" == *'comm='* ]]; then
+  print -r -- ghostty
+elif [[ "$*" == *'ppid='* ]]; then
+  print -r -- 1
+elif [[ "$*" == *'etime='* ]]; then
+  print -r -- '00:00:01'
+fi
+STUB
+chmod +x "$workdir/bin/ps"
 export PATH="$workdir/bin:$PATH"
 
 cat > "$GHOSTTY_ZMX_DATA_HOME/sessions" <<'SESS'
@@ -57,3 +88,13 @@ grep -qxF 'T aaaaaaaaaaaaaaaa bbbbbbbb 11111111 22222222' "$GHOSTTY_ZMX_DATA_HOM
 grep -qxF 'T aaaaaaaaaaaaaaaa eeeeeeee 11111111 33333333' "$GHOSTTY_ZMX_DATA_HOME/id-map" || { print -u2 'missing second tab id-map entry'; exit 1; }
 grep -qxF 'W cccccccccccccccc 44444444' "$GHOSTTY_ZMX_DATA_HOME/id-map" || { print -u2 'missing second window id-map entry'; exit 1; }
 grep -qxF 'T cccccccccccccccc dddddddd 44444444 22222222' "$GHOSTTY_ZMX_DATA_HOME/id-map" || { print -u2 'missing second window tab id-map entry'; exit 1; }
+
+rm -f "$ZMX_ATTACH_LOG"
+rm -rf "$XDG_RUNTIME_DIR/ghostty-zmx-${UID:-$(id -u)}"
+GHOSTTY_ZMX_AUTO_ATTACH=1 zsh -fic "source ${(q)repo_dir}/session-manager.zsh"
+restore_lock_count="$(print -r -- "$XDG_RUNTIME_DIR"/ghostty-zmx-${UID:-$(id -u)}/restore-*.lock(N) | wc -w | tr -d ' ')"
+[[ "$restore_lock_count" == 0 ]] || { print -u2 'restore driver lock was not released after first shell startup'; exit 1; }
+[[ -f "$ZMX_ATTACH_LOG" && "$(cat "$ZMX_ATTACH_LOG")" == 'zmx-11111111-22222222-aaaaaaaa' ]] || { print -u2 'restore first session was not attached'; exit 1; }
+[[ ! -e "$GHOSTTY_ZMX_DATA_HOME/restore-first" ]] || { print -u2 'restore-first file was not consumed'; exit 1; }
+restoring_lock_count="$(print -r -- "$XDG_RUNTIME_DIR"/ghostty-zmx-${UID:-$(id -u)}/restoring-*.lock(N) | wc -w | tr -d ' ')"
+[[ "$restoring_lock_count" == 1 ]] || { print -u2 'restore-active lock was removed too early'; exit 1; }

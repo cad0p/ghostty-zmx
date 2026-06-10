@@ -783,9 +783,11 @@ _ghostty_zmx_auto_attach() {
   [[ "$asReady" -eq 0 ]] && { _ghostty_zmx_debug "Ghostty PID detection failed"; return 0; }
 
   typeset restoreFlag="$(_ghostty_zmx_runtime_path "restore-${ghosttyPID}.lock")"
+  typeset restoreDriver=0
   typeset sessionName=""
   typeset sessionFromRestore=0
   if [[ -n "$ghosttyPID" && -n "$restoreFlag" ]] && mkdir "$restoreFlag" 2>/dev/null; then
+    restoreDriver=1
     _ghostty_zmx_debug "restore-driver elected ghostty_pid=$ghosttyPID flag=$restoreFlag"
     _ghostty_zmx_restore
     typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
@@ -799,6 +801,10 @@ _ghostty_zmx_auto_attach() {
         sessionName=""
       fi
     fi
+  fi
+  if [[ "$restoreDriver" -eq 1 ]]; then
+    rmdir "$restoreFlag" 2>/dev/null
+    _ghostty_zmx_debug "restore-driver released ghostty_pid=$ghosttyPID flag=$restoreFlag"
   fi
 
   if [[ -z "$sessionName" ]]; then
