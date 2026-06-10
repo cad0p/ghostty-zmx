@@ -17,6 +17,6 @@ zsh tests/release-control.zsh
 jq . package.json
 ```
 
-Installer and uninstaller smoke tests should run with a temporary `HOME`, stubbed external commands, and `GHOSTTY_ZMX_TEST_GHOSTTY_CONFIG` pointed at a temporary file. Cover interactive decline, interactive acceptance, `./install.sh --yes`, repeated install idempotency, symlink refusal for install/data/state targets, stale runtime flag cleanup, conflict warnings, `uninstall.sh --yes` preserving data/state/install directories, interactive uninstall decline/acceptance, runtime-directory cleanup, and explicit `--remove-install-dir --remove-data --remove-state` deletion flags. Experimental setup cleanup is manual/out-of-band for v0.1 and is documented in the README/design rather than tested as installer migration behavior.
+Installer and uninstaller smoke tests run with a temporary `HOME`, stubbed external commands, and the internal temporary Ghostty config override. Keep coverage for interactive and `--yes` flows, idempotency, conflict warnings, symlink refusal, safe runtime cleanup, non-destructive uninstall defaults, and explicit deletion flags. Experimental setup cleanup is manual/out-of-band for v0.1.
 
 Before merging, sanity-check `.github/workflows/release.yml` for YAML validity in the repository's workflow tooling and confirm the draft release job still targets GitHub releases only.

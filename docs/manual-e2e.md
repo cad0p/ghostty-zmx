@@ -50,18 +50,7 @@ Before testing, confirm the installed Ghostty config contains the managed produc
 2. Close only that pane through Ghostty.
 3. Wait for the reaper interval.
 4. Verify the recorded session is gone from `zmx list --short` and from the ghostty-zmx sessions file.
-5. Verify a manually created unmanaged session still exists:
-
-   ```sh
-   zmx run ghostty-zmx-unmanaged-e2e true
-   zmx list --short | grep -qx ghostty-zmx-unmanaged-e2e
-   ```
-
-6. Clean up the unmanaged session when done:
-
-   ```sh
-   zmx kill ghostty-zmx-unmanaged-e2e
-   ```
+5. Unmanaged-session preservation is covered in the dedicated scenario below.
 
 ## Window close cleanup
 
@@ -129,19 +118,6 @@ Before testing, confirm the installed Ghostty config contains the managed produc
 
 ## Automated-test config override
 
-Automated tests may temporarily disable close confirmations, but must restore the user's config afterward.
-
-Safe pattern:
-
-1. Back up the real Ghostty config to a timestamped path.
-2. Replace only the managed ghostty-zmx block with a temporary block that sets:
-
-   ```ini
-   confirm-close-surface = false
-   ```
-
-3. Run the automated close tests from iTerm2/outside managed Ghostty/zmx.
-4. Restore the exact backup with a trap on exit, including failure paths.
-5. Re-run a diff against the backup and fail the test if the real config was not restored byte-for-byte.
+Automated tests may use a disposable or temporary Ghostty config that sets `confirm-close-surface = false` for close scenarios. Harnesses that touch the real Ghostty config must restore it byte-for-byte on every exit path and fail if the restored file differs from the original.
 
 Never leave `confirm-close-surface = false` in the production managed block after automated tests.
