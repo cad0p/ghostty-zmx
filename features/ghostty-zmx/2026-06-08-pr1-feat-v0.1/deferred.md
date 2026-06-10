@@ -2,7 +2,13 @@
 
 ## Must fix before merge (`fix-now`)
 
-None.
+| ID | Severity | Source | Summary | Rationale / next action |
+|---|---:|---|---|---|
+| P3-DOCS-1 | medium | `reviews/phase-3-bloat/r1-bloat-docs.md`, `reviews/phase-3-bloat/r1-bloat-production.md` | README exposes internal/test-only config and internal runtime files as user-facing surface. | Fix now; public docs should not create accidental API/support surface. Remove `GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG` from README and collapse internal state-file details. |
+| P3-DOCS-2 | medium | `reviews/phase-3-bloat/r1-bloat-docs.md` | RELEASE.md contains stale internal test variable name and over-specific smoke-test prose. | Fix now; stale docs are never-deferrable. Replace with current concise release verification guidance. |
+| P3-DOCS-3 | low | `reviews/phase-3-bloat/r1-bloat-docs.md` | README release-control section duplicates maintainer release docs. | Fix now; cheap public-doc trim. Move/keep release mechanics in `RELEASE.md`. |
+| P3-DOCS-4 | low | `reviews/phase-3-bloat/r1-bloat-docs.md` | Manual E2E duplicates unmanaged-session coverage and over-details automated config override procedure. | Fix now; cheap checklist trim while preserving required scenarios and safety requirement. |
+| P3-PROD-1 | low | `reviews/phase-3-bloat/r1-bloat-production.md` | Uninstall contains stale flat-runtime cleanup paths no current code creates. | Fix now if tests remain green; remove legacy flat `/tmp/ghostty-zmx-*` cleanup from production uninstall and rely on per-user runtime dir cleanup. |
 
 ## Open, defer further (`defer`)
 
@@ -36,6 +42,16 @@ None.
 | R2-E2E-ADV-2 | medium | `reviews/phase-2-e2e/r2-adversarial.md` | Stale restore-in-progress flag can suppress cleanup if the restore driver is killed mid-restore. | Live E2E passed; add TTL/self-expiring restore flags in v0.2 for crash resilience. | Maintainer / v0.2 |
 | R2-E2E-ADV-3 | low | `reviews/phase-2-e2e/r2-adversarial.md` | Session log updates are not serialized between attach and reaper cleanup. | No live race observed; shared locking around all `sessions` mutations can be added in v0.2. | Maintainer / v0.2 |
 | R2-E2E-ADV-4 | low | `reviews/phase-2-e2e/r2-adversarial.md` | Reaper depends on current tabular `zmx list` field ordering. | Tested zmx 0.6.x output matches parser; key-based parsing can be added in v0.2 if zmx CLI shape changes. | Maintainer / v0.2 |
+| P3-BLOAT-1 | medium | `reviews/phase-3-bloat/r1-bloat-production.md`, `reviews/phase-3-bloat/r1-correctness-overtrim.md` | Generated reaper mirrors manager helper logic. | Standalone reaper is required for v0.1 close cleanup; safe dedup requires a template/executable refactor plus full E2E. | Maintainer / v0.2 |
+| P3-BLOAT-5 | low | `reviews/phase-3-bloat/r1-bloat-production.md`, `reviews/phase-3-bloat/r1-correctness-overtrim.md` | Process-token elapsed fallback looks defensive for macOS-only v0.1. | Keep for now because recent E2E fixes depended on elapsed parsing and PID-reuse guardrails; revisit after release. | Maintainer / v0.2 |
+| P3-BT-1 | low | `reviews/phase-3-bloat/r1-bloat-tests.md` | Duplicate installer conflict fixtures can be collapsed. | Defer; tests are stable and refactor-only churn is not needed before v0.1. | Maintainer / v0.2 |
+| P3-BT-2 | low | `reviews/phase-3-bloat/r1-bloat-tests.md` | Unsafe deletion fixtures repeat symlink/refusal pattern. | Defer; security assertions are valuable and refactor-only churn is not needed before v0.1. | Maintainer / v0.2 |
+| P3-BT-3 | medium | `reviews/phase-3-bloat/r1-bloat-tests.md` | Reaper syntax/elapsed coverage lives in snapshot-scrollback test. | Defer; coverage protects recent E2E regressions. Split into a reaper fixture in v0.2. | Maintainer / v0.2 |
+| P3-BT-4 | low | `reviews/phase-3-bloat/r1-bloat-tests.md` | restore-id-map test repeats osascript stubs. | Defer; fixture refactor can wait until v0.2. | Maintainer / v0.2 |
+| P3-BT-5 | low | `reviews/phase-3-bloat/r1-bloat-tests.md` | restore-id-map test mixes restore/id-map and auto-attach startup responsibilities. | Defer; current single fixture guards multiple recent regressions. Split/rename in v0.2. | Maintainer / v0.2 |
+| P3-BT-6 | low | `reviews/phase-3-bloat/r1-bloat-tests.md` | E2E harness fixed sleeps add runtime/timing brittleness. | Defer; live E2E is stable now and timing refactor risks churn. Replace with condition waits in v0.2. | Maintainer / v0.2 |
+| P3-BT-7 | low | `reviews/phase-3-bloat/r1-bloat-tests.md` | E2E dumps full state after every successful scenario. | Defer; verbose logs were essential during convergence. Add verbose gating in v0.2. | Maintainer / v0.2 |
+| R1-OT-1 | medium | `reviews/phase-3-bloat/r1-correctness-overtrim.md` | Reboot scrollback `zmx run` failure path can mislead before `zmx print`. | Already tracked by R2-E2E-ADV-1; keep as v0.2 hardening because success path passes live E2E. | Maintainer / v0.2 |
 
 ## Declined — wrong, non-applicable, or out-of-scope, with rationale citing contradicting evidence
 
