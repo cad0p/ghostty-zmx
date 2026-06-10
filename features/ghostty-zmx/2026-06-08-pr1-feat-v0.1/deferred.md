@@ -2,10 +2,7 @@
 
 ## Must fix before merge (`fix-now`)
 
-| ID | Severity | Source | Summary | Rationale / next action |
-|---|---:|---|---|---|
-| R3-E2E-ADV-1 | high | `reviews/phase-2-e2e/r3-cumulative-adversarial.md`, raw live log `ghostty-zmx-e2e-rerun-1781109021` | Cmd-Q restore was marked PASS despite missing restored tabs/panes, `clients=0` sessions, and AppleScript restore failures. | Fix now: tighten E2E harness to compare restored layout shape and require all restored sessions `clients=1`; fix restore AppleScript so split/tab/window creation succeeds before accepting E2E convergence. |
-| R3-E2E-ADV-2 | medium | `reviews/phase-2-e2e/r3-cumulative-adversarial.md`, raw live log `ghostty-zmx-e2e-rerun-1781109021` | Restore creation failures leave queued sessions to attach into a reduced layout. | Fix with R3-E2E-ADV-1; restore failures must surface as E2E failures and the restore path must reliably create the expected surfaces. |
+None.
 
 ## Open, defer further (`defer`)
 
@@ -95,6 +92,8 @@
 - `c11cb63` — records the supervised E2E rerun harness and the restore-election implementation blocker.
 - `47479e6` — makes restore-driver election one-shot per Ghostty process and fixes new split/tab/window session generation in live E2E.
 - `8fefa35` — accepts `MM:SS`, `HH:MM:SS`, and `D-HH:MM:SS` elapsed formats so the reaper no longer exits immediately for young Ghostty processes on macOS.
+- `17f754c` — makes restore queue exposure incremental and fixes Ghostty restore surface creation before reattaching sessions.
+- `7dc6eb0` — tightens E2E Cmd-Q restore assertions to require layout shape, all clients attached, markers in zmx history, and no restore failure debug entries.
 
 ## Diagnostic-message deviations — deviate-with-rationale entries
 
@@ -107,4 +106,4 @@ None yet.
 - A cumulative review was run after the second fixer pass; accepted medium/high findings were fixed, and migration-specific findings were reclassified after maintainer clarification that v0.1 should not contain production migration code.
 - A fresh r4 review caught real high-severity correctness regressions in AppleScript handler scope and zsh pipeline subshell state handling; both were fixed before tracker reconciliation.
 - Phase 2 E2E required supervised live Ghostty runs with byte-for-byte config/install restoration. Harness failures were separated from implementation failures; implementation fixes landed for restore re-election and reaper elapsed parsing before all eight E2E scenarios passed.
-- Phase 2 adversarial review initially found no fix-now blockers after a passing supervised run, but the cumulative adversarial pass caught that the harness did not assert layout/client invariants for Cmd-Q restore. E2E convergence is blocked until live restore creates the same layout shape and all restored sessions have clients.
+- Phase 2 adversarial review initially found no fix-now blockers after a passing supervised run, but the cumulative adversarial pass caught that the harness did not assert layout/client invariants for Cmd-Q restore. A stricter live rerun then passed with layout shape, all clients attached, zmx history markers, and no restore failure logs.
