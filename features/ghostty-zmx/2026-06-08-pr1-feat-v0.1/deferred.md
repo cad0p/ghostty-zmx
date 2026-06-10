@@ -4,9 +4,7 @@
 
 | ID | Severity | Source | Summary | Rationale / next action |
 |---|---:|---|---|---|
-| E2E-RERUN-1 | high | `reviews/phase-2-e2e/r2-e2e-tester.md` | Live E2E harness stalled on blocking `zmx run ... echo ...` marker injection. | E2E-gate fix-now: rerun with bounded, nonblocking marker injection (`zmx send` plus polling or manual markers), short `ZMX_DIR`, and a supervisor wrapper that restores config/installed files independently of scenario progress. |
-| E2E-RERUN-2 | medium | `reviews/phase-2-e2e/r2-e2e-tester.md` | E2E harness requires temporary config and installed-manager replacement; prior run needed orchestrator restoration. | E2E-gate fix-now: before rerun, use a minimal outer wrapper with traps and hashes for config plus installed files; never let the scenario process own restoration alone. |
-| E2E-IMPL-1 | high | `reviews/phase-2-e2e/e2e-rerun-supervisor.zsh` log `ghostty-zmx-e2e-rerun-1781106951` | New split/tab/window shells can re-elect themselves as restore drivers after the first startup shell releases `restore-${ghosttyPID}.lock`, then attach to the first existing managed session instead of generating a fresh per-surface session. | Implementation fix-now: restore election must be one-shot per Ghostty process. Preserve stale-lock cleanup without allowing ordinary new surfaces in the same Ghostty process to re-run restore. |
+| E2E-IMPL-2 | high | `reviews/phase-2-e2e/e2e-rerun-results.md`, raw log `ghostty-zmx-e2e-rerun-1781107406` | Generated reaper exits with `reason=elapsed-check-failed` for young Ghostty processes because its `ps -o etime` parser accepts only `HH:MM:SS`, while macOS can return `MM:SS`. Pane/window/close-all cleanup never gets a chance to run. | Implementation fix-now: parse both `MM:SS` and `HH:MM:SS` in main and generated reaper elapsed helpers, add coverage, and rerun E2E cleanup scenarios. |
 
 ## Open, defer further (`defer`)
 
@@ -88,6 +86,9 @@
 - `451ba52` — fixes generated reaper syntax by removing invalid AppleScript handlers and adds generated-reaper syntax coverage.
 - `6ff0480` — releases the restore-driver election lock after startup and adds restore-lock coverage.
 - `5cb127f` — adds first-launch auto-attach debug tracing and verifies generated first-launch session logging.
+- `aba667f` — records the partial E2E run that exposed unsafe blocking `zmx run` marker injection.
+- `c11cb63` — records the supervised E2E rerun harness and the restore-election implementation blocker.
+- `47479e6` — makes restore-driver election one-shot per Ghostty process and fixes new split/tab/window session generation in live E2E.
 
 ## Diagnostic-message deviations — deviate-with-rationale entries
 
