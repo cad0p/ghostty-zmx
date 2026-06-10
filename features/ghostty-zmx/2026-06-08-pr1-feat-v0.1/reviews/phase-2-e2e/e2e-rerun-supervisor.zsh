@@ -151,6 +151,14 @@ quit_ghostty() {
 }
 open_ghostty_clean() {
   open -a Ghostty >> "$LOG" 2>&1 || return 1
+  if ! wait_windows_at_least 1 10; then
+    osascript <<'APPLESCRIPT' >> "$LOG" 2>&1 || true
+tell application "Ghostty"
+  set cfg to new surface configuration
+  new window with configuration cfg
+end tell
+APPLESCRIPT
+  fi
   wait_windows_at_least 1 30 || return 1
   wait_sessions_count 1 40 || return 1
 }
