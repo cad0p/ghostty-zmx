@@ -147,10 +147,6 @@ state_dump() {
 quit_ghostty() {
   osascript -e 'tell application "Ghostty" to quit' >> "$LOG" 2>&1 || true
   for i in $(seq 1 20); do pgrep -x ghostty >/dev/null 2>&1 || return 0; sleep 1; done
-  pkill -TERM -x ghostty >> "$LOG" 2>&1 || true
-  for i in $(seq 1 10); do pgrep -x ghostty >/dev/null 2>&1 || return 0; sleep 1; done
-  pkill -KILL -x ghostty >> "$LOG" 2>&1 || true
-  for i in $(seq 1 5); do pgrep -x ghostty >/dev/null 2>&1 || return 0; sleep 1; done
   return 1
 }
 open_ghostty_clean() {
