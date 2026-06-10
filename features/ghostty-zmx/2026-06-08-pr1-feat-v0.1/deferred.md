@@ -2,12 +2,7 @@
 
 ## Must fix before merge (`fix-now`)
 
-| ID | Severity | Source | Summary | Rationale / next action |
-|---|---:|---|---|---|
-| E2E-1 | block | `reviews/phase-2-e2e/r1-e2e-tester.md` | Generated reaper script contains AppleScript handlers and fails zsh parsing. | Fix now; reaper lifecycle is required for cleanup and snapshots. |
-| E2E-2 | high | `reviews/phase-2-e2e/r1-e2e-tester.md` | Restore-driver election lock persists after startup. | Fix now; stale restore election lock can block later restores. |
-| E2E-3 | high | `reviews/phase-2-e2e/r1-e2e-tester.md` | First-launch auto-attach did not create the sessions file in runtime E2E. | Fix now; basic managed-session creation must work. |
-| E2E-4 | medium | `reviews/phase-2-e2e/r1-e2e-tester.md` | Debug logging stopped after `shell init`, leaving auto-attach failures opaque. | Fix with E2E-3; debug logs are required for v0.1 runtime diagnosis. |
+None.
 
 ## Open, defer further (`defer`)
 
@@ -86,6 +81,9 @@
 - `2cbfc65` — fixes AppleScript handler calls, reaper pipeline subshell state loss, and documents generated reaper helper duplication.
 - `aaaf9a8` — validates managed Ghostty block pairs, closes install-dir symlink TOCTOU, and removes unused release PR-read permission.
 - `12ca3f5` — records r4 fresh implementation review reports.
+- `451ba52` — fixes generated reaper syntax by removing invalid AppleScript handlers and adds generated-reaper syntax coverage.
+- `6ff0480` — releases the restore-driver election lock after startup and adds restore-lock coverage.
+- `5cb127f` — adds first-launch auto-attach debug tracing and verifies generated first-launch session logging.
 
 ## Diagnostic-message deviations — deviate-with-rationale entries
 
