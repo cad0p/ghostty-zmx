@@ -2,13 +2,7 @@
 
 ## Must fix before merge (`fix-now`)
 
-| ID | Severity | Source | Summary | Rationale / next action |
-|---|---:|---|---|---|
-| P3-DOCS-1 | medium | `reviews/phase-3-bloat/r1-bloat-docs.md`, `reviews/phase-3-bloat/r1-bloat-production.md` | README exposes internal/test-only config and internal runtime files as user-facing surface. | Fix now; public docs should not create accidental API/support surface. Remove `GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG` from README and collapse internal state-file details. |
-| P3-DOCS-2 | medium | `reviews/phase-3-bloat/r1-bloat-docs.md` | RELEASE.md contains stale internal test variable name and over-specific smoke-test prose. | Fix now; stale docs are never-deferrable. Replace with current concise release verification guidance. |
-| P3-DOCS-3 | low | `reviews/phase-3-bloat/r1-bloat-docs.md` | README release-control section duplicates maintainer release docs. | Fix now; cheap public-doc trim. Move/keep release mechanics in `RELEASE.md`. |
-| P3-DOCS-4 | low | `reviews/phase-3-bloat/r1-bloat-docs.md` | Manual E2E duplicates unmanaged-session coverage and over-details automated config override procedure. | Fix now; cheap checklist trim while preserving required scenarios and safety requirement. |
-| P3-PROD-1 | low | `reviews/phase-3-bloat/r1-bloat-production.md` | Uninstall contains stale flat-runtime cleanup paths no current code creates. | Fix now if tests remain green; remove legacy flat `/tmp/ghostty-zmx-*` cleanup from production uninstall and rely on per-user runtime dir cleanup. |
+None.
 
 ## Open, defer further (`defer`)
 
@@ -110,6 +104,9 @@
 - `8fefa35` — accepts `MM:SS`, `HH:MM:SS`, and `D-HH:MM:SS` elapsed formats so the reaper no longer exits immediately for young Ghostty processes on macOS.
 - `17f754c` — makes restore queue exposure incremental and fixes Ghostty restore surface creation before reattaching sessions.
 - `7dc6eb0` — tightens E2E Cmd-Q restore assertions to require layout shape, all clients attached, markers in zmx history, and no restore failure debug entries.
+- `0ed05c4` — narrows public README surface by removing internal test config docs and collapsing internal state details.
+- `2e2d80a` — trims release/manual E2E prose and removes stale release variable wording.
+- `e480dc2` — removes stale flat runtime cleanup from uninstall and updates tests to preserve flat decoys.
 
 ## Diagnostic-message deviations — deviate-with-rationale entries
 
