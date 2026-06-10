@@ -245,7 +245,7 @@ else scenario_result working-directory-inheritance FAIL "could not start fresh G
 section "Scenario 3 Pane close cleanup and unmanaged preserved"
 if start_fresh; then
   unmanaged="unmanaged-pane"
-  zmx attach "$unmanaged" true >> "$LOG" 2>&1 || true
+  zmx run "$unmanaged" true >> "$LOG" 2>&1 || true
   new_split; wait_sessions_count 2 20 || true; pane_s=$(read_sessions | tail -n 1)
   cmd_w
   if wait_session_gone "$pane_s" 20 && zmx list --short | grep -qxF "$unmanaged"; then scenario_result pane-close-cleanup PASS "closed=$pane_s unmanaged_alive=$unmanaged"; else scenario_result pane-close-cleanup FAIL "closed=$pane_s still_present_or_unmanaged_missing"; fi
@@ -289,7 +289,7 @@ else scenario_result cmd-q-does-not-clean FAIL "could not start fresh Ghostty"; 
 
 section "Scenario 7 Reboot scrollback simulation"
 if start_fresh; then
-  rb_s=$(read_sessions | tail -n 1); rb_marker="${RUN_ID}-reboot-$rb_s"
+  rb_s=$(read_sessions | tail -n 1); rb_marker="${RUN_ID}-rb"
   print_marker "$rb_s" "$rb_marker" || true
   quit_ghostty || true; sleep 5
   snap="$STATE_HOME/history/${rb_s}.txt"; [[ -s "$snap" ]] && snap_ok=1 || snap_ok=0
@@ -308,7 +308,7 @@ else scenario_result reboot-scrollback-simulation FAIL "could not start fresh Gh
 section "Scenario 8 Unmanaged sessions are not reaped"
 if start_fresh; then
   unmanaged="unmanaged-final"
-  zmx attach "$unmanaged" true >> "$LOG" 2>&1 || true
+  zmx run "$unmanaged" true >> "$LOG" 2>&1 || true
   new_window; wait_sessions_count 2 20 || true
   cmd_w; wait_windows_exact 1 15 || true
   cmd_w; wait_windows_exact 0 15 || true

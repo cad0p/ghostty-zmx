@@ -2,9 +2,7 @@
 
 ## Must fix before merge (`fix-now`)
 
-| ID | Severity | Source | Summary | Rationale / next action |
-|---|---:|---|---|---|
-| E2E-IMPL-2 | high | `reviews/phase-2-e2e/e2e-rerun-results.md`, raw log `ghostty-zmx-e2e-rerun-1781107406` | Generated reaper exits with `reason=elapsed-check-failed` for young Ghostty processes because its `ps -o etime` parser accepts only `HH:MM:SS`, while macOS can return `MM:SS`. Pane/window/close-all cleanup never gets a chance to run. | Implementation fix-now: parse both `MM:SS` and `HH:MM:SS` in main and generated reaper elapsed helpers, add coverage, and rerun E2E cleanup scenarios. |
+None.
 
 ## Open, defer further (`defer`)
 
@@ -89,6 +87,7 @@
 - `aba667f` — records the partial E2E run that exposed unsafe blocking `zmx run` marker injection.
 - `c11cb63` — records the supervised E2E rerun harness and the restore-election implementation blocker.
 - `47479e6` — makes restore-driver election one-shot per Ghostty process and fixes new split/tab/window session generation in live E2E.
+- `8fefa35` — accepts `MM:SS`, `HH:MM:SS`, and `D-HH:MM:SS` elapsed formats so the reaper no longer exits immediately for young Ghostty processes on macOS.
 
 ## Diagnostic-message deviations — deviate-with-rationale entries
 
