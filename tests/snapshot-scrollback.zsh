@@ -53,6 +53,14 @@ export GHOSTTY_ZMX_KEEP_HELPERS=1
 
 source "$repo_dir/session-manager.zsh"
 
+reaper_body="$(awk '
+  $0 == "  cat >> \"$script\" <<'"'"'EOS'"'"'" { in_body=1; next }
+  $0 == "EOS" && in_body { exit }
+  in_body { print }
+' "$repo_dir/session-manager.zsh")"
+print -r -- "$reaper_body" > "$workdir/generated-reaper.zsh"
+zsh -n "$workdir/generated-reaper.zsh" || { print -u2 "generated reaper script has invalid zsh syntax"; exit 1; }
+
 [[ "$GHOSTTY_ZMX_SCROLLBACK_LINES" == 3 ]] || { print -u2 "scrollback limit was not preserved"; exit 1; }
 GHOSTTY_ZMX_SCROLLBACK_LINES=bad
 GHOSTTY_ZMX_DEBUG=1

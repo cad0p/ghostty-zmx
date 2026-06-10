@@ -227,26 +227,6 @@ queue="$dataHome/restore-queue"
 firstFile="$dataHome/restore-first"
 restoring="$runtimeDir/restoring-${ghosttyPID}.lock"
 
-on hex_suffix(idText)
-  set suffix to ""
-  repeat with i from (count of characters of idText) down to 1
-    set ch to character i of idText
-    if ch is not in {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "A", "B", "C", "D", "E", "F"} then
-      exit repeat
-    end if
-    set suffix to ch & suffix
-  end repeat
-  return suffix
-end hex_suffix
-
-on terminal_hash(idText)
-  set suffix to hex_suffix(idText)
-  if (count of characters of suffix) >= 8 then
-    return text 1 thru 8 of suffix
-  end if
-  return suffix
-end terminal_hash
-
 # The generated reaper is standalone because it is executed by nohup after the
 # attaching shell may have exited. Keep its helpers private and mirrored here.
 valid_session_name() {
