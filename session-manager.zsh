@@ -754,10 +754,22 @@ SCRIPT
 }
 
 _ghostty_zmx_auto_attach() {
-  [[ -o interactive ]] || return 0
-  [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" ]] || return 0
-  [[ -z "$ZMX_SESSION" && -z "$TMUX" ]] || return 0
-  command -v zmx >/dev/null 2>&1 || return 0
+  if [[ ! -o interactive ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=non-interactive"
+    return 0
+  fi
+  if [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" != "1" ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=disabled value=${GHOSTTY_ZMX_AUTO_ATTACH:-}"
+    return 0
+  fi
+  if [[ -n "$ZMX_SESSION" || -n "$TMUX" ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=nested zmx=${ZMX_SESSION:-0} tmux=${TMUX:-0}"
+    return 0
+  fi
+  if ! command -v zmx >/dev/null 2>&1; then
+    _ghostty_zmx_debug "auto-attach skipped reason=zmx-missing"
+    return 0
+  fi
 
   typeset -i asReady=0
   typeset -i attempt=0
@@ -813,13 +825,20 @@ _ghostty_zmx_auto_attach() {
   fi
 
   typeset position=$(_ghostty_zmx_current_position)
+  _ghostty_zmx_debug "current position result=${position:-missing}"
   if [[ -z "$sessionName" && -n "$position" ]]; then
     position=$(_ghostty_zmx_apply_position_map "$position")
     typeset winHash=$(print -r -- "$position" | awk '{print $1}')
     typeset tabHash=$(print -r -- "$position" | awk '{print $2}')
     typeset termId=$(print -r -- "$position" | awk '{print $3}')
     sessionName="zmx-${winHash}-${tabHash}-${termId}"
+    _ghostty_zmx_debug "session generated session=$sessionName position=$position"
     _ghostty_zmx_valid_session_name "$sessionName" || { _ghostty_zmx_debug "invalid session skipped action=generated session=$sessionName"; sessionName=""; }
+  fi
+
+  if [[ -z "$sessionName" ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=no-session"
+    return 0
   fi
 
   if [[ -n "$sessionName" ]]; then

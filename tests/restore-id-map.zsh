@@ -89,12 +89,19 @@ grep -qxF 'T aaaaaaaaaaaaaaaa eeeeeeee 11111111 33333333' "$GHOSTTY_ZMX_DATA_HOM
 grep -qxF 'W cccccccccccccccc 44444444' "$GHOSTTY_ZMX_DATA_HOME/id-map" || { print -u2 'missing second window id-map entry'; exit 1; }
 grep -qxF 'T cccccccccccccccc dddddddd 44444444 22222222' "$GHOSTTY_ZMX_DATA_HOME/id-map" || { print -u2 'missing second window tab id-map entry'; exit 1; }
 
-rm -f "$ZMX_ATTACH_LOG"
+rm -f "$ZMX_ATTACH_LOG" "$GHOSTTY_ZMX_DATA_HOME/sessions" "$GHOSTTY_ZMX_DATA_HOME/restore-first" "$GHOSTTY_ZMX_DATA_HOME/restore-queue" "$GHOSTTY_ZMX_DATA_HOME/id-map"
 rm -rf "$XDG_RUNTIME_DIR/ghostty-zmx-${UID:-$(id -u)}"
-GHOSTTY_ZMX_AUTO_ATTACH=1 zsh -fic "source ${(q)repo_dir}/session-manager.zsh"
+GHOSTTY_ZMX_DEBUG=1 GHOSTTY_ZMX_AUTO_ATTACH=1 zsh -fic "source ${(q)repo_dir}/session-manager.zsh"
 restore_lock_count="$(print -r -- "$XDG_RUNTIME_DIR"/ghostty-zmx-${UID:-$(id -u)}/restore-*.lock(N) | wc -w | tr -d ' ')"
 [[ "$restore_lock_count" == 0 ]] || { print -u2 'restore driver lock was not released after first shell startup'; exit 1; }
-[[ -f "$ZMX_ATTACH_LOG" && "$(cat "$ZMX_ATTACH_LOG")" == 'zmx-11111111-22222222-aaaaaaaa' ]] || { print -u2 'restore first session was not attached'; exit 1; }
+[[ -f "$ZMX_ATTACH_LOG" && "$(cat "$ZMX_ATTACH_LOG")" == 'zmx-aaaaaaaaaaaaaaaa-bbbbbbbb-1234abcd' ]] || { print -u2 'generated first-launch session was not attached'; exit 1; }
+grep -qxF 'zmx-aaaaaaaaaaaaaaaa-bbbbbbbb-1234abcd' "$GHOSTTY_ZMX_DATA_HOME/sessions" || { print -u2 'generated first-launch session was not logged'; exit 1; }
+grep -q 'restore-driver released' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'restore driver release was not logged'; exit 1; }
+grep -q 'current position result=aaaaaaaaaaaaaaaa bbbbbbbb 1234abcd' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'current position was not logged'; exit 1; }
+grep -q 'session generated session=zmx-aaaaaaaaaaaaaaaa-bbbbbbbb-1234abcd' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'generated session was not logged'; exit 1; }
 [[ ! -e "$GHOSTTY_ZMX_DATA_HOME/restore-first" ]] || { print -u2 'restore-first file was not consumed'; exit 1; }
 restoring_lock_count="$(print -r -- "$XDG_RUNTIME_DIR"/ghostty-zmx-${UID:-$(id -u)}/restoring-*.lock(N) | wc -w | tr -d ' ')"
-[[ "$restoring_lock_count" == 1 ]] || { print -u2 'restore-active lock was removed too early'; exit 1; }
+[[ "$restoring_lock_count" == 0 ]] || { print -u2 'restore-active lock was created without sessions'; exit 1; }
+
+GHOSTTY_ZMX_DEBUG=1 GHOSTTY_ZMX_AUTO_ATTACH=1 zsh -fc "source ${(q)repo_dir}/session-manager.zsh"
+grep -q 'auto-attach skipped reason=non-interactive' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'non-interactive guard skip was not logged'; exit 1; }
