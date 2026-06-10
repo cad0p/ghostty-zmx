@@ -99,3 +99,4 @@ None yet.
 - Four fresh implementation reviews completed, then one fixer pass, then a second fresh review batch and second fixer pass.
 - A cumulative review was run after the second fixer pass; accepted medium/high findings were fixed, and migration-specific findings were reclassified after maintainer clarification that v0.1 should not contain production migration code.
 - A fresh r4 review caught real high-severity correctness regressions in AppleScript handler scope and zsh pipeline subshell state handling; both were fixed before tracker reconciliation.
+- Phase 2 E2E required supervised live Ghostty runs with byte-for-byte config/install restoration. Harness failures were separated from implementation failures; implementation fixes landed for restore re-election and reaper elapsed parsing before all eight E2E scenarios passed.

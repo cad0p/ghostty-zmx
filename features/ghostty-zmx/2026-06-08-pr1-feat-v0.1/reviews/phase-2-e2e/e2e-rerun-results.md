@@ -1,21 +1,21 @@
 # E2E rerun supervised results
 
 ```text
-CONFIG_HASH_DURING=ad26921e42825d090be00a7bd64781f05994c6ef8ff298ffef09a776fe218edb
+CONFIG_HASH_DURING=a45813dfb3582b5357fc6c0b62f058bda606136e5066d28732bfa5beac7b4d05
 MANAGER_HASH_BEFORE=f8c457d8e83e97571aa3900d869e7aff4a21ee96f65ffff886609a6e832b14e3
 MANAGER_HASH_DURING=20deea29d9a6821acbacdc1d1186b92eba6c5f0c24119f5c75f04a3fd14386ba
 UNINSTALL_HASH_BEFORE=983b19d35997be05db7e414957b4243eb94fb4edd11607ce549f85aef6707444
 UNINSTALL_HASH_DURING=983b19d35997be05db7e414957b4243eb94fb4edd11607ce549f85aef6707444
-DATA_HOME=/var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T//ghostty-zmx-e2e-rerun-1781107939/data
-STATE_HOME=/var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T//ghostty-zmx-e2e-rerun-1781107939/state
-ZMX_DIR=/tmp/gzmx-20445
+DATA_HOME=/var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T//ghostty-zmx-e2e-rerun-1781108391/data
+STATE_HOME=/var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T//ghostty-zmx-e2e-rerun-1781108391/state
+ZMX_DIR=/tmp/gzmx-47820
 SCENARIO_RESULT cmd-q-restore PASS sessions_remain=4 markers_in_history=1
-SCENARIO_RESULT working-directory-inheritance PASS testdir=/tmp/ghostty-zmx-e2e-rerun-1781107939-cwd norm=/private/tmp/ghostty-zmx-e2e-rerun-1781107939-cwd
-SCENARIO_RESULT pane-close-cleanup PASS closed=zmx-6000026ee490-12c04c550-8E70D19E unmanaged_alive=unmanaged-pane
-SCENARIO_RESULT window-close-cleanup PASS closed_window_session=zmx-600003db4c60-1337383d0-24D4EEFF open_session=zmx-600003dbf3c0-133620910-D2305942
+SCENARIO_RESULT working-directory-inheritance PASS testdir=/tmp/ghostty-zmx-e2e-rerun-1781108391-cwd norm=/private/tmp/ghostty-zmx-e2e-rerun-1781108391-cwd
+SCENARIO_RESULT pane-close-cleanup PASS closed=zmx-600002d390e0-140910940-FEE6EFBA unmanaged_alive=unmanaged-pane
+SCENARIO_RESULT window-close-cleanup PASS closed_window_session=zmx-600003778ea0-143468710-19338A93 open_session=zmx-600003770f30-143134020-DEB7BE8E
 SCENARIO_RESULT close-all-windows-cleanup PASS running=true old_count=2 new_count=1
 SCENARIO_RESULT cmd-q-does-not-clean PASS remain=2 restored_windows=2
-SCENARIO_RESULT reboot-scrollback-simulation FAIL session=zmx-6000024cf7b0-1527083d0-1C994AD0 snap_ok=1 banner_ok=1 marker_ok=0 fresh_log=1 print_log=1
+SCENARIO_RESULT reboot-scrollback-simulation PASS session=zmx-600003f40bd0-15103c3e0-CDD3E798 snapshot=/var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T//ghostty-zmx-e2e-rerun-1781108391/state/history/zmx-600003f40bd0-15103c3e0-CDD3E798.txt
 SCENARIO_RESULT unmanaged-not-reaped PASS unmanaged_alive=unmanaged-final
 CONFIG_HASH_AFTER=d973fbe7bff3e640e7f6a582dabdfcfcd9ddf5f42b4707d83265a844781a9125
 MANAGER_HASH_AFTER=f8c457d8e83e97571aa3900d869e7aff4a21ee96f65ffff886609a6e832b14e3
@@ -25,4 +25,4 @@ MANAGER_RESTORE_BYTE_FOR_BYTE=PASS
 UNINSTALL_RESTORE_BYTE_FOR_BYTE=PASS
 ```
 
-Full log: /var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T//ghostty-zmx-e2e-rerun-1781107939/e2e.log
+Full log: /var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T//ghostty-zmx-e2e-rerun-1781108391/e2e.log
