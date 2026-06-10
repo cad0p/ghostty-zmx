@@ -98,27 +98,17 @@ GHOSTTY_ZMX_RESTORE_STEP_DELAY=1
 GHOSTTY_ZMX_SCROLLBACK_LINES=1000
 ```
 
-Advanced installer/uninstaller test harnesses may set `GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG` to point at a temporary Ghostty config file. Normal users should leave it unset so the scripts edit Ghostty's default config path.
-
-Runtime files are internal implementation state, not a public API. They live under the per-user runtime directory and are cleaned up by the reaper on normal shutdown and by uninstall when explicitly requested.
-
-The sourced manager defines private `_ghostty_zmx_*` helpers during startup. They are implementation details and are not stable APIs; installers should add only the guarded source line shown above to `.zshrc`.
-
-Data files:
+User-actionable paths:
 
 ```text
-~/.local/share/ghostty-zmx/sessions
-~/.local/share/ghostty-zmx/restore-queue
-~/.local/share/ghostty-zmx/restore-first
-~/.local/share/ghostty-zmx/id-map
-```
-
-State files:
-
-```text
+~/.local/share/ghostty-zmx/          # data directory
+~/.local/share/ghostty-zmx/sessions # managed-session support log
+~/.local/state/ghostty-zmx/          # state directory
 ~/.local/state/ghostty-zmx/debug.log
 ~/.local/state/ghostty-zmx/history/<session>.txt
 ```
+
+Other files under these directories and the per-user runtime directory are internal implementation state and may change.
 
 ## Debug logging
 
@@ -169,10 +159,6 @@ Uninstall removes the `.zshrc` source line, removes the managed Ghostty block wh
 ```
 
 Deletion flags refuse unsafe targets such as `$HOME`, `/`, parent directories, paths not owned by the current user, or paths whose final component is not `ghostty-zmx`.
-
-## Release control
-
-ghostty-zmx uses `cad0p/semver-calver-release` with `package.json` as the SemVer base version source. The v0.1 package is shell-only and is not published to npm. The package-version validation workflow is deferred until after this first PR lands with `package.json` on `main`.
 
 ## Limitations
 
