@@ -104,6 +104,40 @@ tell application "Ghostty"
 end tell
 APPLESCRIPT
 }
+layout_shape() {
+  python3 -c '
+import re, sys
+text=sys.stdin.read().splitlines()
+windows=[]
+current=[]
+for line in text:
+    if line.startswith("window="):
+        if current:
+            windows.append(current)
+        current=[]
+    else:
+        m=re.search(r"terms=([0-9]+)", line)
+        if m:
+            current.append(int(m.group(1)))
+if current:
+    windows.append(current)
+print(";".join(",".join(str(n) for n in window) for window in sorted(windows)))
+'
+}
+debug_line_count() { [[ -f "$STATE_HOME/debug.log" ]] && wc -l < "$STATE_HOME/debug.log" | tr -d ' ' || print 0; }
+restore_failure_count_since() {
+  local start="$1"
+  [[ -f "$STATE_HOME/debug.log" ]] || { print 0; return 0; }
+  awk -v start="$start" 'NR > start && /restore failed step=/ { count++ } END { print count + 0 }' "$STATE_HOME/debug.log"
+}
+managed_clients_ok() {
+  local session line ok=1
+  for session in "$@"; do
+    line=$(zmx list 2>/dev/null | grep -F "name=$session" | head -n 1 || true)
+    [[ "$line" == *'clients=1'* ]] || ok=0
+  done
+  return $((1 - ok))
+}
 state_dump() {
   log "-- layout --"; layout_report | tee -a "$LOG"
   log "-- sessions file --"; read_sessions | tee -a "$LOG"
@@ -209,10 +243,12 @@ quit_ghostty || true
 
 section "Scenario 1 Cmd-Q restore"
 if start_fresh; then
+  debug_start=$(debug_line_count)
   new_split; wait_sessions_count 2 30 || true
   new_tab; wait_sessions_count 3 30 || true
   new_window; wait_sessions_count 4 30 || true
   before_layout=$(layout_report); log "before_layout:\n$before_layout"
+  before_shape=$(print -r -- "$before_layout" | layout_shape); log "before_shape=$before_shape"
   typeset -a s1; s1=(${(f)"$(read_sessions)"})
   for s in $s1; do print_marker "$s" "${RUN_ID}-cmdq-$s" || true; done
   quit_ghostty || log "quit_ghostty timed out"
@@ -222,8 +258,11 @@ if start_fresh; then
   wait_windows_at_least 1 30 || true
   sleep 8
   after_layout=$(layout_report); log "after_layout:\n$after_layout"
+  after_shape=$(print -r -- "$after_layout" | layout_shape); log "after_shape=$after_shape"
   hist_ok=1; for s in $s1; do zmx history "$s" | grep -qF "${RUN_ID}-cmdq-$s" || hist_ok=0; done
-  [[ "$remaining" -eq "${#s1}" && "$hist_ok" -eq 1 ]] && scenario_result cmd-q-restore PASS "sessions_remain=$remaining markers_in_history=1" || scenario_result cmd-q-restore FAIL "sessions_remain=$remaining expected=${#s1} markers_ok=$hist_ok"
+  managed_clients_ok $s1 && clients_ok=1 || clients_ok=0
+  restore_failures=$(restore_failure_count_since "$debug_start")
+  [[ "$remaining" -eq "${#s1}" && "$hist_ok" -eq 1 && "$before_shape" == "$after_shape" && "$clients_ok" -eq 1 && "$restore_failures" -eq 0 ]] && scenario_result cmd-q-restore PASS "sessions_remain=$remaining markers_in_history=1 layout_shape=$after_shape clients=1" || scenario_result cmd-q-restore FAIL "sessions_remain=$remaining expected=${#s1} markers_ok=$hist_ok before_shape=$before_shape after_shape=$after_shape clients_ok=$clients_ok restore_failures=$restore_failures"
   state_dump
 else scenario_result cmd-q-restore FAIL "could not start fresh Ghostty"; fi
 
