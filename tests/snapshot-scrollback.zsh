@@ -60,6 +60,28 @@ reaper_body="$(awk '
 ' "$repo_dir/session-manager.zsh")"
 print -r -- "$reaper_body" > "$workdir/generated-reaper.zsh"
 zsh -n "$workdir/generated-reaper.zsh" || { print -u2 "generated reaper script has invalid zsh syntax"; exit 1; }
+reaper_elapsed_helper="$(awk '
+  $0 == "parse_elapsed_seconds() {" { in_helper=1 }
+  $0 == "elapsed_seconds() {" && in_helper { exit }
+  in_helper { print }
+' "$workdir/generated-reaper.zsh")"
+print -r -- "$reaper_elapsed_helper" > "$workdir/generated-reaper-elapsed.zsh"
+source "$workdir/generated-reaper-elapsed.zsh"
+[[ "$(parse_elapsed_seconds '01:27')" == 87 ]] || { print -u2 "generated reaper did not parse MM:SS elapsed time"; exit 1; }
+[[ "$(parse_elapsed_seconds '00:01:27')" == 87 ]] || { print -u2 "generated reaper did not parse HH:MM:SS elapsed time"; exit 1; }
+[[ "$(parse_elapsed_seconds '1-00:01:27')" == 86487 ]] || { print -u2 "generated reaper did not parse D-HH:MM:SS elapsed time"; exit 1; }
+if parse_elapsed_seconds 'bad' >/dev/null 2>&1; then
+  print -u2 "generated reaper accepted invalid elapsed time"
+  exit 1
+fi
+
+[[ "$(_ghostty_zmx_parse_elapsed_seconds '01:27')" == 87 ]] || { print -u2 "main helper did not parse MM:SS elapsed time"; exit 1; }
+[[ "$(_ghostty_zmx_parse_elapsed_seconds '00:01:27')" == 87 ]] || { print -u2 "main helper did not parse HH:MM:SS elapsed time"; exit 1; }
+[[ "$(_ghostty_zmx_parse_elapsed_seconds '1-00:01:27')" == 86487 ]] || { print -u2 "main helper did not parse D-HH:MM:SS elapsed time"; exit 1; }
+if _ghostty_zmx_parse_elapsed_seconds 'bad' >/dev/null 2>&1; then
+  print -u2 "main helper accepted invalid elapsed time"
+  exit 1
+fi
 
 [[ "$GHOSTTY_ZMX_SCROLLBACK_LINES" == 3 ]] || { print -u2 "scrollback limit was not preserved"; exit 1; }
 GHOSTTY_ZMX_SCROLLBACK_LINES=bad

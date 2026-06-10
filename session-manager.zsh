@@ -86,18 +86,36 @@ _ghostty_zmx_runtime_path() {
   print -r -- "$dir/$name"
 }
 
-_ghostty_zmx_ghostty_elapsed_seconds() {
-  typeset pid="$1" elapsed days hours minutes seconds
-  elapsed="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+_ghostty_zmx_parse_elapsed_seconds() {
+  typeset elapsed="$1" days=0 hours=0 minutes seconds
+  typeset -a parts
   [[ -n "$elapsed" ]] || return 1
-  days=0
   if [[ "$elapsed" == *-* ]]; then
     days="${elapsed%%-*}"
     elapsed="${elapsed#*-}"
+    [[ "$days" =~ ^[0-9]+$ ]] || return 1
   fi
-  IFS=':' read -r hours minutes seconds <<< "$elapsed"
+  parts=("${(@s/:/)elapsed}")
+  case ${#parts} in
+    2)
+      minutes="${parts[1]}"
+      seconds="${parts[2]}"
+      ;;
+    3)
+      hours="${parts[1]}"
+      minutes="${parts[2]}"
+      seconds="${parts[3]}"
+      ;;
+    *) return 1 ;;
+  esac
   [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
   print -r -- $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
+}
+
+_ghostty_zmx_ghostty_elapsed_seconds() {
+  typeset pid="$1" elapsed
+  elapsed="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+  _ghostty_zmx_parse_elapsed_seconds "$elapsed"
 }
 
 _ghostty_zmx_ghostty_process_token() {
@@ -287,17 +305,36 @@ debug_log() {
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') reaper $*" >> "$stateHome/debug.log"
 }
 
-elapsed_seconds() {
-  local elapsed="$1" days=0 hours minutes seconds
-  elapsed="$(ps -o etime= -p "$ghosttyPID" 2>/dev/null | tr -d ' ')" || return 1
+parse_elapsed_seconds() {
+  local elapsed="$1" days=0 hours=0 minutes seconds
+  local -a parts
   [[ -n "$elapsed" ]] || return 1
   if [[ "$elapsed" == *-* ]]; then
     days="${elapsed%%-*}"
     elapsed="${elapsed#*-}"
+    [[ "$days" =~ ^[0-9]+$ ]] || return 1
   fi
-  IFS=':' read -r hours minutes seconds <<< "$elapsed"
+  parts=("${(@s/:/)elapsed}")
+  case ${#parts} in
+    2)
+      minutes="${parts[1]}"
+      seconds="${parts[2]}"
+      ;;
+    3)
+      hours="${parts[1]}"
+      minutes="${parts[2]}"
+      seconds="${parts[3]}"
+      ;;
+    *) return 1 ;;
+  esac
   [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
   print $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
+}
+
+elapsed_seconds() {
+  local elapsed
+  elapsed="$(ps -o etime= -p "$ghosttyPID" 2>/dev/null | tr -d ' ')" || return 1
+  parse_elapsed_seconds "$elapsed"
 }
 
 debug_log "started ghostty_pid=$ghosttyPID sessions_file=$log"
