@@ -100,6 +100,46 @@ _ghostty_zmx_ghostty_elapsed_seconds() {
   print -r -- $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
 }
 
+_ghostty_zmx_ghostty_process_token() {
+  typeset pid="$1" start elapsed
+  start="$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+  if [[ -n "$start" ]]; then
+    print -r -- "lstart:$start"
+    return 0
+  fi
+  elapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$pid")" || return 1
+  print -r -- "elapsed:$elapsed"
+}
+
+_ghostty_zmx_restore_attempted_current() {
+  typeset attemptedFlag="$1" currentToken="$2" savedToken="" savedElapsed="" currentElapsed=""
+  [[ -f "$attemptedFlag" ]] || return 1
+  IFS= read -r savedToken < "$attemptedFlag" 2>/dev/null || savedToken=""
+  if [[ -z "$savedToken" || -z "$currentToken" ]]; then
+    rm -f "$attemptedFlag" 2>/dev/null
+    return 1
+  fi
+  if [[ "$savedToken" == "$currentToken" ]]; then
+    return 0
+  fi
+  if [[ "$savedToken" == elapsed:* && "$currentToken" == elapsed:* ]]; then
+    savedElapsed="${savedToken#elapsed:}"
+    currentElapsed="${currentToken#elapsed:}"
+    if [[ "$savedElapsed" =~ ^[0-9]+$ && "$currentElapsed" =~ ^[0-9]+$ && "$currentElapsed" -ge "$savedElapsed" ]]; then
+      return 0
+    fi
+  fi
+  rm -f "$attemptedFlag" 2>/dev/null
+  return 1
+}
+
+_ghostty_zmx_mark_restore_attempted() {
+  typeset attemptedFlag="$1" currentToken="$2"
+  [[ -n "$attemptedFlag" && -n "$currentToken" ]] || return 0
+  mkdir -p "${attemptedFlag:h}" 2>/dev/null
+  print -r -- "$currentToken" > "${attemptedFlag}.tmp.$$" 2>/dev/null && mv "${attemptedFlag}.tmp.$$" "$attemptedFlag" 2>/dev/null
+}
+
 _ghostty_zmx_debug() {
   [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
   mkdir -p "$GHOSTTY_ZMX_STATE_HOME" 2>/dev/null
@@ -226,6 +266,7 @@ log="$dataHome/sessions"
 queue="$dataHome/restore-queue"
 firstFile="$dataHome/restore-first"
 restoring="$runtimeDir/restoring-${ghosttyPID}.lock"
+attempted="$runtimeDir/restore-attempted-${ghosttyPID}.done"
 
 # The generated reaper is standalone because it is executed by nohup after the
 # attaching shell may have exited. Keep its helpers private and mirrored here.
@@ -426,6 +467,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
 done
 snapshot_existing_sessions "ghostty-exit"
 debug_log "stopped ghostty_pid=$ghosttyPID"
+rm -f "$attempted" 2>/dev/null
 rmdir "$flag" 2>/dev/null
 rm -f "$0" 2>/dev/null
 EOS
@@ -795,11 +837,16 @@ _ghostty_zmx_auto_attach() {
   [[ "$asReady" -eq 0 ]] && { _ghostty_zmx_debug "Ghostty PID detection failed"; return 0; }
 
   typeset restoreFlag="$(_ghostty_zmx_runtime_path "restore-${ghosttyPID}.lock")"
+  typeset restoreAttemptedFlag="$(_ghostty_zmx_runtime_path "restore-attempted-${ghosttyPID}.done")"
+  typeset restoreProcessToken="$(_ghostty_zmx_ghostty_process_token "$ghosttyPID")"
   typeset restoreDriver=0
   typeset sessionName=""
   typeset sessionFromRestore=0
-  if [[ -n "$ghosttyPID" && -n "$restoreFlag" ]] && mkdir "$restoreFlag" 2>/dev/null; then
+  if [[ -n "$ghosttyPID" && -n "$restoreFlag" && -n "$restoreAttemptedFlag" && -n "$restoreProcessToken" ]] && _ghostty_zmx_restore_attempted_current "$restoreAttemptedFlag" "$restoreProcessToken"; then
+    _ghostty_zmx_debug "restore-driver skipped reason=already-attempted ghostty_pid=$ghosttyPID flag=$restoreAttemptedFlag"
+  elif [[ -n "$ghosttyPID" && -n "$restoreFlag" ]] && mkdir "$restoreFlag" 2>/dev/null; then
     restoreDriver=1
+    _ghostty_zmx_mark_restore_attempted "$restoreAttemptedFlag" "$restoreProcessToken"
     _ghostty_zmx_debug "restore-driver elected ghostty_pid=$ghosttyPID flag=$restoreFlag"
     _ghostty_zmx_restore
     typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"

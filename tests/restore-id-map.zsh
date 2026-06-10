@@ -64,6 +64,8 @@ elif [[ "$*" == *'ppid='* ]]; then
   print -r -- 1
 elif [[ "$*" == *'etime='* ]]; then
   print -r -- '00:00:01'
+elif [[ "$*" == *'lstart='* ]]; then
+  print -r -- 'Mon Jun  8 12:00:00 2026'
 fi
 STUB
 chmod +x "$workdir/bin/ps"
@@ -102,6 +104,26 @@ grep -q 'session generated session=zmx-aaaaaaaaaaaaaaaa-bbbbbbbb-1234abcd' "$GHO
 [[ ! -e "$GHOSTTY_ZMX_DATA_HOME/restore-first" ]] || { print -u2 'restore-first file was not consumed'; exit 1; }
 restoring_lock_count="$(print -r -- "$XDG_RUNTIME_DIR"/ghostty-zmx-${UID:-$(id -u)}/restoring-*.lock(N) | wc -w | tr -d ' ')"
 [[ "$restoring_lock_count" == 0 ]] || { print -u2 'restore-active lock was created without sessions'; exit 1; }
+
+rm -rf "$XDG_RUNTIME_DIR/ghostty-zmx-${UID:-$(id -u)}"
+: > "$GHOSTTY_ZMX_STATE_HOME/debug.log"
+rm -f "$GHOSTTY_ZMX_DATA_HOME/id-map" "$GHOSTTY_ZMX_DATA_HOME/restore-first" "$GHOSTTY_ZMX_DATA_HOME/restore-queue"
+cat > "$GHOSTTY_ZMX_DATA_HOME/sessions" <<'SESS'
+zmx-11111111-22222222-aaaaaaaa
+SESS
+: > "$ZMX_ATTACH_LOG"
+GHOSTTY_ZMX_DEBUG=1 GHOSTTY_ZMX_AUTO_ATTACH=1 zsh -fic "
+  source ${(q)repo_dir}/session-manager.zsh
+  unset ZMX_SESSION
+  source ${(q)repo_dir}/session-manager.zsh
+"
+restore_elections="$(grep -c 'restore-driver elected ghostty_pid=' "$GHOSTTY_ZMX_STATE_HOME/debug.log")"
+[[ "$restore_elections" == 1 ]] || { print -u2 "restore driver was elected $restore_elections times for one Ghostty process"; exit 1; }
+grep -q 'restore-driver skipped reason=already-attempted' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'repeated restore attempt was not skipped'; exit 1; }
+[[ "$(tail -n 1 "$ZMX_ATTACH_LOG")" == 'zmx-11111111-22222222-1234abcd' ]] || { print -u2 'later shell did not generate and attach a fresh surface session'; exit 1; }
+attach_count="$(grep -cxF 'zmx-11111111-22222222-aaaaaaaa' "$ZMX_ATTACH_LOG")"
+[[ "$attach_count" == 1 ]] || { print -u2 'existing restore-first session was attached more than once'; exit 1; }
+grep -q 'session generated session=zmx-11111111-22222222-1234abcd' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'later fresh session generation was not logged'; exit 1; }
 
 GHOSTTY_ZMX_DEBUG=1 GHOSTTY_ZMX_AUTO_ATTACH=1 zsh -fc "source ${(q)repo_dir}/session-manager.zsh"
 grep -q 'auto-attach skipped reason=non-interactive' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 'non-interactive guard skip was not logged'; exit 1; }
