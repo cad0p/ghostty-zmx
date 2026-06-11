@@ -1000,7 +1000,12 @@ _ghostty_zmx_auto_attach() {
 
   if [[ -z "$sessionName" && "$restoreDriver" -eq 0 ]]; then
     sessionName=$(_ghostty_zmx_wait_restore_assignment "$ghosttyPID" "$restoreFlag")
-    [[ -n "$sessionName" ]] && sessionFromRestore=1
+    if [[ -n "$sessionName" ]]; then
+      sessionFromRestore=1
+    elif _ghostty_zmx_restore_active "$ghosttyPID" "$restoreFlag"; then
+      _ghostty_zmx_debug "auto-attach skipped reason=restore-unassigned ghostty_pid=$ghosttyPID"
+      return 0
+    fi
   fi
 
   typeset position=$(_ghostty_zmx_current_position)
