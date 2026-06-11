@@ -11,6 +11,15 @@ ghostty-zmx makes local Ghostty terminal surfaces persistent with zmx. It is a z
 
 Run manual tests from iTerm2 or another terminal outside managed Ghostty and outside any zmx session. Ghostty may be quit and reopened during testing.
 
+## Development sources and required reading
+
+Development work should track the upstream interfaces ghostty-zmx depends on:
+
+- Ghostty AppleScript support: https://github.com/ghostty-org/website/blob/main/docs/features/applescript.mdx
+- zmx session manager: https://github.com/neurosnap/zmx
+
+The current limitations are listed in the [Limitations](#limitations) section.
+
 ## Install
 
 ```sh
