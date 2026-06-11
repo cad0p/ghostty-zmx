@@ -204,6 +204,14 @@ _ghostty_zmx_log_session() {
   fi
 }
 
+_ghostty_zmx_unlog_session() {
+  typeset session="$1" log="$(_ghostty_zmx_sessions_file)"
+  _ghostty_zmx_valid_session_name "$session" || { _ghostty_zmx_debug "invalid session skipped action=unlog session=$session"; return 1; }
+  [[ -f "$log" ]] || return 0
+  grep -vxF "$session" "$log" > "${log}.tmp.$$" 2>/dev/null || true
+  mv "${log}.tmp.$$" "$log" 2>/dev/null
+}
+
 _ghostty_zmx_snapshot_history() {
   typeset session="$1"
   if ! _ghostty_zmx_valid_session_name "$session"; then
@@ -226,6 +234,62 @@ _ghostty_zmx_snapshot_history() {
     _ghostty_zmx_debug "scrollback snapshot failed session=$session"
   fi
   rm -f "$tmp_file" 2>/dev/null
+}
+
+_ghostty_zmx_forget_snapshot() {
+  typeset session="$1" history_file
+  _ghostty_zmx_valid_session_name "$session" || { _ghostty_zmx_debug "invalid session skipped action=forget-snapshot session=$session"; return 1; }
+  history_file="$(_ghostty_zmx_session_history_file "$session")" || return 1
+  rm -f "$history_file" 2>/dev/null
+  _ghostty_zmx_debug "scrollback snapshot deleted session=$session"
+}
+
+_ghostty_zmx_session_clients() {
+  typeset session="$1"
+  _ghostty_zmx_valid_session_name "$session" || return 1
+  zmx list 2>/dev/null | awk -F '\t' -v name="$session" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }'
+}
+
+_ghostty_zmx_attached_managed_count() {
+  typeset log="$(_ghostty_zmx_sessions_file)" managed clients count=0
+  [[ -f "$log" ]] || { print -r -- 0; return 0; }
+  while IFS= read -r managed; do
+    [[ -n "$managed" ]] || continue
+    _ghostty_zmx_valid_session_name "$managed" || continue
+    clients="$(_ghostty_zmx_session_clients "$managed")"
+    [[ "$clients" == "1" ]] && count=$((count + 1))
+  done < "$log"
+  print -r -- "$count"
+}
+
+_ghostty_zmx_cleanup_after_detach() {
+  typeset session="$1" ghosttyPID="$2" reason="$3" clients windows attached
+  _ghostty_zmx_valid_session_name "$session" || return 0
+  sleep 0.2
+  clients="$(_ghostty_zmx_session_clients "$session")"
+  if [[ "$clients" != "0" ]]; then
+    _ghostty_zmx_debug "detach cleanup skipped session=$session reason=$reason clients=${clients:-missing}"
+    return 0
+  fi
+  if ! kill -0 "$ghosttyPID" 2>/dev/null; then
+    _ghostty_zmx_debug "detach cleanup skipped session=$session reason=$reason ghostty=exited"
+    return 0
+  fi
+  windows="$(osascript -e 'tell application "Ghostty" to count of windows' 2>/dev/null || print '')"
+  if [[ ! "$windows" =~ '^[0-9]+$' || "$windows" -eq 0 ]]; then
+    _ghostty_zmx_debug "detach cleanup skipped session=$session reason=$reason windows=${windows:-unknown}"
+    return 0
+  fi
+  attached="$(_ghostty_zmx_attached_managed_count)"
+  if [[ ! "$attached" =~ '^[0-9]+$' || "$attached" -eq 0 ]]; then
+    _ghostty_zmx_debug "detach cleanup skipped session=$session reason=$reason attached_managed=${attached:-unknown}"
+    return 0
+  fi
+  _ghostty_zmx_snapshot_history "$session"
+  _ghostty_zmx_debug "detach cleanup session=$session reason=$reason attached_managed=$attached"
+  zmx kill "$session" >/dev/null 2>&1 || true
+  _ghostty_zmx_unlog_session "$session"
+  _ghostty_zmx_forget_snapshot "$session"
 }
 
 _ghostty_zmx_restore_saved_scrollback() {
@@ -1031,9 +1095,21 @@ _ghostty_zmx_auto_attach() {
     _ghostty_zmx_start_reaper "$ghosttyPID"
     _ghostty_zmx_restore_saved_scrollback "$sessionName"
     _ghostty_zmx_debug "attach session=$sessionName from_restore=$sessionFromRestore"
+    typeset _ghostty_zmx_detach_cleanup_done=0
+    _ghostty_zmx_attach_cleanup_once() {
+      typeset cleanup_reason="$1"
+      [[ "$_ghostty_zmx_detach_cleanup_done" -eq 0 ]] || return 0
+      _ghostty_zmx_detach_cleanup_done=1
+      _ghostty_zmx_cleanup_after_detach "$sessionName" "$ghosttyPID" "$cleanup_reason"
+    }
+    trap '_ghostty_zmx_attach_cleanup_once trap-exit' EXIT
+    trap '_ghostty_zmx_attach_cleanup_once signal-hup; exit 129' HUP
+    trap '_ghostty_zmx_attach_cleanup_once signal-term; exit 143' TERM
     if ! zmx attach "$sessionName"; then
       _ghostty_zmx_debug "zmx attach failed session=$sessionName status=$?"
     fi
+    _ghostty_zmx_attach_cleanup_once attach-return
+    trap - EXIT HUP TERM
   fi
 }
 
