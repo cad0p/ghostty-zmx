@@ -19,20 +19,5 @@ jobs:
       - name: Ensure jq
         run: command -v jq || brew install jq
 
-      - name: Syntax check
-        run: zsh -n session-manager.zsh install.sh uninstall.sh tests/*.zsh
-
-      - name: Installer and uninstaller smoke test
-        run: zsh tests/install-uninstall.zsh
-
-      - name: Scrollback snapshot test
-        run: zsh tests/snapshot-scrollback.zsh
-
-      - name: Restore id-map test
-        run: zsh tests/restore-id-map.zsh
-
-      - name: Release control test
-        run: zsh tests/release-control.zsh
-
-      - name: Validate package metadata
-        run: jq . package.json
+      - name: Run tests
+        run: zsh tests/ci.zsh
