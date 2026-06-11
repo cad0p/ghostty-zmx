@@ -21,7 +21,7 @@ _ghostty_zmx_restore_lock_margin=10
 
 _ghostty_zmx_valid_session_name() {
   typeset session="$1"
-  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
+  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
 }
 
 _ghostty_zmx_hex_suffix() {
@@ -204,6 +204,68 @@ _ghostty_zmx_log_session() {
   fi
 }
 
+_ghostty_zmx_random_hex() {
+  od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]' || print -r -- "${RANDOM}${RANDOM}"
+}
+
+_ghostty_zmx_session_in_zmx() {
+  typeset session="$1" runtime_dir list_file
+  runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 1
+  list_file="$runtime_dir/list.short.reserve.$$"
+  zmx list --short > "$list_file" 2>/dev/null || { rm -f "$list_file" 2>/dev/null; return 1; }
+  grep -qxF "$session" "$list_file" 2>/dev/null
+  typeset found=$?
+  rm -f "$list_file" 2>/dev/null
+  return "$found"
+}
+
+_ghostty_zmx_session_available_unlocked() {
+  typeset session="$1" log="$(_ghostty_zmx_sessions_file)"
+  _ghostty_zmx_valid_session_name "$session" || return 1
+  grep -qxF "$session" "$log" 2>/dev/null && return 1
+  _ghostty_zmx_session_in_zmx "$session" && return 1
+  return 0
+}
+
+_ghostty_zmx_collision_variant() {
+  typeset base="$1" prefix term nonce
+  prefix="${base%-*}"
+  term="${base##*-}"
+  nonce="$(_ghostty_zmx_random_hex)"
+  print -r -- "${prefix}-${term}${nonce}"
+}
+
+_ghostty_zmx_reserve_session_name() {
+  typeset base="$1" log="$(_ghostty_zmx_sessions_file)" lockdir candidate attempt variant_attempt
+  _ghostty_zmx_valid_session_name "$base" || { _ghostty_zmx_debug "invalid session skipped action=reserve session=$base"; return 1; }
+  mkdir -p "${log:h}" 2>/dev/null
+  : > "$log" 2>/dev/null || true
+  lockdir="${log}.lock"
+  for attempt in $(seq 1 80); do
+    if mkdir "$lockdir" 2>/dev/null; then
+      candidate="$base"
+      for variant_attempt in $(seq 0 40); do
+        if _ghostty_zmx_session_available_unlocked "$candidate"; then
+          print -r -- "$candidate" >> "$log"
+          rmdir "$lockdir" 2>/dev/null
+          if [[ "$candidate" != "$base" ]]; then
+            _ghostty_zmx_debug "session collision resolved base=$base session=$candidate"
+          fi
+          _ghostty_zmx_debug "session logged session=$candidate file=$log"
+          print -r -- "$candidate"
+          return 0
+        fi
+        candidate="$(_ghostty_zmx_collision_variant "$base")"
+      done
+      rmdir "$lockdir" 2>/dev/null
+      return 1
+    fi
+    sleep 0.05
+  done
+  _ghostty_zmx_debug "session reserve failed session=$base lock=$lockdir"
+  return 1
+}
+
 _ghostty_zmx_unlog_session() {
   typeset session="$1" log="$(_ghostty_zmx_sessions_file)"
   _ghostty_zmx_valid_session_name "$session" || { _ghostty_zmx_debug "invalid session skipped action=unlog session=$session"; return 1; }
@@ -349,7 +411,7 @@ debug_log() {
 }
 
 valid_session_name() {
-  [[ "$1" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
+  [[ "$1" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
 }
 
 session_clients() {
@@ -514,7 +576,7 @@ attempted="$runtimeDir/restore-attempted-${ghosttyPID}.done"
 # attaching shell may have exited. Keep its helpers private and mirrored here.
 valid_session_name() {
   local session="$1"
-  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
+  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
 }
 
 history_file_for_session() {
@@ -1239,8 +1301,12 @@ _ghostty_zmx_auto_attach() {
   fi
 
   if [[ -n "$sessionName" ]]; then
-    [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$sessionName" "$(_ghostty_zmx_current_position)"
-    _ghostty_zmx_log_session "$sessionName"
+    if [[ "$sessionFromRestore" -eq 0 ]]; then
+      sessionName="$(_ghostty_zmx_reserve_session_name "$sessionName")" || { _ghostty_zmx_debug "auto-attach skipped reason=reserve-failed"; return 0; }
+      _ghostty_zmx_record_position_map "$sessionName" "$(_ghostty_zmx_current_position)"
+    else
+      _ghostty_zmx_log_session "$sessionName"
+    fi
     _ghostty_zmx_start_reaper "$ghosttyPID"
     typeset _ghostty_zmx_live_position="$(_ghostty_zmx_current_position)"
     typeset _ghostty_zmx_live_term="$(print -r -- "$_ghostty_zmx_live_position" | awk '{print $3}')"
