@@ -440,19 +440,33 @@ snapshot_existing_sessions() {
   done < <(managed_existing_sessions)
 }
 
+cleanup_detached_session() {
+  local orphan="$1" reason="$2"
+  valid_session_name "$orphan" || return 0
+  snapshot_history "$orphan"
+  debug_log "$reason session=$orphan"
+  zmx kill "$orphan" >/dev/null 2>&1
+  cleanup_log "$orphan"
+  forget_snapshot "$orphan"
+}
+
 cleanup_detached_sessions() {
   local reason="$1"
   while IFS= read -r orphan; do
-    snapshot_history "$orphan"
-    debug_log "$reason session=$orphan"
-    zmx kill "$orphan" >/dev/null 2>&1
-    cleanup_log "$orphan"
-    forget_snapshot "$orphan"
+    cleanup_detached_session "$orphan" "$reason"
   done < <(managed_detached_sessions)
+}
+
+cleanup_seen_detached_sessions() {
+  local reason="$1" orphan
+  for orphan in ${(k)detachedSeen}; do
+    cleanup_detached_session "$orphan" "$reason"
+  done
 }
 
 sleep "$reaperStartupDelay"
 zeroWindowsSeen=0
+lastAttached=0
 typeset -A detachedSeen
 while kill -0 "$ghosttyPID" 2>/dev/null; do
   typeset currentElapsed
@@ -492,6 +506,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
     clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
     [[ "$clients" == "1" ]] && attached=$((attached + 1))
   done < <(managed_sessions_from_log)
+  lastAttached=$attached
   if [[ "$attached" -eq 0 ]]; then
     snapshot_existing_sessions "all-detached"
     sleep "$interval"
@@ -514,8 +529,11 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   done < <(managed_detached_sessions)
   sleep "$interval"
 done
-if [[ "$zeroWindowsSeen" -gt 0 ]]; then
+if [[ "$zeroWindowsSeen" -gt 0 || ( "${#detachedSeen[@]}" -gt 0 && "$lastAttached" -le 1 ) ]]; then
   cleanup_detached_sessions "zero-window exit cleanup"
+elif [[ "${#detachedSeen[@]}" -gt 0 ]]; then
+  cleanup_seen_detached_sessions "detached exit cleanup"
+  snapshot_existing_sessions "ghostty-exit"
 else
   snapshot_existing_sessions "ghostty-exit"
 fi
