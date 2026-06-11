@@ -4,8 +4,9 @@ ghostty-zmx uses `cad0p/semver-calver-release` for release control, with `packag
 
 ## Workflows
 
-- `.github/workflows/test.yml` runs `zsh tests/ci.zsh` on pull requests and `main`.
+- `.github/workflows/test.yml` runs `zsh tests/ci.zsh` on pull requests and `main`, but skips release PRs so release branches are validated by the release-specific checks instead.
 - `.github/workflows/validate-package-version.yml` blocks non-release branches from changing `package.json` version and validates release-branch version format.
+- `.github/workflows/validate-release-pr.yml` validates release PR structure: version bump, dated `CHANGELOG.md` heading, and only release files changed.
 - `.github/workflows/release.yml` uses `cad0p/semver-calver-release/release@v1` for GitHub releases and draft changelog PR maintenance.
 
 The release workflow supports the action's draft changelog PR flow:
