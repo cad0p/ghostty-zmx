@@ -1,0 +1,1133 @@
+# ghostty-zmx session manager for zsh.
+# Source this file from an interactive zsh launched by Ghostty.
+
+: ${GHOSTTY_ZMX_DATA_HOME:=${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}
+: ${GHOSTTY_ZMX_STATE_HOME:=${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}
+: ${GHOSTTY_ZMX_REAPER_INTERVAL:=2}
+: ${GHOSTTY_ZMX_ZERO_WINDOWS_GRACE:=6}
+: ${GHOSTTY_ZMX_RESTORE_STEP_DELAY:=1}
+: ${GHOSTTY_ZMX_SCROLLBACK_LINES:=1000}
+
+# Internal waits are named here so lifecycle timing is auditable without expanding the public API.
+_ghostty_zmx_reaper_startup_delay=5
+_ghostty_zmx_queue_lock_attempts=50
+_ghostty_zmx_queue_lock_delay=0.1
+_ghostty_zmx_ghostty_ready_attempts=10
+_ghostty_zmx_ghostty_ready_delay=0.5
+_ghostty_zmx_restore_assignment_attempts=80
+_ghostty_zmx_restore_assignment_delay=0.1
+# Restore lock cleanup margin covers AppleScript overhead not counted by per-step restore delays.
+_ghostty_zmx_restore_lock_margin=10
+
+_ghostty_zmx_valid_session_name() {
+  typeset session="$1"
+  [[ ${#session} -le 46 && "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
+}
+
+_ghostty_zmx_hex_suffix() {
+  typeset id="$1" suffix="" i ch
+  [[ -n "$id" ]] || return 1
+  for (( i=${#id}; i>=1; i-- )); do
+    ch="${id:$((i-1)):1}"
+    [[ "$ch" == [0-9a-fA-F] ]] || break
+    suffix="${ch}${suffix}"
+  done
+  [[ -n "$suffix" ]] || return 1
+  print -r -- "$suffix"
+}
+
+_ghostty_zmx_terminal_hash() {
+  typeset suffix="$(_ghostty_zmx_hex_suffix "$1")" || return 1
+  if [[ ${#suffix} -ge 8 ]]; then
+    print -r -- "${suffix[1,8]}"
+  else
+    print -r -- "$suffix"
+  fi
+}
+
+_ghostty_zmx_applescript_ids() {
+  typeset raw="$1" win tab term
+  win="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $1}')")" || return 1
+  tab="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $2}')")" || return 1
+  term="$(_ghostty_zmx_terminal_hash "$(print -r -- "$raw" | awk '{print $3}')")" || return 1
+  print -r -- "$win $tab $term"
+}
+
+_ghostty_zmx_applescript_surface_ids() {
+  typeset raw="$1" win tab
+  win="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $1}')")" || return 1
+  tab="$(_ghostty_zmx_hex_suffix "$(print -r -- "$raw" | awk '{print $2}')")" || return 1
+  print -r -- "$win $tab"
+}
+
+_ghostty_zmx_valid_physical_id() {
+  typeset id="$1"
+  [[ "$id" =~ ^[A-Fa-f0-9]+$ ]]
+}
+
+_ghostty_zmx_session_history_file() {
+  typeset session="$1"
+  _ghostty_zmx_valid_session_name "$session" || return 1
+  print -r -- "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
+}
+
+_ghostty_zmx_runtime_dir() {
+  typeset root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+  typeset dir="$root/ghostty-zmx-${UID:-$(id -u)}"
+  if [[ -e "$dir" && ! -d "$dir" ]]; then
+    _ghostty_zmx_debug "runtime dir unsafe path=$dir"
+    return 1
+  fi
+  umask 077
+  mkdir -p "$dir" 2>/dev/null || return 1
+  chmod 700 "$dir" 2>/dev/null || return 1
+  if command -v stat >/dev/null 2>&1; then
+    typeset owner="$(stat -f %u "$dir" 2>/dev/null || stat -c %u "$dir" 2>/dev/null)"
+    [[ -z "$owner" || "$owner" == "${UID:-$(id -u)}" ]] || return 1
+  fi
+  print -r -- "$dir"
+}
+
+_ghostty_zmx_runtime_path() {
+  typeset name="$1"
+  [[ "$name" =~ '^[A-Za-z0-9._-]+$' ]] || return 1
+  typeset dir="$(_ghostty_zmx_runtime_dir)" || return 1
+  print -r -- "$dir/$name"
+}
+
+_ghostty_zmx_parse_elapsed_seconds() {
+  typeset elapsed="$1" days=0 hours=0 minutes seconds
+  typeset -a parts
+  [[ -n "$elapsed" ]] || return 1
+  if [[ "$elapsed" == *-* ]]; then
+    days="${elapsed%%-*}"
+    elapsed="${elapsed#*-}"
+    [[ "$days" =~ ^[0-9]+$ ]] || return 1
+  fi
+  parts=("${(@s/:/)elapsed}")
+  case ${#parts} in
+    2)
+      minutes="${parts[1]}"
+      seconds="${parts[2]}"
+      ;;
+    3)
+      hours="${parts[1]}"
+      minutes="${parts[2]}"
+      seconds="${parts[3]}"
+      ;;
+    *) return 1 ;;
+  esac
+  [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
+  print -r -- $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
+}
+
+_ghostty_zmx_ghostty_elapsed_seconds() {
+  typeset pid="$1" elapsed
+  elapsed="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+  _ghostty_zmx_parse_elapsed_seconds "$elapsed"
+}
+
+_ghostty_zmx_ghostty_process_token() {
+  typeset pid="$1" start elapsed
+  start="$(ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+  if [[ -n "$start" ]]; then
+    print -r -- "lstart:$start"
+    return 0
+  fi
+  elapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$pid")" || return 1
+  print -r -- "elapsed:$elapsed"
+}
+
+_ghostty_zmx_restore_attempted_current() {
+  typeset attemptedFlag="$1" currentToken="$2" savedToken="" savedElapsed="" currentElapsed=""
+  [[ -f "$attemptedFlag" ]] || return 1
+  IFS= read -r savedToken < "$attemptedFlag" 2>/dev/null || savedToken=""
+  if [[ -z "$savedToken" || -z "$currentToken" ]]; then
+    rm -f "$attemptedFlag" 2>/dev/null
+    return 1
+  fi
+  if [[ "$savedToken" == "$currentToken" ]]; then
+    return 0
+  fi
+  if [[ "$savedToken" == elapsed:* && "$currentToken" == elapsed:* ]]; then
+    savedElapsed="${savedToken#elapsed:}"
+    currentElapsed="${currentToken#elapsed:}"
+    if [[ "$savedElapsed" =~ ^[0-9]+$ && "$currentElapsed" =~ ^[0-9]+$ && "$currentElapsed" -ge "$savedElapsed" ]]; then
+      return 0
+    fi
+  fi
+  rm -f "$attemptedFlag" 2>/dev/null
+  return 1
+}
+
+_ghostty_zmx_mark_restore_attempted() {
+  typeset attemptedFlag="$1" currentToken="$2"
+  [[ -n "$attemptedFlag" && -n "$currentToken" ]] || return 0
+  mkdir -p "${attemptedFlag:h}" 2>/dev/null
+  print -r -- "$currentToken" > "${attemptedFlag}.tmp.$$" 2>/dev/null && mv "${attemptedFlag}.tmp.$$" "$attemptedFlag" 2>/dev/null
+}
+
+_ghostty_zmx_debug() {
+  [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
+  mkdir -p "$GHOSTTY_ZMX_STATE_HOME" 2>/dev/null
+  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$GHOSTTY_ZMX_STATE_HOME/debug.log"
+}
+
+_ghostty_zmx_scrollback_line_count() {
+  typeset value="${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}"
+  if [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]]; then
+    print -r -- "$value"
+  else
+    _ghostty_zmx_debug "invalid scrollback line count value=$value defaulting=1000"
+    print -r -- 1000
+  fi
+}
+typeset GHOSTTY_ZMX_SCROLLBACK_LINES="$(_ghostty_zmx_scrollback_line_count)"
+
+_ghostty_zmx_debug "shell init data_home=$GHOSTTY_ZMX_DATA_HOME state_home=$GHOSTTY_ZMX_STATE_HOME"
+
+_ghostty_zmx_sessions_file() {
+  print -r -- "$GHOSTTY_ZMX_DATA_HOME/sessions"
+}
+
+_ghostty_zmx_log_session() {
+  typeset session="$1"
+  if ! _ghostty_zmx_valid_session_name "$session"; then
+    _ghostty_zmx_debug "invalid session skipped action=log session=$session"
+    return 1
+  fi
+  typeset log="$(_ghostty_zmx_sessions_file)"
+  mkdir -p "${log:h}" 2>/dev/null
+  if [[ ! -f "$log" ]] || ! grep -qxF "$session" "$log" 2>/dev/null; then
+    print -r -- "$session" >> "$log"
+    _ghostty_zmx_debug "session logged session=$session file=$log"
+  fi
+}
+
+_ghostty_zmx_random_hex() {
+  od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]' || print -r -- "${RANDOM}${RANDOM}"
+}
+
+_ghostty_zmx_session_in_zmx() {
+  typeset session="$1" runtime_dir list_file
+  runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 1
+  list_file="$runtime_dir/list.short.reserve.$$"
+  zmx list --short > "$list_file" 2>/dev/null || { rm -f "$list_file" 2>/dev/null; return 1; }
+  grep -qxF "$session" "$list_file" 2>/dev/null
+  typeset found=$?
+  rm -f "$list_file" 2>/dev/null
+  return "$found"
+}
+
+_ghostty_zmx_session_available_unlocked() {
+  typeset session="$1" log="$(_ghostty_zmx_sessions_file)"
+  _ghostty_zmx_valid_session_name "$session" || return 1
+  grep -qxF "$session" "$log" 2>/dev/null && return 1
+  _ghostty_zmx_session_in_zmx "$session" && return 1
+  return 0
+}
+
+_ghostty_zmx_collision_variant() {
+  typeset base="$1" rest win tab term nonce_tab nonce_term
+  rest="${base#zmx-}"
+  win="${rest%%-*}"
+  rest="${rest#*-}"
+  tab="${rest%%-*}"
+  term="${rest#*-}"
+  win="${win[1,12]}"
+  tab="${tab[1,9]}"
+  term="${term[1,8]}"
+  nonce_tab="$(_ghostty_zmx_random_hex)"
+  nonce_term="$(_ghostty_zmx_random_hex)"
+  nonce_tab="${nonce_tab[1,4]}"
+  nonce_term="${nonce_term[1,4]}"
+  print -r -- "zmx-${win}-${tab}${nonce_tab}-${term}${nonce_term}"
+}
+
+_ghostty_zmx_reserve_session_name() {
+  typeset base="$1" log="$(_ghostty_zmx_sessions_file)" lockdir candidate attempt variant_attempt
+  _ghostty_zmx_valid_session_name "$base" || { _ghostty_zmx_debug "invalid session skipped action=reserve session=$base"; return 1; }
+  mkdir -p "${log:h}" 2>/dev/null
+  [[ -f "$log" ]] || : > "$log" 2>/dev/null || true
+  lockdir="${log}.lock"
+  for attempt in $(seq 1 80); do
+    if mkdir "$lockdir" 2>/dev/null; then
+      candidate="$base"
+      for variant_attempt in $(seq 0 40); do
+        if _ghostty_zmx_session_available_unlocked "$candidate"; then
+          print -r -- "$candidate" >> "$log"
+          rmdir "$lockdir" 2>/dev/null
+          if [[ "$candidate" != "$base" ]]; then
+            _ghostty_zmx_debug "session collision resolved base=$base session=$candidate"
+          fi
+          _ghostty_zmx_debug "session logged session=$candidate file=$log"
+          print -r -- "$candidate"
+          return 0
+        fi
+        candidate="$(_ghostty_zmx_collision_variant "$base")"
+      done
+      rmdir "$lockdir" 2>/dev/null
+      return 1
+    fi
+    sleep 0.05
+  done
+  _ghostty_zmx_debug "session reserve failed session=$base lock=$lockdir"
+  return 1
+}
+
+_ghostty_zmx_unlog_session() {
+  typeset session="$1" log="$(_ghostty_zmx_sessions_file)"
+  _ghostty_zmx_valid_session_name "$session" || { _ghostty_zmx_debug "invalid session skipped action=unlog session=$session"; return 1; }
+  [[ -f "$log" ]] || return 0
+  grep -vxF "$session" "$log" > "${log}.tmp.$$" 2>/dev/null || true
+  mv "${log}.tmp.$$" "$log" 2>/dev/null
+}
+
+_ghostty_zmx_snapshot_history() {
+  typeset session="$1"
+  if ! _ghostty_zmx_valid_session_name "$session"; then
+    _ghostty_zmx_debug "invalid session skipped action=snapshot session=$session"
+    return 1
+  fi
+  mkdir -p "$GHOSTTY_ZMX_STATE_HOME/history" 2>/dev/null
+  typeset history_file="$(_ghostty_zmx_session_history_file "$session")" || return 1
+  typeset tmp_file="${history_file}.tmp.$$"
+  rm -f "$tmp_file" "${history_file}.tmp.final.$$" 2>/dev/null
+  if zmx history "$session" > "$tmp_file" 2>/dev/null; then
+    if tail -n "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$tmp_file" > "${history_file}.tmp.final.$$"; then
+      mv "${history_file}.tmp.final.$$" "$history_file"
+      _ghostty_zmx_debug "scrollback snapshot session=$session file=$history_file lines=$GHOSTTY_ZMX_SCROLLBACK_LINES"
+    else
+      rm -f "${history_file}.tmp.final.$$" 2>/dev/null
+      _ghostty_zmx_debug "scrollback snapshot tail failed session=$session"
+    fi
+  else
+    _ghostty_zmx_debug "scrollback snapshot failed session=$session"
+  fi
+  rm -f "$tmp_file" 2>/dev/null
+}
+
+_ghostty_zmx_restore_saved_scrollback() {
+  typeset session="$1"
+  if ! _ghostty_zmx_valid_session_name "$session"; then
+    _ghostty_zmx_debug "invalid session skipped action=restore-scrollback session=$session"
+    return 1
+  fi
+  typeset history_file="$(_ghostty_zmx_session_history_file "$session")" || return 1
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 1
+  typeset list_file="$runtime_dir/list.short.${session}.$$"
+  if ! zmx list --short > "$list_file" 2>/dev/null; then
+    rm -f "$list_file" 2>/dev/null
+    _ghostty_zmx_debug "zmx list --short failed session=$session"
+    return 0
+  fi
+  if grep -qxF "$session" "$list_file"; then
+    rm -f "$list_file" 2>/dev/null
+    _ghostty_zmx_debug "fresh-session detection session=$session exists=1"
+    return 0
+  fi
+  rm -f "$list_file" 2>/dev/null
+  _ghostty_zmx_debug "fresh-session detection session=$session exists=0 snapshot=$history_file"
+  [[ -s "$history_file" ]] || return 0
+  (
+    typeset attempt wait_file="$runtime_dir/list.short.restore-scrollback.${session}.$$"
+    for attempt in $(seq 1 100); do
+      if zmx list --short > "$wait_file" 2>/dev/null && grep -qxF "$session" "$wait_file" 2>/dev/null; then
+        rm -f "$wait_file" 2>/dev/null
+        typeset banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
+        if ! { print -r -- "$banner"; cat "$history_file"; } | zmx print "$session"; then
+          _ghostty_zmx_debug "zmx print failed session=$session file=$history_file"
+        else
+          _ghostty_zmx_debug "zmx print restored scrollback session=$session file=$history_file"
+        fi
+        return 0
+      fi
+      sleep 0.1
+    done
+    rm -f "$wait_file" 2>/dev/null
+    _ghostty_zmx_debug "zmx print skipped session=$session reason=session-not-created file=$history_file"
+  ) &!
+}
+
+_ghostty_zmx_start_reaper() {
+  typeset ghosttyPID="$1"
+  [[ -n "$ghosttyPID" ]] || return 0
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 0
+  typeset flag="$runtime_dir/reaper-${ghosttyPID}.lock"
+  mkdir "$flag" 2>/dev/null || return 0
+  _ghostty_zmx_debug "reaper start ghostty_pid=$ghosttyPID flag=$flag"
+
+  typeset script="$runtime_dir/reaper-${ghosttyPID}.zsh"
+  typeset reaper_log="$runtime_dir/reaper-${ghosttyPID}.log"
+  typeset ghosttyElapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghosttyPID")"
+  [[ -n "$ghosttyElapsed" ]] || ghosttyElapsed=0
+  set -o noclobber
+  { print '#!/bin/zsh' > "$script"; } 2>/dev/null || { set +o noclobber; rmdir "$flag" 2>/dev/null; return 0; }
+  set +o noclobber
+  cat >> "$script" <<'EOS'
+#!/bin/zsh
+ghosttyPID="$1"
+flag="$2"
+dataHome="$3"
+interval="$4"
+zeroWindowGrace="$5"
+stateHome="$6"
+debugEnabled="$7"
+scrollbackLines="$8"
+reaperStartupDelay="$9"
+runtimeDir="${10}"
+ghosttyElapsed="${11}"
+log="$dataHome/sessions"
+queue="$dataHome/restore-queue"
+firstFile="$dataHome/restore-first"
+restoring="$runtimeDir/restoring-${ghosttyPID}.lock"
+attempted="$runtimeDir/restore-attempted-${ghosttyPID}.done"
+
+# The generated reaper is standalone because it is executed by nohup after the
+# attaching shell may have exited. Keep its helpers private and mirrored here.
+valid_session_name() {
+  local session="$1"
+  [[ ${#session} -le 46 && "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
+}
+
+history_file_for_session() {
+  local session="$1"
+  valid_session_name "$session" || return 1
+  print -r -- "$stateHome/history/${session}.txt"
+}
+
+debug_log() {
+  [[ "$debugEnabled" == "1" ]] || return 0
+  mkdir -p "$stateHome" 2>/dev/null
+  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') reaper $*" >> "$stateHome/debug.log"
+}
+
+parse_elapsed_seconds() {
+  local elapsed="$1" days=0 hours=0 minutes seconds
+  local -a parts
+  [[ -n "$elapsed" ]] || return 1
+  if [[ "$elapsed" == *-* ]]; then
+    days="${elapsed%%-*}"
+    elapsed="${elapsed#*-}"
+    [[ "$days" =~ ^[0-9]+$ ]] || return 1
+  fi
+  parts=("${(@s/:/)elapsed}")
+  case ${#parts} in
+    2)
+      minutes="${parts[1]}"
+      seconds="${parts[2]}"
+      ;;
+    3)
+      hours="${parts[1]}"
+      minutes="${parts[2]}"
+      seconds="${parts[3]}"
+      ;;
+    *) return 1 ;;
+  esac
+  [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
+  print $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
+}
+
+elapsed_seconds() {
+  local elapsed
+  elapsed="$(ps -o etime= -p "$ghosttyPID" 2>/dev/null | tr -d ' ')" || return 1
+  parse_elapsed_seconds "$elapsed"
+}
+
+debug_log "started ghostty_pid=$ghosttyPID sessions_file=$log"
+
+cleanup_log() {
+  local session="$1"
+  if ! valid_session_name "$session"; then
+    debug_log "invalid session skipped action=cleanup-log session=$session"
+    return 1
+  fi
+  [[ -f "$log" ]] || return 0
+  grep -vxF "$session" "$log" > "${log}.tmp" 2>/dev/null || true
+  mv "${log}.tmp" "$log" 2>/dev/null
+}
+
+snapshot_history() {
+  local session="$1"
+  if ! valid_session_name "$session"; then
+    debug_log "invalid session skipped action=snapshot session=$session"
+    return 1
+  fi
+  mkdir -p "$stateHome/history" 2>/dev/null
+  local historyFile="$(history_file_for_session "$session")" || return 1
+  local tmpFile="${historyFile}.tmp.$$"
+  local finalFile="${historyFile}.tmp.final.$$"
+  rm -f "$tmpFile" "$finalFile" 2>/dev/null
+  if zmx history "$session" > "$tmpFile" 2>/dev/null; then
+    if tail -n "$scrollbackLines" "$tmpFile" > "$finalFile"; then
+      mv "$finalFile" "$historyFile"
+      debug_log "scrollback snapshot session=$session file=$historyFile lines=$scrollbackLines"
+    else
+      rm -f "$finalFile" 2>/dev/null
+      debug_log "scrollback snapshot tail failed session=$session"
+    fi
+  else
+    debug_log "scrollback snapshot failed session=$session"
+  fi
+  rm -f "$tmpFile" 2>/dev/null
+}
+
+forget_snapshot() {
+  local session="$1"
+  if ! valid_session_name "$session"; then
+    debug_log "invalid session skipped action=forget-snapshot session=$session"
+    return 1
+  fi
+  local historyFile="$(history_file_for_session "$session")" || return 1
+  rm -f "$historyFile" 2>/dev/null
+  debug_log "scrollback snapshot deleted session=$session"
+}
+
+managed_sessions_from_log() {
+  [[ -f "$log" ]] || return 0
+  while IFS= read -r managed; do
+    [[ -n "$managed" ]] || continue
+    if ! valid_session_name "$managed"; then
+      debug_log "invalid session skipped action=managed-log session=$managed"
+      continue
+    fi
+    print -r -- "$managed"
+  done < "$log"
+}
+
+managed_detached_sessions() {
+  zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ && $3=="clients=0" { sub(/^[→ ]*name=/, "", $1); print $1 }' |
+  while IFS= read -r orphan; do
+    [[ -n "$orphan" ]] || continue
+    if ! valid_session_name "$orphan"; then
+      debug_log "invalid session skipped action=managed-detached session=$orphan"
+      continue
+    fi
+    grep -qxF "$orphan" "$log" 2>/dev/null || continue
+    print -r -- "$orphan"
+  done
+}
+
+managed_existing_sessions() {
+  while IFS= read -r managed; do
+    local listFile="$runtimeDir/list.short.${managed}.$$"
+    if ! zmx list --short > "$listFile" 2>/dev/null; then
+      rm -f "$listFile" 2>/dev/null
+      debug_log "zmx list --short failed action=managed-existing session=$managed"
+      continue
+    fi
+    if grep -qxF "$managed" "$listFile"; then
+      print -r -- "$managed"
+    fi
+    rm -f "$listFile" 2>/dev/null
+  done < <(managed_sessions_from_log)
+}
+
+snapshot_existing_sessions() {
+  while IFS= read -r preserved; do
+    snapshot_history "$preserved"
+    debug_log "preserving session=$preserved reason=$1"
+  done < <(managed_existing_sessions)
+}
+
+cleanup_detached_session() {
+  local orphan="$1" reason="$2"
+  valid_session_name "$orphan" || return 0
+  snapshot_history "$orphan"
+  debug_log "$reason session=$orphan"
+  zmx kill "$orphan" >/dev/null 2>&1
+  cleanup_log "$orphan"
+  forget_snapshot "$orphan"
+}
+
+cleanup_detached_sessions() {
+  local reason="$1"
+  while IFS= read -r orphan; do
+    cleanup_detached_session "$orphan" "$reason"
+  done < <(managed_detached_sessions)
+}
+
+cleanup_seen_detached_sessions() {
+  local reason="$1" orphan
+  for orphan in ${(k)detachedSeen}; do
+    cleanup_detached_session "$orphan" "$reason"
+  done
+}
+
+sleep "$reaperStartupDelay"
+zeroWindowsSeen=0
+lastAttached=0
+typeset -A detachedSeen
+while kill -0 "$ghosttyPID" 2>/dev/null; do
+  typeset currentElapsed
+  currentElapsed="$(elapsed_seconds "$ghosttyPID")"
+  if [[ -n "$currentElapsed" && "$currentElapsed" -lt "$ghosttyElapsed" ]]; then
+    snapshot_existing_sessions "ghostty-pid-reuse"
+    debug_log "stopped ghostty_pid=$ghosttyPID reason=pid-reuse"
+    break
+  fi
+  if [[ -z "$currentElapsed" ]]; then
+    snapshot_existing_sessions "ghostty-exit"
+    debug_log "stopped ghostty_pid=$ghosttyPID reason=elapsed-check-failed"
+    break
+  fi
+
+  windows=$(osascript -e 'tell application "Ghostty" to count of windows' 2>/dev/null)
+  [[ "$windows" =~ '^[0-9]+$' ]] || break
+
+  if [[ "$windows" -eq 0 ]]; then
+    zeroWindowsSeen=$((zeroWindowsSeen + interval))
+    if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
+      cleanup_detached_sessions "zero-window cleanup"
+    fi
+    sleep "$interval"
+    continue
+  fi
+  zeroWindowsSeen=0
+
+  if [[ -f "$restoring" || -s "$queue" || -s "$firstFile" ]]; then
+    debug_log "restore active; skipping cleanup"
+    sleep "$interval"
+    continue
+  fi
+
+  attached=0
+  while IFS= read -r managed; do
+    clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
+    [[ "$clients" == "1" ]] && attached=$((attached + 1))
+  done < <(managed_sessions_from_log)
+  lastAttached=$attached
+  if [[ "$attached" -eq 0 ]]; then
+    snapshot_existing_sessions "all-detached"
+    sleep "$interval"
+    continue
+  fi
+
+  while IFS= read -r orphan; do
+    detachedSeen[$orphan]=$(( ${detachedSeen[$orphan]:-0} + interval ))
+    if [[ "${detachedSeen[$orphan]}" -lt "$zeroWindowGrace" ]]; then
+      snapshot_history "$orphan"
+      debug_log "detached pending session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
+      continue
+    fi
+    snapshot_history "$orphan"
+    debug_log "detached cleanup session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
+    zmx kill "$orphan" >/dev/null 2>&1
+    cleanup_log "$orphan"
+    forget_snapshot "$orphan"
+    unset "detachedSeen[$orphan]"
+  done < <(managed_detached_sessions)
+  sleep "$interval"
+done
+if [[ "${#detachedSeen[@]}" -gt 0 && "$lastAttached" -gt 1 ]]; then
+  cleanup_seen_detached_sessions "detached exit cleanup"
+  snapshot_existing_sessions "ghostty-exit"
+else
+  snapshot_existing_sessions "ghostty-exit"
+fi
+debug_log "stopped ghostty_pid=$ghosttyPID"
+rm -f "$attempted" 2>/dev/null
+rmdir "$flag" 2>/dev/null
+rm -f "$0" 2>/dev/null
+EOS
+  chmod +x "$script" 2>/dev/null
+  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" >"$reaper_log" 2>&1 </dev/null &!
+}
+
+_ghostty_zmx_pop_restore_queue() {
+  typeset queue="$GHOSTTY_ZMX_DATA_HOME/restore-queue"
+  [[ -f "$queue" && -s "$queue" ]] || return 1
+  typeset lockdir="${queue}.lock"
+  typeset name
+  for attempt in $(seq 1 $_ghostty_zmx_queue_lock_attempts); do
+    if mkdir "$lockdir" 2>/dev/null; then
+      [[ -s "$queue" ]] || { rmdir "$lockdir" 2>/dev/null; return 1; }
+      IFS= read -r name < "$queue"
+      tail -n +2 "$queue" > "${queue}.tmp" 2>/dev/null
+      mv "${queue}.tmp" "$queue" 2>/dev/null
+      rmdir "$lockdir" 2>/dev/null
+      if [[ -n "$name" ]]; then
+        if _ghostty_zmx_valid_session_name "$name"; then
+          _ghostty_zmx_debug "queue pop session=$name queue=$queue"
+          print -r -- "$name"
+          return 0
+        fi
+        _ghostty_zmx_debug "invalid session skipped action=queue-pop session=$name"
+      fi
+      return 1
+    fi
+    sleep "$_ghostty_zmx_queue_lock_delay"
+  done
+  return 1
+}
+
+_ghostty_zmx_restore_runtime_lock() {
+  typeset ghosttyPID="$1"
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 1
+  print -r -- "$runtime_dir/restoring-${ghosttyPID}.lock"
+}
+
+_ghostty_zmx_restore_active() {
+  typeset ghosttyPID="$1" restoreFlag="$2" restoreLock
+  [[ -n "$restoreFlag" && -d "$restoreFlag" ]] && return 0
+  restoreLock="$(_ghostty_zmx_restore_runtime_lock "$ghosttyPID")" || return 1
+  [[ -d "$restoreLock" ]]
+}
+
+_ghostty_zmx_wait_restore_assignment() {
+  typeset ghosttyPID="$1" restoreFlag="$2" sessionName restoreActive=0
+  for attempt in $(seq 1 $_ghostty_zmx_restore_assignment_attempts); do
+    sessionName="$(_ghostty_zmx_pop_restore_queue)"
+    if [[ -n "$sessionName" ]]; then
+      print -r -- "$sessionName"
+      return 0
+    fi
+    if _ghostty_zmx_restore_active "$ghosttyPID" "$restoreFlag"; then
+      restoreActive=1
+      _ghostty_zmx_debug "restore assignment wait attempt=$attempt ghostty_pid=$ghosttyPID"
+      sleep "$_ghostty_zmx_restore_assignment_delay"
+      continue
+    fi
+    [[ "$restoreActive" -eq 1 ]] && _ghostty_zmx_debug "restore assignment wait ended ghostty_pid=$ghosttyPID attempts=$attempt"
+    return 1
+  done
+  _ghostty_zmx_debug "restore assignment wait timed out ghostty_pid=$ghosttyPID"
+  return 1
+}
+
+_ghostty_zmx_current_position() {
+  typeset raw win tab term
+  raw="$(osascript <<'EOF' 2>/dev/null
+tell application "Ghostty"
+  set fw to front window
+  set winUID to id of fw
+  set uidStr to winUID as string
+  set tabObj to selected tab of fw
+  set tabUID to id of tabObj
+  set tabStr to tabUID as string
+  set termUID to id of (focused terminal of tabObj)
+  set termStr to termUID as string
+  return uidStr & " " & tabStr & " " & termStr
+end tell
+EOF
+)" || return 1
+  _ghostty_zmx_applescript_ids "$raw"
+}
+
+_ghostty_zmx_apply_position_map() {
+  typeset position="$1"
+  typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
+  typeset curWin=$(print -r -- "$position" | awk '{print $1}')
+  typeset curTab=$(print -r -- "$position" | awk '{print $2}')
+  typeset termHash=$(print -r -- "$position" | awk '{print $3}')
+  typeset winHash="$curWin"
+  typeset tabHash="$curTab"
+  if [[ -f "$map" ]]; then
+    typeset mappedWin=$(awk -v w="$curWin" '$1=="W" && $2==w {print $3; exit}' "$map" 2>/dev/null)
+    typeset mappedTab=$(awk -v w="$curWin" -v t="$curTab" '$1=="T" && $2==w && $3==t {print $5; exit}' "$map" 2>/dev/null)
+    [[ -n "$mappedWin" ]] && winHash="$mappedWin"
+    [[ -n "$mappedTab" ]] && tabHash="$mappedTab"
+  fi
+  _ghostty_zmx_debug "position map physical_window=$curWin physical_tab=$curTab logical_window=$winHash logical_tab=$tabHash terminal=$termHash"
+  print -r -- "$winHash $tabHash $termHash"
+}
+
+_ghostty_zmx_write_id_map() {
+  typeset logicalWin="$1" logicalTab="$2" curWin="$3" curTab="$4"
+  [[ -n "$logicalWin" && -n "$logicalTab" && -n "$curWin" && -n "$curTab" ]] || return 0
+  typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
+  if ! _ghostty_zmx_valid_physical_id "$logicalWin" || ! _ghostty_zmx_valid_physical_id "$logicalTab" || ! _ghostty_zmx_valid_physical_id "$curWin" || ! _ghostty_zmx_valid_physical_id "$curTab"; then
+    _ghostty_zmx_debug "id-map write skipped invalid ids logical_window=$logicalWin logical_tab=$logicalTab physical_window=$curWin physical_tab=$curTab"
+    return 0
+  fi
+  mkdir -p "${map:h}" 2>/dev/null
+  { grep -v -E "^(W ${curWin} |T ${curWin} ${curTab} )" "$map" 2>/dev/null || true
+    print -r -- "W ${curWin} ${logicalWin}"
+    print -r -- "T ${curWin} ${curTab} ${logicalWin} ${logicalTab}"
+  } > "${map}.tmp"
+  mv "${map}.tmp" "$map" 2>/dev/null
+  _ghostty_zmx_debug "id-map write physical_window=$curWin physical_tab=$curTab logical_window=$logicalWin logical_tab=$logicalTab"
+}
+
+_ghostty_zmx_record_position_map() {
+  typeset session="$1"
+  typeset position="$2"
+  _ghostty_zmx_valid_session_name "$session" || { _ghostty_zmx_debug "invalid session skipped action=record-position session=$session"; return 1; }
+  [[ -n "$position" ]] || return 0
+  typeset rest="${session#zmx-}"
+  typeset logicalWin="${rest%%-*}"
+  rest="${rest#*-}"
+  typeset logicalTab="${rest%%-*}"
+  typeset curWin=$(print -r -- "$position" | awk '{print $1}')
+  typeset curTab=$(print -r -- "$position" | awk '{print $2}')
+  _ghostty_zmx_write_id_map "$logicalWin" "$logicalTab" "$curWin" "$curTab"
+}
+
+_ghostty_zmx_restore() {
+  typeset log="$(_ghostty_zmx_sessions_file)"
+  [[ -f "$log" ]] || return 1
+  typeset -a sessions
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    if _ghostty_zmx_valid_session_name "$line"; then
+      sessions+=("$line")
+    else
+      _ghostty_zmx_debug "invalid session skipped action=restore-load session=$line"
+    fi
+  done < "$log"
+  typeset count=${#sessions}
+  [[ $count -gt 0 ]] || return 1
+  _ghostty_zmx_debug "restore sessions loaded count=$count file=$log"
+
+  typeset queue="$GHOSTTY_ZMX_DATA_HOME/restore-queue"
+  typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
+  typeset map="$GHOSTTY_ZMX_DATA_HOME/id-map"
+  mkdir -p "${queue:h}" 2>/dev/null
+  : > "$map"
+  : > "$queue"
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)"
+  [[ -n "$ghosttyPID" && -n "$runtime_dir" ]] && mkdir "$runtime_dir/restoring-${ghosttyPID}.lock" 2>/dev/null
+
+  typeset -a _keys=()
+  typeset -a _winKeys=()
+  typeset -A _tabPanes=()
+  typeset -A _tabSessions=()
+  typeset -A _seen=()
+  typeset -A _seenWin=()
+  typeset -A _tabsByWin=()
+  typeset s rest winHex tabHex key
+  for s in "${sessions[@]}"; do
+    rest="${s#zmx-}"
+    winHex="${rest%%-*}"
+    rest="${rest#*-}"
+    tabHex="${rest%%-*}"
+    key="${winHex}:${tabHex}"
+    if [[ -z "${_seen[$key]:-}" ]]; then
+      _seen[$key]=1
+      _keys+=("$key")
+      _tabPanes[$key]=0
+      _tabSessions[$key]=""
+      if [[ -z "${_seenWin[$winHex]:-}" ]]; then
+        _seenWin[$winHex]=1
+        _winKeys+=("$winHex")
+        _tabsByWin[$winHex]=""
+      fi
+      _tabsByWin[$winHex]="${_tabsByWin[$winHex]} ${key}"
+    fi
+    _tabPanes[$key]=$(( ${_tabPanes[$key]} + 1 ))
+    _tabSessions[$key]="${_tabSessions[$key]} ${s}"
+  done
+
+  typeset -a _groupedKeys=()
+  typeset w groupedKey
+  for w in "${_winKeys[@]}"; do
+    for groupedKey in ${=_tabsByWin[$w]}; do
+      _groupedKeys+=("$groupedKey")
+    done
+  done
+  _keys=("${_groupedKeys[@]}")
+
+  typeset -a _layoutSessions=()
+  typeset layoutSes
+  for key in "${_keys[@]}"; do
+    for layoutSes in ${=_tabSessions[$key]}; do
+      _layoutSessions+=("$layoutSes")
+    done
+  done
+  _ghostty_zmx_debug "session grouping windows=${#_winKeys} tabs=${#_keys} sessions=${#_layoutSessions}"
+  print -r -- "${_layoutSessions[1]}" > "$firstFile"
+  _ghostty_zmx_debug "restore first session=${_layoutSessions[1]} file=$firstFile"
+
+  _ghostty_zmx_restore_ids_valid() {
+    _ghostty_zmx_valid_physical_id "$1" && _ghostty_zmx_valid_physical_id "$2"
+  }
+  _ghostty_zmx_restore_queue_push() {
+    typeset session="$1"
+    _ghostty_zmx_valid_session_name "$session" || return 1
+    print -r -- "$session" >> "$queue"
+    _ghostty_zmx_debug "queue push session=$session queue=$queue"
+  }
+  _ghostty_zmx_restore_queue_remove() {
+    typeset session="$1"
+    [[ -f "$queue" ]] || return 0
+    awk -v session="$session" '$0 != session { print }' "$queue" > "${queue}.tmp.$$" 2>/dev/null && mv "${queue}.tmp.$$" "$queue" 2>/dev/null
+  }
+
+  typeset restore_lock_delay=$(( ${#_layoutSessions} * GHOSTTY_ZMX_RESTORE_STEP_DELAY + _ghostty_zmx_restore_lock_margin ))
+  typeset restore_failed=0
+  typeset curWin="" curTab="" firstWindow=1 physWin="" physTab=""
+  typeset paneCount queuedSession initialSession created createdWin createdTab splitTerm
+  typeset -a keySessions
+  for key in "${_keys[@]}"; do
+    winHex="${key%%:*}"
+    tabHex="${key#*:}"
+    paneCount="${_tabPanes[$key]}"
+    keySessions=(${=_tabSessions[$key]})
+    initialSession="${keySessions[1]}"
+
+    if [[ "$winHex" != "$curWin" ]]; then
+      if [[ $firstWindow -eq 1 ]]; then
+        firstWindow=0
+        typeset pos=$(_ghostty_zmx_current_position)
+        physWin=$(print -r -- "$pos" | awk '{print $1}')
+        physTab=$(print -r -- "$pos" | awk '{print $2}')
+        if _ghostty_zmx_restore_ids_valid "$physWin" "$physTab"; then
+          _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+        else
+          restore_failed=1
+          _ghostty_zmx_debug "restore failed step=current-position logical_window=$winHex logical_tab=$tabHex result=$pos"
+        fi
+      else
+        _ghostty_zmx_restore_queue_push "$initialSession"
+        created="$(_ghostty_zmx_applescript_surface_ids "$(osascript <<'SCRIPT' 2>/dev/null
+tell application "Ghostty"
+    set cfg to new surface configuration
+    set w to new window with configuration cfg
+    set tb to selected tab of w
+    activate window w
+    set winStr to id of w as string
+    set tabStr to id of tb as string
+    return winStr & " " & tabStr
+end tell
+SCRIPT
+)")" || {
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
+          _ghostty_zmx_debug "restore failed step=new-window logical_window=$winHex logical_tab=$tabHex"
+          sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+          continue
+        }
+        physWin=$(print -r -- "$created" | awk '{print $1}')
+        physTab=$(print -r -- "$created" | awk '{print $2}')
+        if _ghostty_zmx_restore_ids_valid "$physWin" "$physTab"; then
+          _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+          _ghostty_zmx_debug "AppleScript new-window logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+        else
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
+          _ghostty_zmx_debug "restore failed step=new-window logical_window=$winHex logical_tab=$tabHex result=$created"
+        fi
+        sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+      fi
+      curWin="$winHex"
+      curTab=""
+    fi
+
+    if [[ "$tabHex" != "$curTab" ]]; then
+      if [[ -n "$curTab" ]]; then
+        _ghostty_zmx_restore_queue_push "$initialSession"
+        created="$(_ghostty_zmx_applescript_surface_ids "$(osascript <<SCRIPT 2>/dev/null
+tell application "Ghostty"
+    set targetWindow to missing value
+    repeat with w in windows
+      set winStr to id of w as string
+      if winStr ends with "$physWin" then
+        set targetWindow to w
+        exit repeat
+      end if
+    end repeat
+    if targetWindow is missing value then error "target window not found"
+    activate window targetWindow
+    set cfg to new surface configuration
+    set tb to new tab in targetWindow with configuration cfg
+    select tab tb
+    set winStr to id of targetWindow as string
+    set tabStr to id of tb as string
+    return winStr & " " & tabStr
+end tell
+SCRIPT
+)")" || {
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
+          _ghostty_zmx_debug "restore failed step=new-tab logical_window=$winHex logical_tab=$tabHex expected_window=$physWin"
+          sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+          continue
+        }
+        createdWin=$(print -r -- "$created" | awk '{print $1}')
+        createdTab=$(print -r -- "$created" | awk '{print $2}')
+        if [[ "$createdWin" == "$physWin" ]] && _ghostty_zmx_restore_ids_valid "$createdWin" "$createdTab"; then
+          physTab="$createdTab"
+          _ghostty_zmx_write_id_map "$winHex" "$tabHex" "$physWin" "$physTab"
+          _ghostty_zmx_debug "AppleScript new-tab logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+        else
+          restore_failed=1
+          _ghostty_zmx_restore_queue_remove "$initialSession"
+          _ghostty_zmx_debug "restore failed step=new-tab logical_window=$winHex logical_tab=$tabHex expected_window=$physWin result=$created"
+        fi
+        sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+      fi
+      curTab="$tabHex"
+    fi
+
+    typeset -i p
+    for ((p=2; p<=paneCount; p++)); do
+      typeset d="right"
+      [[ $((p % 2)) -eq 0 ]] && d="down"
+      queuedSession="${keySessions[$p]}"
+      _ghostty_zmx_restore_queue_push "$queuedSession"
+      splitTerm="$(osascript <<SCRIPT 2>/dev/null
+tell application "Ghostty"
+    set targetWindow to missing value
+    repeat with w in windows
+      set winStr to id of w as string
+      if winStr ends with "$physWin" then
+        set targetWindow to w
+        exit repeat
+      end if
+    end repeat
+    if targetWindow is missing value then error "target window not found"
+    set targetTab to missing value
+    repeat with tb in tabs of targetWindow
+      set tabStr to id of tb as string
+      if tabStr ends with "$physTab" then
+        set targetTab to tb
+        exit repeat
+      end if
+    end repeat
+    if targetTab is missing value then error "target tab not found"
+    select tab targetTab
+    set cfg to new surface configuration
+    set t to focused terminal of targetTab
+    set newTerminal to split t direction ${d} with configuration cfg
+    return id of newTerminal as string
+end tell
+SCRIPT
+)" && _ghostty_zmx_terminal_hash "$splitTerm" >/dev/null 2>&1
+      if [[ $? -eq 0 ]]; then
+        _ghostty_zmx_debug "AppleScript split logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab pane_index=$p direction=$d delay=$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+      else
+        restore_failed=1
+        _ghostty_zmx_restore_queue_remove "$queuedSession"
+        _ghostty_zmx_debug "restore failed step=split logical_window=$winHex logical_tab=$tabHex physical_window=$physWin physical_tab=$physTab pane_index=$p direction=$d"
+      fi
+      sleep "$GHOSTTY_ZMX_RESTORE_STEP_DELAY"
+    done
+  done
+  if [[ "$restore_failed" -eq 1 ]]; then
+    _ghostty_zmx_debug "restore failed status=incomplete expected_sessions=${#_layoutSessions}"
+  fi
+  if [[ -n "$ghosttyPID" && -n "$runtime_dir" ]]; then
+    ( sleep "$restore_lock_delay"; rmdir "$runtime_dir/restoring-${ghosttyPID}.lock" 2>/dev/null ) &!
+    _ghostty_zmx_debug "restore flag cleanup scheduled ghostty_pid=$ghosttyPID delay=$restore_lock_delay"
+  fi
+  return $restore_failed
+}
+
+_ghostty_zmx_auto_attach() {
+  if [[ ! -o interactive ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=non-interactive"
+    return 0
+  fi
+  if [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" != "1" ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=disabled value=${GHOSTTY_ZMX_AUTO_ATTACH:-}"
+    return 0
+  fi
+  if [[ -n "$ZMX_SESSION" || -n "$TMUX" ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=nested zmx=${ZMX_SESSION:-0} tmux=${TMUX:-0}"
+    return 0
+  fi
+  if ! command -v zmx >/dev/null 2>&1; then
+    _ghostty_zmx_debug "auto-attach skipped reason=zmx-missing"
+    return 0
+  fi
+
+  typeset -i asReady=0
+  typeset -i attempt=0
+  typeset ghosttyPID=""
+  for attempt in $(seq 1 $_ghostty_zmx_ghostty_ready_attempts); do
+    typeset p=$$
+    while [[ $p -gt 1 ]]; do
+      typeset cmd=$(ps -o comm= -p $p 2>/dev/null)
+      if [[ "$cmd" == *ghostty* ]]; then
+        ghosttyPID=$p
+        break
+      fi
+      p=$(ps -o ppid= -p $p 2>/dev/null | tr -d ' ')
+    done
+    if [[ -n "$ghosttyPID" ]] && osascript -e 'tell application "Ghostty" to get version' >/dev/null 2>&1; then
+      _ghostty_zmx_debug "Ghostty PID detected ghostty_pid=$ghosttyPID attempt=$attempt"
+      asReady=1
+      break
+    fi
+    ghosttyPID=""
+    sleep "$_ghostty_zmx_ghostty_ready_delay"
+  done
+  [[ "$asReady" -eq 0 ]] && { _ghostty_zmx_debug "Ghostty PID detection failed"; return 0; }
+
+  typeset restoreFlag="$(_ghostty_zmx_runtime_path "restore-${ghosttyPID}.lock")"
+  typeset restoreAttemptedFlag="$(_ghostty_zmx_runtime_path "restore-attempted-${ghosttyPID}.done")"
+  typeset restoreProcessToken="$(_ghostty_zmx_ghostty_process_token "$ghosttyPID")"
+  typeset restoreDriver=0
+  typeset sessionName=""
+  typeset sessionFromRestore=0
+  if [[ -n "$ghosttyPID" && -n "$restoreFlag" && -n "$restoreAttemptedFlag" && -f "$restoreAttemptedFlag" ]]; then
+    _ghostty_zmx_debug "restore-driver skipped reason=already-attempted ghostty_pid=$ghosttyPID flag=$restoreAttemptedFlag"
+  elif [[ -n "$ghosttyPID" && -n "$restoreFlag" ]] && mkdir "$restoreFlag" 2>/dev/null; then
+    restoreDriver=1
+    _ghostty_zmx_mark_restore_attempted "$restoreAttemptedFlag" "$restoreProcessToken"
+    _ghostty_zmx_debug "restore-driver elected ghostty_pid=$ghosttyPID flag=$restoreFlag"
+    _ghostty_zmx_restore
+    typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
+    if [[ -s "$firstFile" ]]; then
+      IFS= read -r sessionName < "$firstFile"
+      rm -f "$firstFile" 2>/dev/null
+      if _ghostty_zmx_valid_session_name "$sessionName"; then
+        sessionFromRestore=1
+      else
+        _ghostty_zmx_debug "invalid session skipped action=restore-first session=$sessionName"
+        sessionName=""
+      fi
+    fi
+  fi
+  if [[ "$restoreDriver" -eq 1 ]]; then
+    rmdir "$restoreFlag" 2>/dev/null
+    _ghostty_zmx_debug "restore-driver released ghostty_pid=$ghosttyPID flag=$restoreFlag"
+  fi
+
+  if [[ -z "$sessionName" && "$restoreDriver" -eq 0 ]]; then
+    sessionName=$(_ghostty_zmx_wait_restore_assignment "$ghosttyPID" "$restoreFlag")
+    if [[ -n "$sessionName" ]]; then
+      sessionFromRestore=1
+    elif _ghostty_zmx_restore_active "$ghosttyPID" "$restoreFlag"; then
+      _ghostty_zmx_debug "auto-attach skipped reason=restore-unassigned ghostty_pid=$ghosttyPID"
+      return 0
+    fi
+  fi
+
+  typeset position=$(_ghostty_zmx_current_position)
+  _ghostty_zmx_debug "current position result=${position:-missing}"
+  if [[ -z "$sessionName" && -n "$position" ]]; then
+    position=$(_ghostty_zmx_apply_position_map "$position")
+    typeset winHash=$(print -r -- "$position" | awk '{print $1}')
+    typeset tabHash=$(print -r -- "$position" | awk '{print $2}')
+    typeset termId=$(print -r -- "$position" | awk '{print $3}')
+    sessionName="zmx-${winHash}-${tabHash}-${termId}"
+    _ghostty_zmx_debug "session generated session=$sessionName position=$position"
+    _ghostty_zmx_valid_session_name "$sessionName" || { _ghostty_zmx_debug "invalid session skipped action=generated session=$sessionName"; sessionName=""; }
+  fi
+
+  if [[ -z "$sessionName" ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=no-session"
+    return 0
+  fi
+
+  if [[ -n "$sessionName" ]]; then
+    if [[ "$sessionFromRestore" -eq 0 ]]; then
+      sessionName="$(_ghostty_zmx_reserve_session_name "$sessionName")" || { _ghostty_zmx_debug "auto-attach skipped reason=reserve-failed"; return 0; }
+      _ghostty_zmx_record_position_map "$sessionName" "$(_ghostty_zmx_current_position)"
+    else
+      _ghostty_zmx_log_session "$sessionName"
+    fi
+    _ghostty_zmx_start_reaper "$ghosttyPID"
+    _ghostty_zmx_restore_saved_scrollback "$sessionName"
+    _ghostty_zmx_debug "attach session=$sessionName from_restore=$sessionFromRestore"
+    if ! zmx attach "$sessionName"; then
+      _ghostty_zmx_debug "zmx attach failed session=$sessionName status=$?"
+    fi
+  fi
+}
+
+_ghostty_zmx_auto_attach
+if [[ "${GHOSTTY_ZMX_KEEP_HELPERS:-0}" != "1" ]]; then
+  unfunction -m '_ghostty_zmx_*' 2>/dev/null || true
+fi

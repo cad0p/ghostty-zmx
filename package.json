@@ -1,0 +1,23 @@
+{
+  "name": "ghostty-zmx",
+  "version": "0.1.0",
+  "description": "Ghostty + zmx session management integration for zsh on macOS.",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cad0p/ghostty-zmx.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cad0p/ghostty-zmx/issues"
+  },
+  "homepage": "https://github.com/cad0p/ghostty-zmx#readme",
+  "keywords": [
+    "ghostty",
+    "zmx",
+    "zsh",
+    "terminal",
+    "session-management",
+    "macos"
+  ],
+  "license": "MIT"
+}
