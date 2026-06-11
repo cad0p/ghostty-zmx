@@ -326,7 +326,7 @@ _ghostty_zmx_restore_saved_scrollback() {
 }
 
 _ghostty_zmx_start_detach_watcher() {
-  typeset session="$1" ghosttyPID="$2"
+  typeset session="$1" ghosttyPID="$2" liveTerm="$3"
   _ghostty_zmx_valid_session_name "$session" || return 0
   [[ -n "$ghosttyPID" ]] || return 0
   typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 0
@@ -336,9 +336,10 @@ _ghostty_zmx_start_detach_watcher() {
 #!/bin/zsh
 session="$1"
 ghosttyPID="$2"
-dataHome="$3"
-stateHome="$4"
-scrollbackLines="$5"
+liveTerm="$3"
+dataHome="$4"
+stateHome="$5"
+scrollbackLines="$6"
 log="$dataHome/sessions"
 
 debug_log() {
@@ -353,6 +354,52 @@ valid_session_name() {
 
 session_clients() {
   zmx list 2>/dev/null | awk -F '\t' -v name="$1" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }'
+}
+
+hex_suffix() {
+  local id="$1" suffix="" i ch
+  [[ -n "$id" ]] || return 1
+  for (( i=${#id}; i>=1; i-- )); do
+    ch="${id:$((i-1)):1}"
+    [[ "$ch" == [0-9a-fA-F] ]] || break
+    suffix="${ch}${suffix}"
+  done
+  [[ -n "$suffix" ]] || return 1
+  print -r -- "$suffix"
+}
+
+terminal_hash() {
+  local suffix
+  suffix="$(hex_suffix "$1")" || return 1
+  if [[ ${#suffix} -ge 8 ]]; then
+    print -r -- "${suffix[1,8]}"
+  else
+    print -r -- "$suffix"
+  fi
+}
+
+terminal_present() {
+  local wanted="${1:l}" raw term
+  [[ -n "$wanted" ]] || return 1
+  raw="$(osascript <<'APPLESCRIPT' 2>/dev/null
+set out to ""
+tell application "Ghostty"
+  repeat with w in windows
+    repeat with tb in tabs of w
+      repeat with tm in terminals of tb
+        set out to out & ((id of tm) as string) & linefeed
+      end repeat
+    end repeat
+  end repeat
+end tell
+return out
+APPLESCRIPT
+)" || return 1
+  while IFS= read -r term; do
+    [[ -n "$term" ]] || continue
+    [[ "${$(terminal_hash "$term" 2>/dev/null):l}" == "$wanted" ]] && return 0
+  done <<< "$raw"
+  return 1
 }
 
 attached_managed_count() {
@@ -404,13 +451,15 @@ sleep 0.1
 while kill -0 "$ghosttyPID" 2>/dev/null; do
   grep -qxF "$session" "$log" 2>/dev/null || break
   clients="$(session_clients "$session")"
-  if [[ "$clients" == "0" ]]; then
+  terminalGone=0
+  [[ -n "$liveTerm" ]] && ! terminal_present "$liveTerm" && terminalGone=1
+  if [[ "$clients" == "0" || "$terminalGone" -eq 1 ]]; then
     windows="$(osascript -e 'tell application "Ghostty" to count of windows' 2>/dev/null || print '')"
     if [[ "$windows" =~ '^[0-9]+$' && "$windows" -gt 0 ]]; then
       attached="$(attached_managed_count)"
       if [[ "$attached" =~ '^[0-9]+$' && "$attached" -gt 0 ]]; then
         snapshot_history
-        debug_log "detached cleanup session=$session attached_managed=$attached reason=watcher"
+        debug_log "detached cleanup session=$session attached_managed=$attached clients=${clients:-missing} terminal_gone=$terminalGone live_term=$liveTerm reason=watcher"
         zmx kill "$session" >/dev/null 2>&1 || true
         cleanup_log "$session"
         rm -f "$(history_file_for_session "$session")" 2>/dev/null
@@ -424,7 +473,7 @@ done
 rm -f "$0" 2>/dev/null
 EOS
   chmod +x "$script" 2>/dev/null
-  GHOSTTY_ZMX_DEBUG="${GHOSTTY_ZMX_DEBUG:-0}" nohup /bin/zsh "$script" "$session" "$ghosttyPID" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$GHOSTTY_ZMX_SCROLLBACK_LINES" >"$watcher_log" 2>&1 </dev/null &!
+  GHOSTTY_ZMX_DEBUG="${GHOSTTY_ZMX_DEBUG:-0}" nohup /bin/zsh "$script" "$session" "$ghosttyPID" "$liveTerm" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$GHOSTTY_ZMX_SCROLLBACK_LINES" >"$watcher_log" 2>&1 </dev/null &!
 }
 
 _ghostty_zmx_start_reaper() {
@@ -1195,7 +1244,9 @@ _ghostty_zmx_auto_attach() {
     [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$sessionName" "$(_ghostty_zmx_current_position)"
     _ghostty_zmx_log_session "$sessionName"
     _ghostty_zmx_start_reaper "$ghosttyPID"
-    _ghostty_zmx_start_detach_watcher "$sessionName" "$ghosttyPID"
+    typeset _ghostty_zmx_live_position="$(_ghostty_zmx_current_position)"
+    typeset _ghostty_zmx_live_term="$(print -r -- "$_ghostty_zmx_live_position" | awk '{print $3}')"
+    _ghostty_zmx_start_detach_watcher "$sessionName" "$ghosttyPID" "$_ghostty_zmx_live_term"
     _ghostty_zmx_restore_saved_scrollback "$sessionName"
     _ghostty_zmx_debug "attach session=$sessionName from_restore=$sessionFromRestore"
     typeset _ghostty_zmx_detach_cleanup_done=0
@@ -1208,12 +1259,8 @@ _ghostty_zmx_auto_attach() {
     trap '_ghostty_zmx_attach_cleanup_once trap-exit' EXIT
     trap '_ghostty_zmx_attach_cleanup_once signal-hup; exit 129' HUP
     trap '_ghostty_zmx_attach_cleanup_once signal-term; exit 143' TERM
-    typeset _ghostty_zmx_attach_pid=0 _ghostty_zmx_attach_status=0
-    zmx attach "$sessionName" &
-    _ghostty_zmx_attach_pid=$!
-    wait "$_ghostty_zmx_attach_pid" || _ghostty_zmx_attach_status=$?
-    if [[ "$_ghostty_zmx_attach_status" -ne 0 ]]; then
-      _ghostty_zmx_debug "zmx attach failed session=$sessionName status=$_ghostty_zmx_attach_status"
+    if ! zmx attach "$sessionName"; then
+      _ghostty_zmx_debug "zmx attach failed session=$sessionName status=$?"
     fi
     _ghostty_zmx_attach_cleanup_once attach-return
     trap - EXIT HUP TERM
