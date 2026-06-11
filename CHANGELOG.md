@@ -13,3 +13,5 @@ This release wires up the draft changelog workflow, adds CI coverage for the she
 ### ⚙️ Miscellaneous Tasks
 
 - Add release and test workflows ([#2](https://github.com/cad0p/ghostty-zmx/pull/2))
+
+
