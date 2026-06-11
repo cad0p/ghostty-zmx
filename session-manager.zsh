@@ -228,11 +228,15 @@ _ghostty_zmx_session_available_unlocked() {
 }
 
 _ghostty_zmx_collision_variant() {
-  typeset base="$1" prefix term nonce
-  prefix="${base%-*}"
-  term="${base##*-}"
-  nonce="$(_ghostty_zmx_random_hex)"
-  print -r -- "${prefix}-${term}${nonce}"
+  typeset base="$1" rest win tab term nonce_tab nonce_term
+  rest="${base#zmx-}"
+  win="${rest%%-*}"
+  rest="${rest#*-}"
+  tab="${rest%%-*}"
+  term="${rest#*-}"
+  nonce_tab="$(_ghostty_zmx_random_hex)"
+  nonce_term="$(_ghostty_zmx_random_hex)"
+  print -r -- "zmx-${win}-${tab}${nonce_tab}-${term}${nonce_term}"
 }
 
 _ghostty_zmx_reserve_session_name() {
