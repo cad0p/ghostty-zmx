@@ -72,8 +72,8 @@ _ghostty_zmx_session_history_file() {
 }
 
 _ghostty_zmx_runtime_dir() {
-  typeset root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-  typeset dir="$root/ghostty-zmx-${UID:-$(id -u)}"
+  typeset root="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}" uid="${UID:-$(id -u)}" dir owner
+  dir="$root/ghostty-zmx-$uid"
   if [[ -e "$dir" && ! -d "$dir" ]]; then
     _ghostty_zmx_debug "runtime dir unsafe path=$dir"
     return 1
@@ -82,8 +82,8 @@ _ghostty_zmx_runtime_dir() {
   mkdir -p "$dir" 2>/dev/null || return 1
   chmod 700 "$dir" 2>/dev/null || return 1
   if command -v stat >/dev/null 2>&1; then
-    typeset owner="$(stat -f %u "$dir" 2>/dev/null || stat -c %u "$dir" 2>/dev/null)"
-    [[ -z "$owner" || "$owner" == "${UID:-$(id -u)}" ]] || return 1
+    owner="$(stat -c %u "$dir" 2>/dev/null || stat -f %u "$dir" 2>/dev/null || true)"
+    [[ -z "$owner" || "$owner" == "$uid" ]] || return 1
   fi
   print -r -- "$dir"
 }
