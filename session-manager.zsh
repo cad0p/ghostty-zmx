@@ -746,9 +746,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   done < <(managed_detached_sessions)
   sleep "$interval"
 done
-if [[ "$zeroWindowsSeen" -gt 0 || ( "${#detachedSeen[@]}" -gt 0 && "$lastAttached" -le 1 ) ]]; then
-  cleanup_detached_sessions "zero-window exit cleanup"
-elif [[ "${#detachedSeen[@]}" -gt 0 ]]; then
+if [[ "${#detachedSeen[@]}" -gt 0 && "$lastAttached" -gt 1 ]]; then
   cleanup_seen_detached_sessions "detached exit cleanup"
   snapshot_existing_sessions "ghostty-exit"
 else
