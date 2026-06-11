@@ -325,6 +325,108 @@ _ghostty_zmx_restore_saved_scrollback() {
   fi
 }
 
+_ghostty_zmx_start_detach_watcher() {
+  typeset session="$1" ghosttyPID="$2"
+  _ghostty_zmx_valid_session_name "$session" || return 0
+  [[ -n "$ghosttyPID" ]] || return 0
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 0
+  typeset script="$runtime_dir/detach-${session}-$$.zsh"
+  typeset watcher_log="$runtime_dir/detach-${session}-$$.log"
+  cat > "$script" <<'EOS'
+#!/bin/zsh
+session="$1"
+ghosttyPID="$2"
+dataHome="$3"
+stateHome="$4"
+scrollbackLines="$5"
+log="$dataHome/sessions"
+
+debug_log() {
+  [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
+  mkdir -p "$stateHome" 2>/dev/null
+  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') detach-watcher $*" >> "$stateHome/debug.log"
+}
+
+valid_session_name() {
+  [[ "$1" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8}$ ]]
+}
+
+session_clients() {
+  zmx list 2>/dev/null | awk -F '\t' -v name="$1" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }'
+}
+
+attached_managed_count() {
+  local managed clients count=0
+  [[ -f "$log" ]] || { print -r -- 0; return 0; }
+  while IFS= read -r managed; do
+    [[ -n "$managed" ]] || continue
+    valid_session_name "$managed" || continue
+    clients="$(session_clients "$managed")"
+    [[ "$clients" == "1" ]] && count=$((count + 1))
+  done < "$log"
+  print -r -- "$count"
+}
+
+cleanup_log() {
+  local dead="$1"
+  [[ -f "$log" && -n "$dead" ]] || return 0
+  grep -vxF "$dead" "$log" > "${log}.tmp.$$" 2>/dev/null || true
+  mv "${log}.tmp.$$" "$log" 2>/dev/null
+}
+
+history_file_for_session() {
+  print -r -- "$stateHome/history/${1}.txt"
+}
+
+snapshot_history() {
+  local historyFile tmpFile finalFile
+  mkdir -p "$stateHome/history" 2>/dev/null
+  historyFile="$(history_file_for_session "$session")"
+  tmpFile="${historyFile}.tmp.$$"
+  finalFile="${historyFile}.tmp.final.$$"
+  rm -f "$tmpFile" "$finalFile" 2>/dev/null
+  if zmx history "$session" > "$tmpFile" 2>/dev/null; then
+    if tail -n "$scrollbackLines" "$tmpFile" > "$finalFile"; then
+      mv "$finalFile" "$historyFile"
+      debug_log "scrollback snapshot session=$session file=$historyFile lines=$scrollbackLines"
+    else
+      rm -f "$finalFile" 2>/dev/null
+      debug_log "scrollback snapshot tail failed session=$session"
+    fi
+  else
+    debug_log "scrollback snapshot failed session=$session"
+  fi
+  rm -f "$tmpFile" 2>/dev/null
+}
+
+valid_session_name "$session" || exit 0
+sleep 0.1
+while kill -0 "$ghosttyPID" 2>/dev/null; do
+  grep -qxF "$session" "$log" 2>/dev/null || break
+  clients="$(session_clients "$session")"
+  if [[ "$clients" == "0" ]]; then
+    windows="$(osascript -e 'tell application "Ghostty" to count of windows' 2>/dev/null || print '')"
+    if [[ "$windows" =~ '^[0-9]+$' && "$windows" -gt 0 ]]; then
+      attached="$(attached_managed_count)"
+      if [[ "$attached" =~ '^[0-9]+$' && "$attached" -gt 0 ]]; then
+        snapshot_history
+        debug_log "detached cleanup session=$session attached_managed=$attached reason=watcher"
+        zmx kill "$session" >/dev/null 2>&1 || true
+        cleanup_log "$session"
+        rm -f "$(history_file_for_session "$session")" 2>/dev/null
+        debug_log "scrollback snapshot deleted session=$session"
+        break
+      fi
+    fi
+  fi
+  sleep 0.25
+done
+rm -f "$0" 2>/dev/null
+EOS
+  chmod +x "$script" 2>/dev/null
+  GHOSTTY_ZMX_DEBUG="${GHOSTTY_ZMX_DEBUG:-0}" nohup /bin/zsh "$script" "$session" "$ghosttyPID" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$GHOSTTY_ZMX_SCROLLBACK_LINES" >"$watcher_log" 2>&1 </dev/null &!
+}
+
 _ghostty_zmx_start_reaper() {
   typeset ghosttyPID="$1"
   [[ -n "$ghosttyPID" ]] || return 0
@@ -1093,6 +1195,7 @@ _ghostty_zmx_auto_attach() {
     [[ "$sessionFromRestore" -eq 0 ]] && _ghostty_zmx_record_position_map "$sessionName" "$(_ghostty_zmx_current_position)"
     _ghostty_zmx_log_session "$sessionName"
     _ghostty_zmx_start_reaper "$ghosttyPID"
+    _ghostty_zmx_start_detach_watcher "$sessionName" "$ghosttyPID"
     _ghostty_zmx_restore_saved_scrollback "$sessionName"
     _ghostty_zmx_debug "attach session=$sessionName from_restore=$sessionFromRestore"
     typeset _ghostty_zmx_detach_cleanup_done=0
