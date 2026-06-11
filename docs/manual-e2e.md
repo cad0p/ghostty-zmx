@@ -27,6 +27,19 @@ Before testing, confirm the installed Ghostty config contains the managed produc
 7. Reopen Ghostty.
 8. Verify the same layout shape returns, each restored session has a client, and each marker appears in `zmx history <session>`.
 
+## Create new window after restore
+
+1. Temporarily use the automated-test override `confirm-close-surface = false`; restore the production value after the scenario.
+2. Start from clean managed state or record the exact initial sessions file.
+3. Create a base layout such as one window with two tabs where the second tab has one split. Expected shape: `1,2`.
+4. Record every managed session and print a unique marker in each one.
+5. Press Cmd-Q, reopen Ghostty, and wait until restore is complete.
+6. Verify the restored shape is still `1,2`, the sessions file still has the same session count, and each recorded session has exactly `clients=1`.
+7. Create one new Ghostty window after restore.
+8. Verify this adds exactly one window and one managed session. The valid shape is order-insensitive: `1;1,2` or `1,2;1`.
+9. Verify all pre-existing sessions still have exactly `clients=1`; no old session should gain extra clients.
+10. Press Cmd-Q again, reopen Ghostty, and verify the two-window shape and four-session count are preserved without duplicating the restored layout.
+
 ## Working-directory inheritance observation
 
 1. In a managed Ghostty session, create and enter a unique local directory:
