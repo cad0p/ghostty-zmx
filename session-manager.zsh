@@ -974,7 +974,7 @@ _ghostty_zmx_auto_attach() {
   typeset restoreDriver=0
   typeset sessionName=""
   typeset sessionFromRestore=0
-  if [[ -n "$ghosttyPID" && -n "$restoreFlag" && -n "$restoreAttemptedFlag" && -n "$restoreProcessToken" ]] && _ghostty_zmx_restore_attempted_current "$restoreAttemptedFlag" "$restoreProcessToken"; then
+  if [[ -n "$ghosttyPID" && -n "$restoreFlag" && -n "$restoreAttemptedFlag" && -f "$restoreAttemptedFlag" ]]; then
     _ghostty_zmx_debug "restore-driver skipped reason=already-attempted ghostty_pid=$ghosttyPID flag=$restoreAttemptedFlag"
   elif [[ -n "$ghosttyPID" && -n "$restoreFlag" ]] && mkdir "$restoreFlag" 2>/dev/null; then
     restoreDriver=1
