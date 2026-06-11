@@ -14,6 +14,8 @@ _ghostty_zmx_queue_lock_attempts=50
 _ghostty_zmx_queue_lock_delay=0.1
 _ghostty_zmx_ghostty_ready_attempts=10
 _ghostty_zmx_ghostty_ready_delay=0.5
+_ghostty_zmx_restore_assignment_attempts=80
+_ghostty_zmx_restore_assignment_delay=0.1
 # Restore lock cleanup margin covers AppleScript overhead not counted by per-step restore delays.
 _ghostty_zmx_restore_lock_margin=10
 
@@ -573,6 +575,40 @@ _ghostty_zmx_pop_restore_queue() {
   return 1
 }
 
+_ghostty_zmx_restore_runtime_lock() {
+  typeset ghosttyPID="$1"
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 1
+  print -r -- "$runtime_dir/restoring-${ghosttyPID}.lock"
+}
+
+_ghostty_zmx_restore_active() {
+  typeset ghosttyPID="$1" restoreFlag="$2" restoreLock
+  [[ -n "$restoreFlag" && -d "$restoreFlag" ]] && return 0
+  restoreLock="$(_ghostty_zmx_restore_runtime_lock "$ghosttyPID")" || return 1
+  [[ -d "$restoreLock" ]]
+}
+
+_ghostty_zmx_wait_restore_assignment() {
+  typeset ghosttyPID="$1" restoreFlag="$2" sessionName restoreActive=0
+  for attempt in $(seq 1 $_ghostty_zmx_restore_assignment_attempts); do
+    sessionName="$(_ghostty_zmx_pop_restore_queue)"
+    if [[ -n "$sessionName" ]]; then
+      print -r -- "$sessionName"
+      return 0
+    fi
+    if _ghostty_zmx_restore_active "$ghosttyPID" "$restoreFlag"; then
+      restoreActive=1
+      _ghostty_zmx_debug "restore assignment wait attempt=$attempt ghostty_pid=$ghosttyPID"
+      sleep "$_ghostty_zmx_restore_assignment_delay"
+      continue
+    fi
+    [[ "$restoreActive" -eq 1 ]] && _ghostty_zmx_debug "restore assignment wait ended ghostty_pid=$ghosttyPID attempts=$attempt"
+    return 1
+  done
+  _ghostty_zmx_debug "restore assignment wait timed out ghostty_pid=$ghosttyPID"
+  return 1
+}
+
 _ghostty_zmx_current_position() {
   typeset raw win tab term
   raw="$(osascript <<'EOF' 2>/dev/null
@@ -962,8 +998,8 @@ _ghostty_zmx_auto_attach() {
     _ghostty_zmx_debug "restore-driver released ghostty_pid=$ghosttyPID flag=$restoreFlag"
   fi
 
-  if [[ -z "$sessionName" ]]; then
-    sessionName=$(_ghostty_zmx_pop_restore_queue)
+  if [[ -z "$sessionName" && "$restoreDriver" -eq 0 ]]; then
+    sessionName=$(_ghostty_zmx_wait_restore_assignment "$ghosttyPID" "$restoreFlag")
     [[ -n "$sessionName" ]] && sessionFromRestore=1
   fi
 
