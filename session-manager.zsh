@@ -248,7 +248,7 @@ _ghostty_zmx_reserve_session_name() {
   typeset base="$1" log="$(_ghostty_zmx_sessions_file)" lockdir candidate attempt variant_attempt
   _ghostty_zmx_valid_session_name "$base" || { _ghostty_zmx_debug "invalid session skipped action=reserve session=$base"; return 1; }
   mkdir -p "${log:h}" 2>/dev/null
-  : > "$log" 2>/dev/null || true
+  [[ -f "$log" ]] || : > "$log" 2>/dev/null || true
   lockdir="${log}.lock"
   for attempt in $(seq 1 80); do
     if mkdir "$lockdir" 2>/dev/null; then
