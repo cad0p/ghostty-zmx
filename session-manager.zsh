@@ -440,6 +440,17 @@ snapshot_existing_sessions() {
   done < <(managed_existing_sessions)
 }
 
+cleanup_detached_sessions() {
+  local reason="$1"
+  while IFS= read -r orphan; do
+    snapshot_history "$orphan"
+    debug_log "$reason session=$orphan"
+    zmx kill "$orphan" >/dev/null 2>&1
+    cleanup_log "$orphan"
+    forget_snapshot "$orphan"
+  done < <(managed_detached_sessions)
+}
+
 sleep "$reaperStartupDelay"
 zeroWindowsSeen=0
 typeset -A detachedSeen
@@ -463,13 +474,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   if [[ "$windows" -eq 0 ]]; then
     zeroWindowsSeen=$((zeroWindowsSeen + interval))
     if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
-      while IFS= read -r orphan; do
-        snapshot_history "$orphan"
-        debug_log "zero-window cleanup session=$orphan"
-        zmx kill "$orphan" >/dev/null 2>&1
-        cleanup_log "$orphan"
-        forget_snapshot "$orphan"
-      done < <(managed_detached_sessions)
+      cleanup_detached_sessions "zero-window cleanup"
     fi
     sleep "$interval"
     continue
@@ -509,7 +514,11 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   done < <(managed_detached_sessions)
   sleep "$interval"
 done
-snapshot_existing_sessions "ghostty-exit"
+if [[ "$zeroWindowsSeen" -gt 0 ]]; then
+  cleanup_detached_sessions "zero-window exit cleanup"
+else
+  snapshot_existing_sessions "ghostty-exit"
+fi
 debug_log "stopped ghostty_pid=$ghosttyPID"
 rm -f "$attempted" 2>/dev/null
 rmdir "$flag" 2>/dev/null
