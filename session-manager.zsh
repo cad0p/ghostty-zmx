@@ -1105,8 +1105,12 @@ _ghostty_zmx_auto_attach() {
     trap '_ghostty_zmx_attach_cleanup_once trap-exit' EXIT
     trap '_ghostty_zmx_attach_cleanup_once signal-hup; exit 129' HUP
     trap '_ghostty_zmx_attach_cleanup_once signal-term; exit 143' TERM
-    if ! zmx attach "$sessionName"; then
-      _ghostty_zmx_debug "zmx attach failed session=$sessionName status=$?"
+    typeset _ghostty_zmx_attach_pid=0 _ghostty_zmx_attach_status=0
+    zmx attach "$sessionName" &
+    _ghostty_zmx_attach_pid=$!
+    wait "$_ghostty_zmx_attach_pid" || _ghostty_zmx_attach_status=$?
+    if [[ "$_ghostty_zmx_attach_status" -ne 0 ]]; then
+      _ghostty_zmx_debug "zmx attach failed session=$sessionName status=$_ghostty_zmx_attach_status"
     fi
     _ghostty_zmx_attach_cleanup_once attach-return
     trap - EXIT HUP TERM
