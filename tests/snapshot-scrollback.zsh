@@ -109,10 +109,15 @@ print -- three > "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
 print -- four >> "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
 print -- five >> "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
 GHOSTTY_ZMX_DEBUG=1 ZMX_PRINT_FAIL=0 _ghostty_zmx_restore_saved_scrollback "$session"
+print -r -- "$session" >> "$ZMX_EXISTS_FILE"
+for _ in $(seq 1 50); do
+  [[ -e "$ZMX_PRINT_LOG" ]] && break
+  sleep 0.1
+done
 first_line="$(sed -n '1p' "$ZMX_PRINT_LOG")"
 [[ "$first_line" == '[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]' ]] || { print -u2 "missing restore banner"; exit 1; }
 [[ "$(sed -n '2p' "$ZMX_PRINT_LOG")" == three ]] || { print -u2 "snapshot content not printed after banner"; exit 1; }
-[[ "$(cat "$ZMX_RUN_LOG")" == "$session" ]] || { print -u2 "fresh session was not created before print"; exit 1; }
+[[ ! -e "$ZMX_RUN_LOG" ]] || { print -u2 "restore should not use zmx run"; exit 1; }
 
 rm -f "$ZMX_PRINT_LOG" "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
 print -- keep > "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
@@ -128,5 +133,9 @@ _ghostty_zmx_restore_saved_scrollback "$session"
 
 print -- secret-one > "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
 GHOSTTY_ZMX_DEBUG=1 ZMX_PRINT_FAIL=1 _ghostty_zmx_restore_saved_scrollback "$session" || true
+for _ in $(seq 1 50); do
+  grep -q 'zmx print failed' "$GHOSTTY_ZMX_STATE_HOME/debug.log" 2>/dev/null && break
+  sleep 0.1
+done
 grep -q 'zmx print failed' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 "missing print failure log"; exit 1; }
 ! grep -q 'secret-one' "$GHOSTTY_ZMX_STATE_HOME/debug.log" || { print -u2 "debug log leaked saved history"; exit 1; }

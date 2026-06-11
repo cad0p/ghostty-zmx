@@ -329,15 +329,24 @@ _ghostty_zmx_restore_saved_scrollback() {
   rm -f "$list_file" 2>/dev/null
   _ghostty_zmx_debug "fresh-session detection session=$session exists=0 snapshot=$history_file"
   [[ -s "$history_file" ]] || return 0
-  if ! zmx run "$session" true >/dev/null 2>&1; then
-    _ghostty_zmx_debug "zmx run failed session=$session"
-  fi
-  typeset banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
-  if ! { print -r -- "$banner"; cat "$history_file"; } | zmx print "$session"; then
-    _ghostty_zmx_debug "zmx print failed session=$session file=$history_file"
-  else
-    _ghostty_zmx_debug "zmx print restored scrollback session=$session file=$history_file"
-  fi
+  (
+    typeset attempt wait_file="$runtime_dir/list.short.restore-scrollback.${session}.$$"
+    for attempt in $(seq 1 100); do
+      if zmx list --short > "$wait_file" 2>/dev/null && grep -qxF "$session" "$wait_file" 2>/dev/null; then
+        rm -f "$wait_file" 2>/dev/null
+        typeset banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
+        if ! { print -r -- "$banner"; cat "$history_file"; } | zmx print "$session"; then
+          _ghostty_zmx_debug "zmx print failed session=$session file=$history_file"
+        else
+          _ghostty_zmx_debug "zmx print restored scrollback session=$session file=$history_file"
+        fi
+        return 0
+      fi
+      sleep 0.1
+    done
+    rm -f "$wait_file" 2>/dev/null
+    _ghostty_zmx_debug "zmx print skipped session=$session reason=session-not-created file=$history_file"
+  ) &!
 }
 
 _ghostty_zmx_start_reaper() {
