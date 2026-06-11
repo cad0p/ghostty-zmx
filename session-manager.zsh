@@ -21,7 +21,7 @@ _ghostty_zmx_restore_lock_margin=10
 
 _ghostty_zmx_valid_session_name() {
   typeset session="$1"
-  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
+  [[ ${#session} -le 46 && "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
 }
 
 _ghostty_zmx_hex_suffix() {
@@ -234,8 +234,13 @@ _ghostty_zmx_collision_variant() {
   rest="${rest#*-}"
   tab="${rest%%-*}"
   term="${rest#*-}"
+  win="${win[1,12]}"
+  tab="${tab[1,9]}"
+  term="${term[1,8]}"
   nonce_tab="$(_ghostty_zmx_random_hex)"
   nonce_term="$(_ghostty_zmx_random_hex)"
+  nonce_tab="${nonce_tab[1,4]}"
+  nonce_term="${nonce_term[1,4]}"
   print -r -- "zmx-${win}-${tab}${nonce_tab}-${term}${nonce_term}"
 }
 
@@ -373,7 +378,7 @@ attempted="$runtimeDir/restore-attempted-${ghosttyPID}.done"
 # attaching shell may have exited. Keep its helpers private and mirrored here.
 valid_session_name() {
   local session="$1"
-  [[ "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
+  [[ ${#session} -le 46 && "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
 }
 
 history_file_for_session() {
