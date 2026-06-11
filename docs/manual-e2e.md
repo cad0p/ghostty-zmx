@@ -92,6 +92,15 @@ Before testing, confirm the installed Ghostty config contains the managed produc
 4. Verify sessions remain in `zmx list --short` and in the ghostty-zmx sessions file.
 5. Reopen Ghostty and verify both windows restore.
 
+## Close one window, then Cmd-Q
+
+1. Temporarily use the automated-test override `confirm-close-surface = false`; restore the production value after the scenario.
+2. Create two Ghostty windows, for example one `1,2` window and one single-terminal window.
+3. Close exactly one window and wait until only the remaining window's sessions are present in the sessions file.
+4. Press Cmd-Q using the actual keyboard shortcut path, not `tell application "Ghostty" to quit`.
+5. Reopen Ghostty.
+6. Verify only the remaining window restores, the closed window does not reappear, the sessions file count matches the remaining layout, and all managed sessions have `clients=1`.
+
 ## Reboot scrollback simulation
 
 1. In a managed Ghostty session, print a unique marker.
