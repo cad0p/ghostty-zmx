@@ -101,6 +101,15 @@ Before testing, confirm the installed Ghostty config contains the managed produc
 5. Reopen Ghostty.
 6. Verify only the remaining window restores, the closed window does not reappear, the sessions file count matches the remaining layout, and all managed sessions have `clients=1`.
 
+## Close one split, then Cmd-Q
+
+1. Temporarily use the automated-test override `confirm-close-surface = false`; restore the production value after the scenario.
+2. Create a layout with at least one split, for example one window with two tabs where the second tab has two terminals (`1,2`).
+3. Record all managed sessions and print a marker in the split that will be closed.
+4. Close one split and immediately press Cmd-Q using the actual keyboard shortcut path.
+5. Reopen Ghostty.
+6. Verify the closed split does not reappear, the sessions file no longer contains the closed split's session, the remaining layout shape matches the surviving terminals (for example `1,1`), and all remaining managed sessions have `clients=1`.
+
 ## Reboot scrollback simulation
 
 1. In a managed Ghostty session, print a unique marker.
