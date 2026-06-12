@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [calver-released]
+
+<!-- USER-EDITABLE SECTION START -->
+<!-- Add your curated release notes here. -->
+<!-- USER-EDITABLE SECTION END -->
+
+### ⚙️ Miscellaneous Tasks
+
+- Add Homebrew release automation ([#5](https://github.com/cad0p/ghostty-zmx/pull/5))
+
+
 ## [0.1.1] - 2026-06-11
 
 <!-- USER-EDITABLE SECTION START -->
