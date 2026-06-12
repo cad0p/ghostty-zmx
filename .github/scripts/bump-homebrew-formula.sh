@@ -25,7 +25,8 @@ trap cleanup EXIT
 export HOMEBREW_GITHUB_API_TOKEN="${HOMEBREW_APP_TOKEN:?HOMEBREW_APP_TOKEN is required}"
 export GH_TOKEN="${HOMEBREW_APP_TOKEN}"
 
-git clone "https://github.com/${repo}.git" "$workdir/tap"
+git clone "https://github.com/${repo}" "$workdir/tap"
+git -C "$workdir/tap" remote set-url origin "https://github.com/${repo}"
 cd "$workdir/tap"
 
 brew tap --force "$tap_name" "$PWD"
