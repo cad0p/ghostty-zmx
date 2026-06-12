@@ -22,13 +22,66 @@ The current limitations are listed in the [Limitations](#limitations) section.
 
 ## Install
 
+### Stable Homebrew install
+
+`ghostty-zmx` is published in the stable tap:
+
+```sh
+brew tap neurosnap/tap
+brew trust --formula neurosnap/tap/zmx
+brew trust --formula cad0p/tap/ghostty-zmx
+brew install cad0p/tap/ghostty-zmx
+```
+
+The formula depends on `neurosnap/tap/zmx` and installs the `ghostty-zmx-install` and `ghostty-zmx-uninstall` commands. It does not modify your shell or Ghostty config by itself.
+
+After installing, run:
+
+```sh
+ghostty-zmx-install
+```
+
+For non-interactive setup:
+
+```sh
+ghostty-zmx-install --yes
+```
+
+### Prerelease Homebrew install
+
+Prerelease builds are published to a separate tap:
+
+```sh
+brew tap neurosnap/tap
+brew trust --formula neurosnap/tap/zmx
+brew trust --formula cad0p/prerelease/ghostty-zmx
+brew install cad0p/prerelease/ghostty-zmx
+```
+
+The prerelease tap tracks prerelease GitHub releases, not `--HEAD` builds. The installed commands are the same as the stable formula:
+
+```sh
+ghostty-zmx-install
+ghostty-zmx-uninstall
+```
+
+Use the prerelease tap only when testing prerelease `ghostty-zmx` behavior. Stable users should use:
+
+```sh
+brew install cad0p/tap/ghostty-zmx
+```
+
+### Local development install
+
+Install directly from a checkout when developing `ghostty-zmx`:
+
 ```sh
 git clone https://github.com/cad0p/ghostty-zmx.git
 cd ghostty-zmx
 ./install.sh
 ```
 
-The installer is interactive by default. For non-interactive installation:
+For non-interactive local installation:
 
 ```sh
 ./install.sh --yes
@@ -75,12 +128,6 @@ split-inherit-working-directory = true
 ```
 
 ghostty-zmx observes Ghostty's chosen working-directory behavior. It does not override it.
-
-## Experimental setup cleanup
-
-v0.1 is packaged as a new integration. It does not automate migration from the earlier experimental inline `.zshrc` block or the old `~/.local/share/zmx/sessions` file.
-
-If you previously used the experiment, manually remove the old inline `.zshrc` block, remove or leave unmanaged any old `ZMX_AUTO_ATTACH=1` Ghostty env line, and clean up old experimental files under `~/.local/share/zmx/` only after you have confirmed the new integration works.
 
 ## Usage model
 
