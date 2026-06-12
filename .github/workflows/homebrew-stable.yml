@@ -1,0 +1,100 @@
+name: Homebrew Stable
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "GitHub tag to bump from, e.g. v0.1.2"
+        required: true
+        type: string
+      prerelease:
+        description: "Whether this tag is a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == false || github.event_name == 'release' && github.event.release.prerelease == false }}
+    runs-on: macos-latest
+    steps:
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          client-id: ${{ secrets.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: cad0p
+          repositories: homebrew-tap,homebrew-prerelease
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Trust Homebrew taps
+        run: |
+          brew tap cad0p/tap
+          brew trust --tap cad0p/tap
+          brew tap neurosnap/tap
+          brew trust --formula neurosnap/tap/zmx
+
+      - name: Configure SSH git commit signing
+        env:
+          HOMEBREW_SIGNING_SSH_KEY: ${{ secrets.HOMEBREW_SIGNING_SSH_KEY }}
+          HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE: ${{ secrets.HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE }}
+          HOMEBREW_SIGNING_EMAIL: ${{ secrets.HOMEBREW_SIGNING_EMAIL }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${HOMEBREW_SIGNING_SSH_KEY:-}" ]; then
+            echo "::error::Missing HOMEBREW_SIGNING_SSH_KEY repository secret"
+            exit 1
+          fi
+          if [ -z "${HOMEBREW_SIGNING_EMAIL:-}" ]; then
+            echo "::error::Missing HOMEBREW_SIGNING_EMAIL repository secret"
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+
+          signing_key="$HOME/.ssh/homebrew-signing"
+          signing_pub="$HOME/.ssh/homebrew-signing.pub"
+
+          printf '%s\n' "$HOMEBREW_SIGNING_SSH_KEY" > "$signing_key"
+          chmod 600 "$signing_key"
+
+          if [ -n "${HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE:-}" ]; then
+            eval "$(ssh-agent -s)"
+            printf '%s\n' "$HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE" | ssh-add -p "$signing_key"
+          else
+            ssh-add "$signing_key"
+          fi
+
+          ssh-keygen -y -f "$signing_key" > "$signing_pub"
+          chmod 644 "$signing_pub"
+
+          git config --global user.name "ghostty-zmx-homebrew[bot]"
+          git config --global user.email "$HOMEBREW_SIGNING_EMAIL"
+          git config --global commit.gpgsign true
+          git config --global gpg.format ssh
+          git config --global gpg.ssh.program ssh-keygen
+          git config --global user.signingkey "$signing_pub"
+
+      - name: Bump stable Homebrew formula
+        uses: dawidd6/action-homebrew-bump-formula@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          user_name: ghostty-zmx-homebrew[bot]
+          user_email: ${{ secrets.HOMEBREW_SIGNING_EMAIL }}
+          no_fork: true
+          tap: cad0p/homebrew-tap
+          formula: ghostty-zmx
+          tag: ${{ github.event.release.tag_name || inputs.tag }}
+          message: |
+            Update ghostty-zmx to ${{ github.event.release.tag_name || inputs.tag }}.
+
+            Release: ${{ github.event.release.html_url || format('https://github.com/cad0p/ghostty-zmx/releases/tag/{0}', inputs.tag) }}
