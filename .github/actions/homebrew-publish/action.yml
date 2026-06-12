@@ -1,0 +1,137 @@
+name: Publish Homebrew formula
+description: Bump the stable or prerelease Homebrew tap formula for a ghostty-zmx release.
+
+inputs:
+  tag:
+    description: Git tag to publish, e.g. v0.1.2 or v0.1.2-20260612.0
+    required: true
+  prerelease:
+    description: Whether the tag is a prerelease
+    required: true
+  app-client-id:
+    description: GitHub App client ID with write access to the Homebrew tap repositories
+    required: true
+  app-private-key:
+    description: GitHub App private key
+    required: true
+  signing-ssh-key:
+    description: SSH private key used to sign Homebrew bump commits
+    required: true
+  signing-ssh-key-passphrase:
+    description: Optional passphrase for the SSH signing key
+    required: false
+    default: ''
+  signing-email:
+    description: Verified commit email for signed Homebrew bump commits
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+
+    - name: Create GitHub App token
+      id: app-token
+      uses: actions/create-github-app-token@v3
+      with:
+        client-id: ${{ inputs.app-client-id }}
+        private-key: ${{ inputs.app-private-key }}
+        owner: cad0p
+        repositories: homebrew-tap,homebrew-prerelease
+        permission-contents: write
+        permission-pull-requests: write
+
+    - name: Trust Homebrew taps
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+          tap_name="cad0p/prerelease"
+        else
+          tap_name="cad0p/tap"
+        fi
+
+        brew tap "$tap_name"
+        if brew trust --help >/dev/null 2>&1; then
+          brew trust --tap "$tap_name"
+          brew trust --formula neurosnap/tap/zmx
+        fi
+        brew tap neurosnap/tap
+        if brew trust --help >/dev/null 2>&1; then
+          brew trust --formula neurosnap/tap/zmx
+        fi
+
+    - name: Configure SSH git commit signing
+      shell: bash
+      env:
+        HOMEBREW_SIGNING_SSH_KEY: ${{ inputs.signing-ssh-key }}
+        HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE: ${{ inputs.signing-ssh-key-passphrase }}
+        HOMEBREW_SIGNING_EMAIL: ${{ inputs.signing-email }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${HOMEBREW_SIGNING_SSH_KEY:-}" ]; then
+          echo "::error::Missing Homebrew signing SSH key"
+          exit 1
+        fi
+        if [ -z "${HOMEBREW_SIGNING_EMAIL:-}" ]; then
+          echo "::error::Missing Homebrew signing email"
+          exit 1
+        fi
+
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+
+        signing_key="$HOME/.ssh/homebrew-signing"
+        signing_pub="$HOME/.ssh/homebrew-signing.pub"
+
+        printf '%s\n' "$HOMEBREW_SIGNING_SSH_KEY" > "$signing_key"
+        chmod 600 "$signing_key"
+
+        if [ -n "${HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE:-}" ]; then
+          eval "$(ssh-agent -s)"
+          printf '%s\n' "$HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE" | ssh-add -p "$signing_key"
+        else
+          ssh-add "$signing_key"
+        fi
+
+        ssh-keygen -y -f "$signing_key" > "$signing_pub"
+        chmod 644 "$signing_pub"
+
+        git config --global user.name "ghostty-zmx-homebrew[bot]"
+        git config --global user.email "$HOMEBREW_SIGNING_EMAIL"
+        git config --global commit.gpgsign true
+        git config --global gpg.format ssh
+        git config --global gpg.ssh.program ssh-keygen
+        git config --global user.signingkey "$signing_pub"
+
+    - name: Bump Homebrew formula
+      shell: bash
+      env:
+        HOMEBREW_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
+        set -euo pipefail
+
+        tag="${{ inputs.tag }}"
+        version="${tag#v}"
+
+        if [[ "${{ inputs.prerelease }}" == "true" ]]; then
+          tap_name="cad0p/prerelease"
+          tap_repo="homebrew-prerelease"
+          message="Update ghostty-zmx prerelease to ${tag}."
+        else
+          tap_name="cad0p/tap"
+          tap_repo="homebrew-tap"
+          message="Update ghostty-zmx to ${tag}."
+        fi
+
+        .github/scripts/bump-homebrew-formula.sh \
+          "$tap_name" \
+          "$tap_repo" \
+          ghostty-zmx \
+          "$tag" \
+          "https://github.com/cad0p/ghostty-zmx/releases/tag/${tag}" \
+          "$message" \
+          true
