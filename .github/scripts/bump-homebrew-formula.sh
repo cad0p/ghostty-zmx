@@ -31,11 +31,7 @@ enable_auto_merge() {
     return
   fi
 
-  if [ "$(gh pr view "$pr_number" --repo "$repo" --json autoMergeRequest --jq '.autoMergeRequest')" = "null" ]; then
-    gh pr merge "$pr_number" --repo "$repo" --auto --squash --delete-branch
-  else
-    echo "Auto-merge already enabled for ${repo}#${pr_number}"
-  fi
+  gh pr merge "$pr_number" --repo "$repo" --auto --squash --delete-branch
 }
 
 export HOMEBREW_GITHUB_API_TOKEN="${HOMEBREW_APP_TOKEN:?HOMEBREW_APP_TOKEN is required}"
