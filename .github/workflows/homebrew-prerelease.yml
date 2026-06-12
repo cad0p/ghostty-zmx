@@ -37,9 +37,11 @@ jobs:
       - name: Trust Homebrew taps
         run: |
           brew tap cad0p/prerelease
-          brew trust --tap cad0p/prerelease
+          if brew trust --help >/dev/null 2>&1; then
+            brew trust --tap cad0p/prerelease
+            brew trust --formula neurosnap/tap/zmx
+          fi
           brew tap neurosnap/tap
-          brew trust --formula neurosnap/tap/zmx
 
       - name: Configure SSH git commit signing
         env:
