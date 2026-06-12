@@ -25,11 +25,8 @@ trap cleanup EXIT
 export HOMEBREW_GITHUB_API_TOKEN="${HOMEBREW_APP_TOKEN:?HOMEBREW_APP_TOKEN is required}"
 export GH_TOKEN="${HOMEBREW_APP_TOKEN}"
 
-git clone "https://github.com/${repo}" "$workdir/tap"
-git -C "$workdir/tap" remote set-url origin "https://github.com/${repo}"
-cd "$workdir/tap"
-
-brew tap --force "$tap_name" "$PWD"
+brew tap --force "$tap_name" "https://github.com/${repo}"
+cd "$(brew --repository "$tap_name")"
 if brew trust --help >/dev/null 2>&1; then
   brew trust --tap "$tap_name"
   brew trust --formula neurosnap/tap/zmx
