@@ -11,7 +11,28 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      has_changes: ${{ steps.release.outputs.has_changes }}
     steps:
-      - uses: cad0p/semver-calver-release/release@v1
+      - id: release
+        uses: cad0p/semver-calver-release/release@v1
         with:
           skip_release: ${{ github.ref != 'refs/heads/main' }}
+
+  homebrew:
+    needs: release
+    if: ${{ github.ref == 'refs/heads/main' && needs.release.outputs.has_changes == 'true' }}
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: ./.github/actions/homebrew-publish
+        with:
+          tag: v${{ needs.release.outputs.version }}
+          prerelease: ${{ contains(needs.release.outputs.version, '-') }}
+          app-client-id: ${{ secrets.HOMEBREW_APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          signing-ssh-key: ${{ secrets.HOMEBREW_SIGNING_SSH_KEY }}
+          signing-ssh-key-passphrase: ${{ secrets.HOMEBREW_SIGNING_SSH_KEY_PASSPHRASE }}
+          signing-email: ${{ secrets.HOMEBREW_SIGNING_EMAIL }}
