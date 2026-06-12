@@ -47,8 +47,8 @@ brew bump-formula-pr \
   --message "$pr_message" \
   "${tap_name}/${formula}"
 
-git -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${HOMEBREW_APP_TOKEN}" \
-  push --force origin "HEAD:${branch}"
+git remote set-url origin "https://x-access-token:${HOMEBREW_APP_TOKEN}@github.com/${repo}.git"
+git push --force origin "HEAD:${branch}"
 
 body="Update ${formula} to ${version}.\n\nRelease: ${release_url}"
 
