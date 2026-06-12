@@ -1,6 +1,6 @@
 {
   "name": "ghostty-zmx",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Ghostty + zmx session management integration for zsh on macOS.",
   "private": true,
   "repository": {
