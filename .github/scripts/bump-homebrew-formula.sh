@@ -80,14 +80,14 @@ if existing_pr="$(gh pr list --repo "$repo" --head "$branch" --json number --jq 
   fi
 fi
 
-pr_number="$(gh pr create \
+gh pr create \
   --repo "$repo" \
   --head "$branch" \
   --base main \
   --title "chore: bump ${formula} to ${version}" \
-  --body "$body" \
-  --json number \
-  --jq '.number')"
+  --body "$body"
+
+pr_number="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number')"
 
 echo "Created Homebrew bump PR: ${repo}#${pr_number}"
 enable_auto_merge "$pr_number"
