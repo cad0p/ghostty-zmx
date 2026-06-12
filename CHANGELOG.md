@@ -12,7 +12,7 @@ This release removes manual Homebrew release workflows, publishes the correct ta
 
 ### ⚙️ Miscellaneous Tasks
 
-- Fix Homebrew bump PR creation ([#11](https://github.com/cad0p/ghostty-zmx/pull/11))
+- Avoid gh pr create --json for Homebrew bump PRs ([#11](https://github.com/cad0p/ghostty-zmx/pull/11))
 - Always request Homebrew auto-merge ([#12](https://github.com/cad0p/ghostty-zmx/pull/12))
 - Publish Homebrew from release workflow ([#13](https://github.com/cad0p/ghostty-zmx/pull/13))
 
