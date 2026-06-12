@@ -27,6 +27,8 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v6
+
       - uses: ./.github/actions/homebrew-publish
         with:
           tag: v${{ needs.release.outputs.version }}
