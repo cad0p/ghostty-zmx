@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2026-06-12
+
+<!-- USER-EDITABLE SECTION START -->
+Homebrew release publishing follow-up.
+
+This release fixes the in-release Homebrew publisher so the local publishing action is checked out before it runs.
+<!-- USER-EDITABLE SECTION END -->
+
+### ⚙️ Miscellaneous Tasks
+
+- Checkout before local Homebrew action ([#15](https://github.com/cad0p/ghostty-zmx/pull/15))
+
+
 ## [0.1.3] - 2026-06-12
 
 <!-- USER-EDITABLE SECTION START -->
