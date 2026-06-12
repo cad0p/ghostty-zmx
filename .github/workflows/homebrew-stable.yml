@@ -23,9 +23,12 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease == false || github.event_name == 'release' && github.event.release.prerelease == false }}
     runs-on: macos-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
       - name: Create GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           client-id: ${{ secrets.HOMEBREW_APP_CLIENT_ID }}
           private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
@@ -37,9 +40,11 @@ jobs:
       - name: Trust Homebrew taps
         run: |
           brew tap cad0p/tap
-          brew trust --tap cad0p/tap
+          if brew trust --help >/dev/null 2>&1; then
+            brew trust --tap cad0p/tap
+            brew trust --formula neurosnap/tap/zmx
+          fi
           brew tap neurosnap/tap
-          brew trust --formula neurosnap/tap/zmx
 
       - name: Configure SSH git commit signing
         env:
@@ -85,16 +90,13 @@ jobs:
           git config --global user.signingkey "$signing_pub"
 
       - name: Bump stable Homebrew formula
-        uses: dawidd6/action-homebrew-bump-formula@v7
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          user_name: ghostty-zmx-homebrew[bot]
-          user_email: ${{ secrets.HOMEBREW_SIGNING_EMAIL }}
-          no_fork: true
-          tap: cad0p/homebrew-tap
-          formula: ghostty-zmx
-          tag: ${{ github.event.release.tag_name || inputs.tag }}
-          message: |
-            Update ghostty-zmx to ${{ github.event.release.tag_name || inputs.tag }}.
-
-            Release: ${{ github.event.release.html_url || format('https://github.com/cad0p/ghostty-zmx/releases/tag/{0}', inputs.tag) }}
+        env:
+          HOMEBREW_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          .github/scripts/bump-homebrew-formula.sh \
+            cad0p/tap \
+            homebrew-tap \
+            ghostty-zmx \
+            "${{ github.event.release.tag_name || inputs.tag }}" \
+            "${{ github.event.release.html_url || format('https://github.com/cad0p/ghostty-zmx/releases/tag/{0}', inputs.tag) }}" \
+            "Update ghostty-zmx to ${{ github.event.release.tag_name || inputs.tag }}."
