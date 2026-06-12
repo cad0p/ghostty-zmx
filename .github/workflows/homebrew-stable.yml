@@ -99,4 +99,5 @@ jobs:
             ghostty-zmx \
             "${{ github.event.release.tag_name || inputs.tag }}" \
             "${{ github.event.release.html_url || format('https://github.com/cad0p/ghostty-zmx/releases/tag/{0}', inputs.tag) }}" \
-            "Update ghostty-zmx to ${{ github.event.release.tag_name || inputs.tag }}."
+            "Update ghostty-zmx to ${{ github.event.release.tag_name || inputs.tag }}." \
+            true
