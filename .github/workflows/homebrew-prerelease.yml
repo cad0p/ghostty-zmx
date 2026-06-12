@@ -87,16 +87,13 @@ jobs:
           git config --global user.signingkey "$signing_pub"
 
       - name: Bump prerelease Homebrew formula
-        uses: dawidd6/action-homebrew-bump-formula@v7
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          user_name: ghostty-zmx-homebrew[bot]
-          user_email: ${{ secrets.HOMEBREW_SIGNING_EMAIL }}
-          no_fork: true
-          tap: cad0p/homebrew-prerelease
-          formula: ghostty-zmx
-          tag: ${{ github.event.release.tag_name || inputs.tag }}
-          message: |
-            Update ghostty-zmx prerelease to ${{ github.event.release.tag_name || inputs.tag }}.
-
-            Release: ${{ github.event.release.html_url || format('https://github.com/cad0p/ghostty-zmx/releases/tag/{0}', inputs.tag) }}
+        env:
+          HOMEBREW_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          .github/scripts/bump-homebrew-formula.sh \
+            cad0p/prerelease \
+            homebrew-prerelease \
+            ghostty-zmx \
+            "${{ github.event.release.tag_name || inputs.tag }}" \
+            "${{ github.event.release.html_url || format('https://github.com/cad0p/ghostty-zmx/releases/tag/{0}', inputs.tag) }}" \
+            "Update ghostty-zmx prerelease to ${{ github.event.release.tag_name || inputs.tag }}."
