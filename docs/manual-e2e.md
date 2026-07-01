@@ -246,12 +246,68 @@ Do **not** use `-e /bin/zsh -il` (triggers the macOS "Allow Ghostty to Execute /
 
 4. The projection surface is left as a `pid=0` empty window (cosmetic; close with Cmd-W) — this is consistent with v0.1 pane-close behavior.
 
+### Local pane close triggers the server close transaction
+
+This verifies that closing a remote pane (Cmd-W, which kills the local ssh) triggers the full server-side `present -> closing -> zmx kill -> deleted` transaction, so the remote zmx session is killed and other clients see the deletion.
+
+1. Set up a projected remote session as in the multi-client scenario above (pre-seed a server `present` row + `remote-hosts`, launch Ghostty-tip, wait for `attached`).
+2. Record the projection pid and kill it to simulate pane close:
+
+   ```sh
+   PROJ_PID=$(awk -F '\t' '/gzr-/ {print $5; exit}' "$TMPDATA/remote-projections")
+   kill "$PROJ_PID"; sleep 0.3
+   pkill -f "zmx attach gzr-" 2>/dev/null
+   sleep 8
+   ```
+
+3. Verify the server close transaction ran and the remote session was killed:
+
+   ```sh
+   grep 'close-txn\|server-removed' "$TMPSTATE/debug.log" | tail
+   # expect: poller close-txn ... pid=<PROJ_PID>
+   #         poller server-removed state=deleted
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
+     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+   # expect: the row is state=deleted
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list' | grep gzr || echo none
+   # expect: none (remote zmx session killed)
+   cat "$TMPDATA/remote-projections" 2>/dev/null   # expect empty/gone
+   ```
+
+4. The projection surface is left as a `pid=0` empty window (cosmetic; close with Cmd-W).
+
+### Cmd-Q preserves the remote session
+
+This verifies that quitting Ghostty (Cmd-Q) does **not** trigger the server close transaction — the remote zmx session survives for re-attach on reopen.
+
+1. Set up a projected remote session as above (pre-seed + launch, wait for `attached`).
+2. Quit Ghostty-tip (kill the app process, simulating Cmd-Q):
+
+   ```sh
+   pkill -f "Ghostty-tip"; sleep 6
+   ```
+
+3. Verify the remote session survived and the poller exited cleanly:
+
+   ```sh
+   tail "$TMPSTATE/debug.log" | grep -E 'stopped|close-txn'
+   # expect: poller stopped reason=ghostty-exit (and NO close-txn line)
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
+     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+   # expect: the row is still state=present
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list' | grep gzr
+   # expect: clients=0 (session survived, detached)
+   lsof ~/.config/ghostty-zmx/session-manager.zsh   # expect empty (no orphaned pollers)
+   ```
+
 ### Pass criteria
 
 - Window delta = 1 (exactly one projection, no multiplication).
 - Exactly one local ssh process per `gzr` session.
 - Server `clients=1` after projection, `clients=0` after kill.
 - `remote-projections` shows one `attached` row, removed on server `deleted`.
+- Local pane close: server row -> `deleted`, remote zmx session killed.
+- Cmd-Q: server row stays `present`, remote zmx session survives `clients=0`.
 - No orphaned poller shells after Ghostty-tip exits (`lsof ~/.config/ghostty-zmx/session-manager.zsh` empty).
 
 ### Known limitation
