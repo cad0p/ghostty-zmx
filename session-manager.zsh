@@ -16,7 +16,7 @@ typeset _ghostty_app_name="Ghostty"
 # missing, we early-source the v0.1 manager and return so 1.3.x surfaces keep
 # unchanged v0.1 behavior. This avoids if/else branching in the v0.2 body and
 # lets stable 1.3.1 and tip/1.4 co-run, each surface picking its manager.
-if [[ "$TERM_PROGRAM" == "ghostty" && -n "$GHOSTTY_RESOURCES_DIR" ]]; then
+if [[ "${TERM_PROGRAM:-}" == "ghostty" && -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then
   typeset _gzmx_bundle="${GHOSTTY_RESOURCES_DIR%/Contents/Resources/ghostty}"
   _ghostty_app_name="${_gzmx_bundle##*/}"
   _ghostty_app_name="${_ghostty_app_name%.app}"
