@@ -1,0 +1,116 @@
+#!/bin/zsh -f
+# ghostty-zmx CLI — v0.2 projection wrapper.
+# -f: skip rc files so the wrapper never sources .zprofile/.zshrc (and thus never
+# sources session-manager.zsh). Without -f, Ghostty runs the command via
+# `login -c "exec -l <cmd>"` and `exec -l` makes it a login shell, which sources
+# .zprofile → session-manager.zsh, re-running auto-attach/widget/poller inside
+# the projection pane and causing window multiplication.
+#
+# Usage:
+#   ghostty-zmx projection --host <host> --workspace <ws> --session <gzr> -- <transport...> 'zmx attach <gzr>'
+#
+# The wrapper stays alive as the parent of the transport command so that
+# ghostty-zmx can observe and clean up projections by process args. It sets
+# env markers (GHOSTTY_ZMX_PROJECTION*) and an OSC window title, runs the
+# transport as a child, forwards termination signals, and exits with the
+# child's status. The generic CLI name is intentional so v0.3 can extend it
+# with workspace attach/detach/list commands without a second binary.
+#
+# This is sourced/launched as a surface `command` by ghostty-zmx; it never
+# sources .zshrc or runs a local shell, so local auto-attach is bypassed.
+
+emulate -L zsh
+setopt no_sh_word_split
+
+mode="${1:-}"
+case "$mode" in
+  projection) shift ;;
+  -h|--help|help)
+    print "Usage: ghostty-zmx projection --host <host> --workspace <ws> --session <gzr> -- <transport...> 'zmx attach <gzr>'"
+    exit 0 ;;
+  *) print -u2 "ghostty-zmx: unknown mode '$mode' (expected 'projection')"; exit 2 ;;
+esac
+
+host="" workspace="" session=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) host="$2"; shift 2 ;;
+    --workspace) workspace="$2"; shift 2 ;;
+    --session) session="$2"; shift 2 ;;
+    --) shift; break ;;
+    --*) print -u2 "ghostty-zmx: unknown option $1"; exit 2 ;;
+    *) break ;;
+  esac
+done
+
+[[ -n "$host" && -n "$session" ]] || { print -u2 "ghostty-zmx: --host and --session are required"; exit 2; }
+[[ $# -gt 0 ]] || { print -u2 "ghostty-zmx: transport command missing after --"; exit 2; }
+
+export GHOSTTY_ZMX_PROJECTION=1
+export GHOSTTY_ZMX_PROJECTION_HOST="$host"
+export GHOSTTY_ZMX_PROJECTION_SESSION="$session"
+[[ -n "$workspace" ]] && export GHOSTTY_ZMX_PROJECTION_WORKSPACE="$workspace"
+
+# OSC 2 (window title) + OSC 0 (icon title) markers so the projection window is
+# identifiable and distinguishable from local panes.
+print -n $'\e]2;ghostty-zmx: '"$host"' ('"$session"')\a'
+print -n $'\e]0;gzr\a'
+
+# Write the remote-layout row BEFORE attaching. This must run from the
+# projection surface's own command context (not the widget's zle context) —
+# a successful `add` from the widget triggers the Ghostty tip-build
+# multiplication bug. The wrapper is the surface's own command, so its ssh
+# is safe. Parse the session name (gzr-<ws>-<win>-<tab>-<pane>) for the ids.
+# The transport argv is $@; build a no-pty version by dropping -t/-tt/--tty
+# and adding -T.
+if [[ "$session" == gzr-* ]]; then
+  local _rest="${session#gzr-}"
+  local _ws="${_rest%%-*}"
+  _rest="${_rest#*-}"
+  local _win="${_rest%%-*}"
+  _rest="${_rest#*-}"
+  local _tab="${_rest%%-*}"
+  local _pane="${_rest#*-}"
+  local -a _notty=()
+  local _have_t=0 _arg
+  for _arg in "$@"; do
+    case "$_arg" in
+      -t|-tt|--tty) ;;
+      -T) _notty+=(-T); _have_t=1 ;;
+      *) _notty+=("$_arg") ;;
+    esac
+  done
+  [[ "$_have_t" -eq 1 ]] || _notty+=(-T)
+  # Drop the remote command arg (the 'zmx attach ...' last arg) for the add call.
+  local -a _add_argv=()
+  local _dropped_cmd=0
+  for _arg in "${_notty[@]}"; do
+    if [[ "$_arg" == *"zmx attach "* ]]; then
+      _dropped_cmd=1
+    else
+      _add_argv+=("$_arg")
+    fi
+  done
+  # Write the layout row with state=opening. A state=present row triggers the
+  # Ghostty tip-build multiplication bug (extras spawn when a new window is
+  # created while a present row exists). state=opening does not trigger it.
+  # The row is transitioned to `present` later (by the poller or a hook) once
+  # the projection is attached, so other clients can discover and project it.
+  if [[ "$_dropped_cmd" -eq 1 ]]; then
+    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 opening >/dev/null 2>&1 || true
+  fi
+fi
+
+# Run the transport in the FOREGROUND via exec so it keeps the controlling TTY.
+# The transport's remote command transitions the layout row to `present` then
+# attaches. This runs as the surface's own command (the ssh -t), so the
+# `present` transition happens on the remote side without a laptop-side ssh.
+# Backgrounding ssh ("$@" &) detaches it from the TTY, so `ssh -t` cannot
+# allocate a pseudo-terminal ("Pseudo-terminal will not be allocated because
+# stdin is not a terminal"), the remote `zmx attach` runs non-interactively and
+# exits immediately, and Ghostty recloses the surface (leaving a pid=0 ghost).
+# exec preserves the TTY and the env markers set above; the wrapper process is
+# replaced by the transport, so the `--session <gzr>` marker leaves `ps args`, but
+# the descendant-walk scan still matches `zmx attach <gzr>` in the transport's
+# args and GHOSTTY_ZMX_PROJECTION_SESSION in its env.
+exec "$@"

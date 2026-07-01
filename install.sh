@@ -16,10 +16,16 @@ done
 
 repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
+source_wrapper="$repo_dir/ghostty-zmx"
 source_uninstall="$repo_dir/uninstall.sh"
+source_server_install="$repo_dir/install-server.sh"
+source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
+wrapper_dest="$install_dir/ghostty-zmx"
 uninstall_dest="$install_dir/uninstall.sh"
+server_install_dest="$install_dir/install-server.sh"
+terminfo_dest="$install_dir/terminfo/xterm-ghostty.terminfo"
 zshrc="$HOME/.zshrc"
 ghostty_config="${GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
@@ -141,20 +147,54 @@ ensure_ghostty_block() {
   print "Updated managed ghostty-zmx block in $file"
 }
 
+# Refresh the vendored Ghostty terminfo from the installed Ghostty at install
+# time so the vendored copy always matches the laptop's Ghostty version. If a
+# running Ghostty bundle is found, dump its compiled xterm-ghostty entry to the
+# source form via infocmp; otherwise fall back to the repo's committed copy.
+refresh_vendored_terminfo() {
+  local dest="$1" dest_dir="${1:h}"
+  mkdir -p "$dest_dir" 2>/dev/null || return 1
+  local bundle terminfo_dir dumped=0 ghostty_resources="${GHOSTTY_RESOURCES_DIR:-}"
+  for bundle in "$ghostty_resources" \
+                "/Applications/Ghostty.app/Contents/Resources/ghostty" \
+                "/Applications/Ghostty-tip.app/Contents/Resources/ghostty"; do
+    [[ -n "$bundle" && -d "${bundle:h}/terminfo" ]] || continue
+    terminfo_dir="${bundle:h}/terminfo"
+    if TERMINFO="$terminfo_dir" infocmp -x xterm-ghostty >"${dest}.tmp" 2>/dev/null; then
+      # Drop the "Reconstructed via infocmp from file:" comment line so the
+      # file is portable and stable across hosts.
+      sed -i '' '1d' "${dest}.tmp" 2>/dev/null || sed -i '1d' "${dest}.tmp" 2>/dev/null
+      mv "${dest}.tmp" "$dest" 2>/dev/null && dumped=1
+      print "Refreshed vendored terminfo from ${bundle}"
+      break
+    fi
+  done
+  if [[ "$dumped" -ne 1 ]]; then
+    install -m 0644 "$source_terminfo" "$dest"
+    print "Used committed vendored terminfo (no running Ghostty bundle found)"
+  fi
+}
+
 print_plan() {
   print "ghostty-zmx installer will:"
   print "  - verify zmx, osascript, and zsh"
   print "  - install files under $install_dir"
+  print "  - refresh the vendored Ghostty terminfo from the installed Ghostty"
   print "  - update $zshrc with one guarded source line"
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
   print "  - warn about unsupported or conflicting Ghostty settings outside the managed section"
+  print ""
+  print "To enable remote panes, copy install-server.sh to each remote host and run it."
   print ""
   print "Managed Ghostty block to add:"
   print -r -- "$managed_block"
 }
 
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }
+[[ -f "$source_wrapper" ]] || { print -u2 "Missing $source_wrapper"; exit 1; }
 [[ -f "$source_uninstall" ]] || { print -u2 "Missing $source_uninstall"; exit 1; }
+[[ -f "$source_server_install" ]] || { print -u2 "Missing $source_server_install"; exit 1; }
+[[ -f "$source_terminfo" ]] || { print -u2 "Missing $source_terminfo"; exit 1; }
 
 require_command zmx
 require_command osascript
@@ -173,9 +213,19 @@ if [[ -L "$install_dir" ]]; then
   exit 1
 fi
 install -m 0644 "$source_manager" "$manager_dest"
+install -m 0755 "$source_wrapper" "$wrapper_dest"
 install -m 0755 "$source_uninstall" "$uninstall_dest"
+install -m 0755 "$source_server_install" "$server_install_dest"
+# Refresh the vendored Ghostty terminfo from the installed Ghostty at install
+# time so the copy always matches the laptop's Ghostty version (per the v0.2
+# design, "Vendored terminfo staleness"). If infocmp against the installed
+# Ghostty fails, fall back to the repo's committed copy.
+refresh_vendored_terminfo "$terminfo_dest"
 print "Installed $manager_dest"
+print "Installed $wrapper_dest"
 print "Installed $uninstall_dest"
+print "Installed $server_install_dest"
+print "Installed $terminfo_dest"
 
 backup_file "$ghostty_config"
 ensure_ghostty_block "$ghostty_config"

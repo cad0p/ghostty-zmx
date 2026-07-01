@@ -10,6 +10,10 @@ export GHOSTTY_ZMX_DATA_HOME="$workdir/data/ghostty-zmx"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state/ghostty-zmx"
 export XDG_RUNTIME_DIR="$workdir/runtime"
 export GHOSTTY_ZMX_RESTORE_STEP_DELAY=0
+# v0.2 identity is tty-based (_ghostty_zmx_current_surface_identity matches
+# the shell TTY against AppleScript `tty of tm`), so the osascript stubs below
+# match the `ttyStr is` query and the test shell advertises a fake TTY.
+export TTY=/dev/ttysFAKE123
 mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$XDG_RUNTIME_DIR" "$workdir/bin"
 
 cat > "$workdir/bin/zmx" <<'STUB'
@@ -41,6 +45,10 @@ if [[ "${1:-}" == "-e" ]]; then
   [[ "$*" == *'get version'* ]] && exit 0
 fi
 script="$(cat)"
+if [[ "$script" == *'ttyStr is'* ]]; then
+  print -r -- 'aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb 1234abcd 999 /dev/ttysFAKE123'
+  exit 0
+fi
 if [[ "$script" == *'front window'* ]]; then
   print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb term:1234abcd'
   exit 0
@@ -69,6 +77,14 @@ elif [[ "$*" == *'lstart='* ]]; then
 fi
 STUB
 chmod +x "$workdir/bin/ps"
+# v0.2 identity falls back to `tty` when $TTY is unset (e.g. zsh -fic subshells
+# with no controlling terminal). Stub it so _ghostty_zmx_shell_tty returns the
+# fake tty the osascript stubs match.
+cat > "$workdir/bin/tty" <<'STUB'
+#!/bin/zsh
+print -r -- /dev/ttysFAKE123
+STUB
+chmod +x "$workdir/bin/tty"
 export PATH="$workdir/bin:$PATH"
 
 cat > "$GHOSTTY_ZMX_DATA_HOME/sessions" <<'SESS'
@@ -97,6 +113,10 @@ if [[ "${1:-}" == "-e" ]]; then
   [[ "$*" == *'get version'* ]] && exit 0
 fi
 script="$(cat)"
+if [[ "$script" == *'ttyStr is'* ]]; then
+  print -r -- 'aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb 1234abcd 999 /dev/ttysFAKE123'
+  exit 0
+fi
 if [[ "$script" == *'front window'* ]]; then
   print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb term:1234abcd'
   exit 0
@@ -128,6 +148,10 @@ if [[ "${1:-}" == "-e" ]]; then
   [[ "$*" == *'get version'* ]] && exit 0
 fi
 script="$(cat)"
+if [[ "$script" == *'ttyStr is'* ]]; then
+  print -r -- 'aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb 1234abcd 999 /dev/ttysFAKE123'
+  exit 0
+fi
 if [[ "$script" == *'front window'* ]]; then
   print -r -- 'window:aaaaaaaaaaaaaaaa tab-group-ghostty-zmx-test/tab-bbbbbbbb term:1234abcd'
   exit 0
