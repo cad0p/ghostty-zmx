@@ -74,6 +74,11 @@ CFG
 
 run_install "$home" "$config" "$data" --yes > "$workdir/install.out"
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home/.zshrc" || { print -u2 "source line missing"; exit 1; }
+# v0.2: wrapper, server installer, and vendored terminfo must be installed.
+[[ -x "$home/.config/ghostty-zmx/ghostty-zmx" ]] || { print -u2 "wrapper missing or not executable"; exit 1; }
+[[ -x "$home/.config/ghostty-zmx/install-server.sh" ]] || { print -u2 "server installer missing or not executable"; exit 1; }
+[[ -f "$home/.config/ghostty-zmx/terminfo/xterm-ghostty.terminfo" ]] || { print -u2 "vendored terminfo missing"; exit 1; }
+grep -q '^xterm-ghostty|ghostty|Ghostty,' "$home/.config/ghostty-zmx/terminfo/xterm-ghostty.terminfo" || { print -u2 "vendored terminfo malformed"; exit 1; }
 grep -qxF 'env = GHOSTTY_ZMX_AUTO_ATTACH=1' "$config" || { print -u2 "user auto-attach env was removed"; exit 1; }
 grep -qxF 'confirm-close-surface = false' "$config" || { print -u2 "user confirm-close-surface was removed"; exit 1; }
 grep -q 'window-save-state = always' "$config" || { print -u2 "conflict setting not preserved"; exit 1; }

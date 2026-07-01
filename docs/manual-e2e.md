@@ -147,6 +147,391 @@ Before testing, confirm the installed Ghostty config contains the managed produc
    zmx kill ghostty-zmx-unmanaged-e2e
    ```
 
+## Remote multi-client projection
+
+These scenarios require the Ubuntu 24.04 Docker sshd fixture (`ghostty-zmx-sshd-fixture`, port 2222, zmx 0.6.0, `ghostty-zmx-remote-layout` helper installed) and `Ghostty-tip` (1.4.0+ `pid`/`tty` capability). Run them from iTerm2, not from inside a managed Ghostty pane.
+
+### Fixture one-time setup
+
+```sh
+# ssh config alias
+cat /tmp/ghostty-zmx-fixture-sshconfig
+# → Host gzmx-fixture  HostName 127.0.0.1  Port 2222  User gzmx  IdentityFile /tmp/ghostty-zmx-docker-fixture/id_ed25519
+
+# verify
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx version | tr "\t" " " | head -1; ls ~/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+```
+
+### Clean state before each scenario
+
+```sh
+pkill -9 -f Ghostty-tip 2>/dev/null; sleep 1
+rm -rf /var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T/ghostty-zmx-501
+rm -rf ~/Library/Saved\ Application\ State/com.mitchellh.ghostty.tip.savedState
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -f ~/.local/share/ghostty-zmx/remote-layout ~/.local/share/ghostty-zmx/remote-layout.rev; rmdir ~/.local/share/ghostty-zmx/remote-layout.lock 2>/dev/null; pkill zmx 2>/dev/null'
+# verify no orphaned pollers
+lsof ~/.config/ghostty-zmx/session-manager.zsh   # must be empty
+```
+
+### No-prompt harness (client launch)
+
+```sh
+TMPDATA=$(mktemp -d /tmp/gzmx-e2e-XXXXXX)
+TMPSTATE=$(mktemp -d /tmp/gzmx-e2e-state-XXXXXX)
+open -na /Applications/Ghostty-tip.app --args \
+  --env=GHOSTTY_ZMX_AUTO_ATTACH=1 \
+  --env=GHOSTTY_ZMX_DEBUG=1 \
+  --env=GHOSTTY_ZMX_DATA_HOME="$TMPDATA" \
+  --env=GHOSTTY_ZMX_STATE_HOME="$TMPSTATE" \
+  --window-save-state=never \
+  --confirm-close-surface=false
+```
+
+Do **not** use `-e /bin/zsh -il` (triggers the macOS "Allow Ghostty to Execute /bin/zsh" prompt). Do **not** use AppleScript `new window with configuration cfg` for the first local shell (produces `pid=0`/empty-tty surfaces).
+
+### Client B projects client A's `present` row (sequential)
+
+1. Pre-seed a server `present` row simulating client A having created a remote session:
+
+   ```sh
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
+     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout add wsAA winAA tabAA paneA1 gzr-AA-winAA-tabAA-paneA1 - root 1 present'
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
+     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+   ```
+
+2. Pre-seed client B's `remote-hosts` so its poller knows the transport:
+
+   ```sh
+   printf 'gzmx-fixture\tssh\t0.6.0\tactive\tssh -t -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture\n' \
+     > "$TMPDATA/remote-hosts"
+   ```
+
+3. Launch Ghostty-tip as client B (no-prompt harness above) and wait ~5s.
+4. Verify **exactly one** projection opened with **no multiplication**:
+
+   ```sh
+   osascript -e 'tell application "Ghostty-tip" to count of windows'   # expect 2 (local + projection)
+   pgrep -fl 'zmx attach gzr' | wc -l                                       # expect 1
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list | grep gzr | grep clients'
+   # expect clients=1
+   cat "$TMPDATA/remote-projections"   # expect one attached row
+   ```
+
+5. Verify the poller debug log shows the reconcile/open/adopt sequence:
+
+   ```sh
+   grep poller "$TMPSTATE/debug.log" | tail
+   # expect: reconcile opening → poller opened → poller adopted
+   ```
+
+### Server `deleted` removes a client's projection
+
+1. From the previous scenario (client B has an `attached` projection), transition the server row to `deleted` (simulating another client closing it):
+
+   ```sh
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
+     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout transition gzr-AA-winAA-tabAA-paneA1 deleted'
+   ```
+
+2. Wait one poller interval (~5s, `GHOSTTY_ZMX_REMOTE_POLL_INTERVAL` default 3s).
+3. Verify the local projection was removed and the ssh killed:
+
+   ```sh
+   cat "$TMPDATA/remote-projections"              # expect empty/gone
+   pgrep -fl 'zmx attach gzr' | wc -l              # expect 0
+   grep 'server-removed' "$TMPSTATE/debug.log" | tail
+   # expect: poller server-removed state=deleted
+   ```
+
+4. The projection surface is left as a `pid=0` empty window (cosmetic; close with Cmd-W) — this is consistent with v0.1 pane-close behavior.
+
+### Local pane close triggers the server close transaction
+
+This verifies that closing a remote pane (Cmd-W, which kills the local ssh) triggers the full server-side `present -> closing -> zmx kill -> deleted` transaction, so the remote zmx session is killed and other clients see the deletion.
+
+1. Set up a projected remote session as in the multi-client scenario above (pre-seed a server `present` row + `remote-hosts`, launch Ghostty-tip, wait for `attached`).
+2. Record the projection pid and kill it to simulate pane close:
+
+   ```sh
+   PROJ_PID=$(awk -F '\t' '/gzr-/ {print $5; exit}' "$TMPDATA/remote-projections")
+   kill "$PROJ_PID"; sleep 0.3
+   pkill -f "zmx attach gzr-" 2>/dev/null
+   sleep 8
+   ```
+
+3. Verify the server close transaction ran and the remote session was killed:
+
+   ```sh
+   grep 'close-txn\|server-removed' "$TMPSTATE/debug.log" | tail
+   # expect: poller close-txn ... pid=<PROJ_PID>
+   #         poller server-removed state=deleted
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
+     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+   # expect: the row is state=deleted
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list' | grep gzr || echo none
+   # expect: none (remote zmx session killed)
+   cat "$TMPDATA/remote-projections" 2>/dev/null   # expect empty/gone
+   ```
+
+4. The projection surface is left as a `pid=0` empty window (cosmetic; close with Cmd-W).
+
+### Cmd-Q preserves the remote session
+
+This verifies that quitting Ghostty (Cmd-Q) does **not** trigger the server close transaction — the remote zmx session survives for re-attach on reopen.
+
+1. Set up a projected remote session as above (pre-seed + launch, wait for `attached`).
+2. Quit Ghostty-tip (kill the app process, simulating Cmd-Q):
+
+   ```sh
+   pkill -f "Ghostty-tip"; sleep 6
+   ```
+
+3. Verify the remote session survived and the poller exited cleanly:
+
+   ```sh
+   tail "$TMPSTATE/debug.log" | grep -E 'stopped|close-txn'
+   # expect: poller stopped reason=ghostty-exit (and NO close-txn line)
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
+     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+   # expect: the row is still state=present
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list' | grep gzr
+   # expect: clients=0 (session survived, detached)
+   lsof ~/.config/ghostty-zmx/session-manager.zsh   # expect empty (no orphaned pollers)
+   ```
+
+### Pass criteria
+
+- Window delta = 1 (exactly one projection, no multiplication).
+- Exactly one local ssh process per `gzr` session.
+- Server `clients=1` after projection, `clients=0` after kill.
+- `remote-projections` shows one `attached` row, removed on server `deleted`.
+- Local pane close: server row -> `deleted`, remote zmx session killed.
+- Cmd-Q: server row stays `present`, remote zmx session survives `clients=0`.
+- No orphaned poller shells after Ghostty-tip exits (`lsof ~/.config/ghostty-zmx/session-manager.zsh` empty).
+
+### Idempotence stress (delete projection row while ssh lives)
+
+This verifies the poller repairs a lost local projection row by adopting the live ssh rather than opening a duplicate.
+
+1. Set up a projected remote session as in the multi-client scenario (pre-seed + launch, wait for `attached`).
+2. Delete the local `remote-projections` row (simulating local state loss) while keeping the live ssh and server row intact:
+
+   ```sh
+   rm -f "$TMPDATA/remote-projections"
+   sleep 8
+   ```
+3. Verify the poller repaired the row without opening a duplicate:
+
+   ```sh
+   # exactly one ssh child (count by comm==ssh to avoid the login/wrapper parent)
+   ps -eo pid,ppid,comm,args | awk '$3=="ssh" && /zmx attach gzr-/{cnt++} END{print cnt+0}'  # expect 1
+   cat "$TMPDATA/remote-projections"   # expect one attached row, same pid as before
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list | grep gzr | grep clients'  # expect clients=1
+   grep adopted "$TMPSTATE/debug.log" | tail   # expect poller adopted
+   ```
+
+4. The window count must not increase (no duplicate projection).
+
+### Widget handoff via AppleScript input injection
+
+`input text` + `send key "enter"` **does** trigger the zle `accept-line` widget (the prior claim that it doesn't was test contamination from the orphaned-poller era). This enables end-to-end handoff E2E without pre-seeding:
+
+```sh
+osascript <<'OSA'
+tell application "Ghostty-tip"
+  input text "ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture" to focused terminal of selected tab of front window
+  send key "enter" to focused terminal of selected tab of front window
+end tell
+OSA
+sleep 8
+```
+
+Verify the same as the multi-client scenario: `delta=1`, one ssh, `clients=1`, one `attached` row.
+
+### Remote split/tab inheritance (native split)
+
+This verifies that a native Ghostty split from a remote projection window inherits the remote context: the new split pane execs a projection wrapper and attaches to a **new** remote zmx session.
+
+1. Set up a projected remote session via the widget handoff above (wait for `attached`, `clients=1`).
+2. Trigger a native split on the projection window:
+
+   ```sh
+   osascript <<'OSA'
+   tell application "Ghostty-tip"
+     split (focused terminal of selected tab of front window) direction down
+   end tell
+   OSA
+   sleep 10
+   ```
+
+3. Verify the split pane inherited the remote context and attached to a new session:
+
+   ```sh
+   osascript -e 'tell application "Ghostty-tip" to count of terminals of every tab of every window'  # expect 3 (original proj + split proj + local)
+   ps -eo pid,ppid,comm,args | awk '$3=="ssh" && /zmx attach gzr-/{cnt++} END{print cnt+0}'  # expect 2
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list | grep gzr | grep clients'  # expect two clients=1
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'  # expect 2 present rows
+   cat "$TMPDATA/remote-projections"   # expect 2 attached rows
+   grep inherit "$TMPSTATE/debug.log" | tail  # expect inherit match + inherit exec
+   ```
+
+4. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
+
+### Known limitation
+
+True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
+
+### Remote reboot scrollback restore
+
+This verifies that if a remote zmx session is lost (remote host rebooted, zmx daemon gone) and a local scrollback snapshot exists, ghostty-zmx injects the saved scrollback into a fresh remote session before attaching.
+
+1. Set up a projected remote session as in the multi-client scenario (pre-seed + launch, wait for `attached`). Use the direct binary launch if `open -na` produces zero windows:
+
+   ```sh
+   /Applications/Ghostty-tip.app/Contents/MacOS/Ghostty-tip \
+     --env=GHOSTTY_ZMX_AUTO_ATTACH=1 \
+     --env=GHOSTTY_ZMX_DEBUG=1 \
+     --env=GHOSTTY_ZMX_DATA_HOME="$TMPDATA" \
+     --env=GHOSTTY_ZMX_STATE_HOME="$TMPSTATE" \
+     --window-save-state=never \
+     --confirm-close-surface=false &
+   ```
+
+2. Focus the projection window and type a unique marker via input injection:
+
+   ```sh
+   osascript <<'OSA'
+   tell application "Ghostty-tip"
+     activate window 2
+   end tell
+   OSA
+   sleep 1
+   osascript <<'OSA'
+   tell application "Ghostty-tip"
+     input text "echo $MARKER" to focused terminal of selected tab of front window
+     send key "enter" to focused terminal of selected tab of front window
+   end tell
+   OSA
+   sleep 3
+   ```
+
+3. Verify the marker is in the remote scrollback:
+
+   ```sh
+   gtimeout 8 ssh -T -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $SESSION 2>/dev/null" | grep -q "$MARKER"
+   ```
+
+4. Cmd-Q (kill the Ghostty-tip binary only — do NOT `pkill -f Ghostty-tip`, which would kill the poller before it snapshots). Wait for the poller to detect the exit and snapshot:
+
+   ```sh
+   kill -9 $GHOSTPID
+   sleep 10
+   ```
+
+5. Verify the snapshot file exists and contains the marker:
+
+   ```sh
+   SNAP="$TMPSTATE/history/gzmx-fixture/${SESSION}.txt"
+   [[ -s "$SNAP" ]] && grep -q "$MARKER" "$SNAP"
+   grep 'remote snapshot' "$TMPSTATE/debug.log" | tail
+   ```
+
+6. Simulate remote reboot by killing the remote zmx session (the server `remote-layout` row stays `present`):
+
+   ```sh
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx kill $SESSION"
+   ```
+
+7. Reopen Ghostty-tip (direct binary launch). The poller re-projects; the `ghostty-zmx` wrapper detects the missing remote session, creates a fresh one via `zmx run`, and injects the banner + saved scrollback via base64 + `zmx print`:
+
+   ```sh
+   pkill -9 -f "remote-poller" 2>/dev/null   # clear the old poller
+   rm -rf /var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T/ghostty-zmx-501
+   /Applications/Ghostty-tip.app/Contents/MacOS/Ghostty-tip ... &
+   sleep 14
+   ```
+
+8. Verify the fresh session has both the banner and the marker in `zmx history`:
+
+   ```sh
+   gtimeout 8 ssh -T -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $SESSION 2>/dev/null" | grep -q "restored saved scrollback"
+   gtimeout 8 ssh -T -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $SESSION 2>/dev/null" | grep -q "$MARKER"
+   grep 'reboot-restore' "$TMPSTATE/debug.log" | tail
+   ```
+
+#### Pass criteria
+
+- Snapshot file created on Cmd-Q (`history/<host>/<session>.txt`) with the marker.
+- On reopen, the wrapper logs `reboot-restore session missing — creating fresh + injecting`.
+- Remote `zmx history` contains both the banner (`[ghostty-zmx restored saved scrollback...]`) and the marker.
+- The projection re-attaches (`clients=1`).
+- Intentional pane close still runs the close transaction (`present → closing → kill → deleted`) after the first poll cycle (`startup_grace` does not block genuine pane closes).
+
+### Server installer (install-server.sh)
+
+These scenarios verify the server-side installer against the Docker sshd fixture. Run from iTerm2.
+
+#### Fixture setup
+
+Copy the installer and its dependencies to the fixture:
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -rf ~/.config/ghostty-zmx; echo "" > ~/.zshrc; rm -rf ~/.terminfo/x/xterm-ghostty 2>/dev/null; mkdir -p /tmp/gzmx-itest/terminfo'
+scp -F /tmp/ghostty-zmx-fixture-sshconfig \
+  install-server.sh session-manager.zsh ghostty-zmx-remote-layout \
+  gzmx-fixture:/tmp/gzmx-itest/
+scp -F /tmp/ghostty-zmx-fixture-sshconfig \
+  terminfo/xterm-ghostty.terminfo \
+  gzmx-fixture:/tmp/gzmx-itest/terminfo/
+```
+
+#### Install with --yes
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && ./install-server.sh --yes'
+```
+
+Verify:
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'ls ~/.config/ghostty-zmx/; cat ~/.zshrc; infocmp -x xterm-ghostty >/dev/null 2>&1 && echo "terminfo installed"'
+```
+
+Expected: `session-manager.zsh`, `ghostty-zmx-remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
+
+#### Idempotent re-run
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && ./install-server.sh --yes'
+```
+
+Expected: "Source line already present", "terminfo already installed; skipping tic". Source line count and BEGIN block count must both be 1 (no duplication).
+
+#### zmx missing refusal
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && PATH=/usr/bin:/bin ./install-server.sh --yes'
+```
+
+Expected: refuses with "zmx is not installed on this host" and exits non-zero.
+
+#### Interactive decline
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && echo "n" | ./install-server.sh'
+```
+
+Expected: "Installation declined; no files changed."
+
+#### Pass criteria
+
+- `--yes` install: all files present, zshrc has one source line + one remote-env block, terminfo installed.
+- Re-run is idempotent (no duplication).
+- zmx missing: refuses with a clear hint.
+- Interactive decline: no files changed.
+- After install, the `ghostty-zmx-remote-layout` helper works (`add` → `present`, `close` → `deleted`).
+
 ## Automated-test config override
 
 Automated tests may use a disposable or temporary Ghostty config that sets `confirm-close-surface = false` for close scenarios. Harnesses that touch the real Ghostty config must restore it byte-for-byte on every exit path and fail if the restored file differs from the original.

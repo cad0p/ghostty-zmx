@@ -1,0 +1,136 @@
+#!/bin/sh
+# ghostty-zmx-remote-layout — server-side transactional helper for the
+# remote-layout canonical state file.
+#
+# Installed by install-server.sh to ~/.config/ghostty-zmx/ghostty-zmx-remote-layout.
+# Invoked over ssh by the laptop as a bare-word argv:
+#   ssh host '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' <subcommand> <args...>
+#
+# All remote-layout mutations go through this helper so the ssh argv carries no
+# awk/printf/tabs/lock-loop metacharacters — the command shape that triggered
+# the Ghostty tip-build window-multiplication bug when run from a Ghostty pane.
+# The helper runs entirely server-side (no nested ssh, no shell metacharacters
+# in the transport argv). POSIX sh so it does not depend on zsh being the
+# non-interactive shell.
+#
+# Subcommands:
+#   add <ws> <win> <tab> <pane> <session> <parent-pane> <axis> <ratio> <state>
+#       Upsert a row (remove any existing row with the same session, append).
+#       Server generates updated-at (date +%s) and rev (monotonic counter).
+#   transition <session> <new-state>
+#       Change a row's state. Server generates updated-at and rev.
+#   close <session>
+#       Full close transaction: transition to closing, zmx kill, transition to
+#       deleted. The lock is released across the zmx kill so a slow kill does
+#       not block other transactions.
+#   read
+#       Print remote-layout to stdout (TSV). No output if the file is absent.
+#   compact
+#       Remove deleted tombstones older than GHOSTTY_ZMX_TOMBSTONE_TTL (default
+#       3600s). Safe to run periodically from cron or the poller.
+#
+# Locking: a mkdir-based lock directory (~/.local/share/ghostty-zmx/remote-layout.lock)
+# with a bounded retry (50 × 0.1s). Exit 70 if the lock cannot be acquired.
+#
+# Rev: a monotonic counter in remote-layout.rev, incremented under the lock.
+# This is preferred over random revs (design: "monotonic rev is preferred").
+
+set -u
+
+data_home="${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx"
+layout="$data_home/remote-layout"
+rev_file="$data_home/remote-layout.rev"
+lock="$data_home/remote-layout.lock"
+ttl="${GHOSTTY_ZMX_TOMBSTONE_TTL:-3600}"
+
+mkdir -p "$data_home" 2>/dev/null || { echo "ghostty-zmx-remote-layout: cannot mkdir $data_home" >&2; exit 1; }
+
+acquire_lock() {
+  _i=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    _i=$((_i + 1))
+    [ "$_i" -gt 50 ] && return 1
+    sleep 0.1
+  done
+  return 0
+}
+release_lock() { rmdir "$lock" 2>/dev/null || true; }
+
+# Print the next monotonic rev. Must be called under the lock.
+next_rev() {
+  _r=0
+  [ -r "$rev_file" ] && read -r _r < "$rev_file" 2>/dev/null || true
+  _r=$((_r + 1))
+  printf '%s\n' "$_r" > "${rev_file}.tmp.$$" 2>/dev/null && mv "${rev_file}.tmp.$$" "$rev_file" 2>/dev/null
+  printf '%s' "$_r"
+}
+
+now() { date +%s; }
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { echo "ghostty-zmx-remote-layout: no subcommand" >&2; exit 2; }
+shift
+
+case "$cmd" in
+  add)
+    [ $# -ge 9 ] || { echo "add: need <ws> <win> <tab> <pane> <session> <parent-pane> <axis> <ratio> <state>" >&2; exit 2; }
+    ws="$1" win="$2" tab="$3" pane="$4" session="$5" parent="$6" axis="$7" ratio="$8" state="$9"
+    acquire_lock || { echo "add: lock-busy" >&2; exit 70; }
+    _t=$(now); _r=$(next_rev); tmp="$layout.tmp.$$"
+    {
+      [ -f "$layout" ] && awk -F '\t' -v s="$session" '$5 != s { print }' "$layout" || true
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$win" "$tab" "$pane" "$session" "$parent" "$axis" "$ratio" "$state" "$_t" "$_r"
+    } > "$tmp" && mv "$tmp" "$layout"
+    release_lock
+    ;;
+  transition)
+    [ $# -ge 2 ] || { echo "transition: need <session> <new-state>" >&2; exit 2; }
+    session="$1" new_state="$2"
+    acquire_lock || { echo "transition: lock-busy" >&2; exit 70; }
+    _t=$(now); _r=$(next_rev); tmp="$layout.tmp.$$"
+    if [ -f "$layout" ]; then
+      awk -F '\t' -v OFS='\t' -v s="$session" -v ns="$new_state" -v t="$_t" -v r="$_r" '$5==s {$9=ns; $10=t; $11=r} {print}' "$layout" > "$tmp" && mv "$tmp" "$layout"
+    fi
+    release_lock
+    ;;
+  close)
+    [ $# -ge 1 ] || { echo "close: need <session>" >&2; exit 2; }
+    session="$1"
+    # closing phase
+    acquire_lock || { echo "close: lock-busy" >&2; exit 70; }
+    _t=$(now); _r=$(next_rev)
+    if [ -f "$layout" ]; then
+      awk -F '\t' -v OFS='\t' -v s="$session" -v ns="closing" -v t="$_t" -v r="$_r" '$5==s {$9=ns; $10=t; $11=r} {print}' "$layout" > "$layout.tmp.$$" && mv "$layout.tmp.$$" "$layout"
+    fi
+    release_lock
+    # kill zmx outside the lock so a slow kill does not block other transactions.
+    # Use zsh -ic so .zshrc is sourced (zmx may only be on the interactive PATH,
+    # e.g. ~/.local/bin added in .zshrc). The helper is #!/bin/sh (dash on Debian);
+    # sourcing .zshrc with '. "$HOME/.zshrc"' runs it in dash, which breaks on
+    # zsh-specific syntax and leaves zmx unfound. zsh -ic sources .zshrc correctly.
+    # Double quotes so sh expands $session; inner quotes are escaped for zsh.
+    zsh -ic "zmx kill \"$session\"" 2>/dev/null || true
+    # deleted phase
+    acquire_lock || { echo "close: lock-busy (deleted phase)" >&2; exit 70; }
+    _t=$(now); _r=$(next_rev)
+    if [ -f "$layout" ]; then
+      awk -F '\t' -v OFS='\t' -v s="$session" -v ns="deleted" -v t="$_t" -v r="$_r" '$5==s {$9=ns; $10=t; $11=r} {print}' "$layout" > "$layout.tmp.$$" && mv "$layout.tmp.$$" "$layout"
+    fi
+    release_lock
+    ;;
+  read)
+    [ -f "$layout" ] && cat "$layout"
+    ;;
+  compact)
+    acquire_lock || { echo "compact: lock-busy" >&2; exit 70; }
+    if [ -f "$layout" ]; then
+      cutoff=$(( $(now) - ttl ))
+      awk -F '\t' -v cut="$cutoff" '$9 != "deleted" || $10+0 > cut { print }' "$layout" > "$layout.tmp.$$" && mv "$layout.tmp.$$" "$layout"
+    fi
+    release_lock
+    ;;
+  *)
+    echo "ghostty-zmx-remote-layout: unknown subcommand '$cmd'" >&2
+    exit 2
+    ;;
+esac
