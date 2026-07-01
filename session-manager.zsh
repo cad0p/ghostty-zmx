@@ -1641,14 +1641,16 @@ ghostty_zmx_start_remote_poller() {
     mkdir "$flag" 2>/dev/null || return 0
   fi
   # Generate a FULLY STANDALONE poller script that does NOT source the
-  # manager. Sourcing the manager in a detached process and then running ssh
-  # is a historical trigger for surface multiplication (sourced-manager + ssh
-  # in a detached process). The standalone script inlines the minimal poll
-  # logic — reconcile local projection state from already-known hosts (adopt
-  # live projections, remove dead ones) — using plain zsh with no manager
-  # functions and no `emulate -L zsh`. It does NOT run ssh and does NOT open
-  # projection windows. See changelog
-  # 2026-07-01-v0-2-multiplication-root-cause-sourced-manager.
+  # manager. Sourcing the manager in a detached process was suspected of
+  # causing surface multiplication, but that theory was disproven — the real
+  # cause was orphaned poller shells with PID-reuse-unsafe kill -0 guards
+  # (now fixed via the elapsed-seconds token). The standalone script is kept
+  # because it is self-contained and inspectable. It reads the server
+  # remote-layout over ssh (bare-word helper argv — no metacharacters),
+  # reconciles local projections (adopt live, open missing, remove
+  # closing/deleted/dead), and is PID-reuse-safe. See changelog
+  # 2026-07-01-v0-2-multiplication-INDEX.md and
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   local script="$runtime/remote-poller-${ghostty_pid}.zsh"
   local poller_log="$runtime/remote-poller-${ghostty_pid}.log"
   set -o noclobber
@@ -1657,9 +1659,9 @@ ghostty_zmx_start_remote_poller() {
   cat >> "$script" <<'EOS'
 #!/bin/zsh
 # Standalone remote projection poller. Does NOT source session-manager.zsh.
-# Inlines the minimal poll logic (reconcile local projection state for
-# already-known hosts: adopt live projections, remove dead ones). Does NOT run
-# ssh and does NOT open projection windows. See changelog
+# Inlines the poll logic: reads the server-authoritative remote-layout over
+# ssh (bare-word helper argv), reconciles local projections (adopt live, open
+# missing, remove closing/deleted/dead), and is PID-reuse-safe. See changelog
 # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
 ghostty_pid="$1"
 flag="$2"
@@ -1673,6 +1675,7 @@ ghostty_elapsed="${9:-0}"
 hosts_file="$data_home/remote-hosts"
 projections_file="$data_home/remote-projections"
 wrapper_path="$install_dir/ghostty-zmx"
+runtime_locks_dir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}"
 
 # Record this poller's own pid + the owning Ghostty's elapsed-seconds token so
 # a later ghostty_zmx_start_remote_poller can detect (a) the owner is still
@@ -1863,30 +1866,134 @@ end tell
 OSA
 }
 
+# Per-host+session lock path (mirrors ghostty_zmx_projection_lock_path).
+projection_lock_path() {
+  local host="$1" session="$2" dir hash
+  dir="$runtime_locks_dir"
+  [[ -n "$dir" ]] || dir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}"
+  hash="$(printf '%s\t%s' "$host" "$session" | cksum | tr -d ' ' | cut -c1-12)"
+  print -r -- "$dir/projection-locks/${hash}.lock"
+}
+
+# Idempotent projection opener: acquires a per-host+session lock, adopts a
+# live projection if found, skips if a fresh opening row exists, otherwise
+# writes an opening row and opens a projection window. Mirrors the manager's
+# ghostty_zmx_reconcile_remote_projection.
+reconcile_projection() {
+  local host="$1" workspace="$2" session="$3" prefix="$4"
+  local lock_path acquired=0 i now command_string applescript_command
+  [[ -n "$host" && -n "$workspace" && -n "$session" && -n "$prefix" ]] || return 1
+  lock_path="$(projection_lock_path "$host" "$session")"
+  mkdir -p "${lock_path:h}" 2>/dev/null
+  for (( i=1; i<=50; i++ )); do
+    mkdir "$lock_path" 2>/dev/null && { acquired=1; break; }
+    sleep 0.03
+  done
+  if [[ "$acquired" -ne 1 ]]; then
+    pdbg "reconcile lock-busy host=$host session=$session"
+    return 1
+  fi
+  # 1. Adopt a live projection if one exists.
+  if find_live_projection "$session" 2>/dev/null; then
+    write_projection_row "$host" "$workspace" "$session" "$found_tty" "$found_match" attached "$found_win" "$found_tab"
+    pdbg "reconcile adopted host=$host session=$session pid=$found_match"
+    rmdir "$lock_path" 2>/dev/null || true
+    return 0
+  fi
+  # 2. Skip if a fresh (non-stale) opening row exists.
+  if opening_fresh "$host" "$session" 2>/dev/null; then
+    pdbg "reconcile skip-fresh-opening host=$host session=$session"
+    rmdir "$lock_path" 2>/dev/null || true
+    return 0
+  fi
+  # 3. Open a new projection.
+  write_projection_row "$host" "$workspace" "$session" "-" "-" opening "-" "-"
+  command_string="$(projection_command_string "$host" "$workspace" "$session" "$prefix")"
+  applescript_command="${command_string//\\\\/\\\\\\\\}"
+  applescript_command="${applescript_command//\"/\\\"}"
+  pdbg "reconcile opening host=$host session=$session cmd=$command_string"
+  osascript <<OSA 2>/dev/null
+tell application "$ghostty_app_name"
+  set cfg to new surface configuration
+  set command of cfg to "$applescript_command"
+  set w to new window with configuration cfg
+  activate window w
+end tell
+OSA
+  rmdir "$lock_path" 2>/dev/null || true
+  return 0
+}
+
 poll_once() {
-  # The poller does NOT run ssh and does NOT open projection windows. It
-  # only reconciles local projection state for already-known hosts: adopts
-  # live projections (found by scanning Ghostty terminal process trees) and
-  # removes projections whose process died. Server-layout changes
-  # (closing/deleted from another client) are propagated by a precmd hook in
-  # the surface shell, which is the only place ssh runs. Keeping ssh out of
-  # the detached poller avoids re-introducing the orphaned-poller-driven
-  # surface multiplication. See changelog
-  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
+  # The poller reconciles local projection state against the server-authoritative
+  # remote-layout. For each known active host it:
+  #   1. reads the server remote-layout over ssh (bare-word helper argv — no
+  #      awk/printf/tabs metacharacters in the transport command);
+  #   2. for state=present rows: adopts a live local projection if one exists,
+  #      skips if a fresh opening row is in flight, or opens a new projection
+  #      window (idempotent — per-host+session lock prevents duplicates);
+  #   3. for state=closing|deleted rows: removes the local projection and kills
+  #      the local ssh child so every client converges on the server state;
+  #   4. removes local rows whose recorded pid died (local-side cleanup).
+  #
+  # This is safe now that the poller is PID-reuse-safe (elapsed-seconds token):
+  # the orphaned-poller multiplication root cause was the *process lifecycle*
+  # (kill -0 succeeding against a reused PID), not ssh-in-poller per se. The
+  # "sourced-manager triggers multiplication" theory was disproven — see
+  # changelog 2026-07-01-v0-2-multiplication-INDEX.md (superseded theories).
   local host transport version mode prefix
   [[ -f "$hosts_file" ]] || return 0
   while IFS=$'\t' read -r host transport version mode prefix; do
-    [[ -n "$host" && "$mode" == "active" ]] || continue
-    # Reconcile local projections: adopt live ones, remove dead ones,
-    # upgrade opening rows to attached once the live projection appears.
-    # We do NOT read the server layout here (that would require ssh).
-    local p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab
+    [[ -n "$host" && "$mode" == "active" && -n "$prefix" ]] || continue
+
+    # 1. Read the server-authoritative remote-layout for this host.
+    # Use single-quoted $HOME so the REMOTE shell expands it to the remote
+    # home (the poller's local $HOME is the wrong user). The helper is
+    # invoked as a bare-word argv (no metacharacters) over ssh -T (no pty).
+    # ${(z)notty} word-splits the prefix string into an argv; the helper
+    # path and `read` subcommand are appended as bare words.
+    local notty="$(notty_prefix "$prefix")"
+    local helper='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+    local layout
+    layout="$(${(z)notty} "$helper" read 2>/dev/null)" || layout=""
+
+    # 2. Reconcile each server row.
+    local s_ws s_win s_tab s_pane s_session s_parent s_axis s_ratio s_state s_updated s_rev
+    while IFS=$'\t' read -r s_ws s_win s_tab s_pane s_session s_parent s_axis s_ratio s_state s_updated s_rev; do
+      [[ -n "$s_session" && "$s_session" == gzr-* ]] || continue
+      case "$s_state" in
+        present)
+          # Adopt a live local projection if one exists.
+          if find_live_projection "$s_session" 2>/dev/null; then
+            write_projection_row "$host" "$s_ws" "$s_session" "$found_tty" "$found_match" attached "$found_win" "$found_tab"
+          elif projection_known "$host" "$s_session" && ! opening_fresh "$host" "$s_session" 2>/dev/null; then
+            # Stale opening row (owner vanished) — let reconcile reclaim it.
+            :
+          elif opening_fresh "$host" "$s_session" 2>/dev/null; then
+            pdbg "poller skip-fresh-opening host=$host session=$s_session"
+            continue
+          else
+            # No local projection and no fresh opening: open one. Idempotent
+            # per-host+session lock inside reconcile_projection.
+            reconcile_projection "$host" "$s_ws" "$s_session" "$prefix"
+            pdbg "poller opened host=$host session=$s_session"
+          fi
+          ;;
+        closing|deleted)
+          # Server declared the session closed/deleted. Remove the local
+          # projection and kill the local ssh child.
+          remove_projection "$host" "$s_session"
+          pdbg "poller server-removed host=$host session=$s_session state=$s_state"
+          ;;
+      esac
+    done <<< "$layout"
+
+    # 3. Local-side cleanup: remove rows whose recorded pid died.
     [[ -f "$projections_file" ]] || continue
+    local p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab
     while IFS=$'\t' read -r p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab; do
       [[ "$p_host" == "$host" && ( "$p_state" == "attached" || "$p_state" == "opening" ) ]] || continue
       if [[ "$p_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$p_pid" 2>/dev/null; then
-        # Projection process died; remove the local row. The remote close
-        # transaction (ssh zmx kill) is handled by the reaper/surface shell.
         remove_projection "$p_host" "$p_session"
         pdbg "poller removed-dead host=$p_host session=$p_session pid=$p_pid"
       elif find_live_projection "$p_session" 2>/dev/null; then
@@ -2129,11 +2236,12 @@ OSA
     printf '%s\t%s\t%s\t%s\t%s\n' "$host_key" "$transport" "$version_value" active "$prefix_string"
   } > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" 2>/dev/null && mv "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null
 
-  # Start the poller (detached) so future server-side layout changes
-  # (closing/deleted from another client) are reflected locally. The poller
-  # does NOT open projection windows and does NOT run ssh from a detached
-  # context — it only reconciles local projection state from already-read
-  # layout data. Layout reads happen via a precmd hook in the surface shell.
+  # Start the poller (detached) so server-side layout changes (new present
+  # rows from other clients, closing/deleted from another client) are
+  # reflected locally. The poller reads the server remote-layout over ssh
+  # (bare-word helper argv), reconciles local projections (adopt/open/remove),
+  # and is PID-reuse-safe (elapsed-seconds token). See changelog
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   [[ "${GHOSTTY_ZMX_DISABLE_POLLER:-0}" != "1" ]] && ghostty_zmx_start_remote_poller force
   print -r -- "ghostty-zmx: opened remote $host_key ($session)"
   BUFFER=""
