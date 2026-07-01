@@ -1785,7 +1785,7 @@ write_projection_row() {
   now="$(date +%s)"
   tmp="$projections_file.tmp.$$"
   { awk -F '\t' -v host="$host" -v session="$session" '!(($1 == host) && ($3 == session)) { print }' "$projections_file" 2>/dev/null || true
-    print -r -- "${host}\t${workspace}\t${session}\t${tty_path}\t${match_pid}\t${state}\t${now}\t${win}\t${tab}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$host" "$workspace" "$session" "$tty_path" "$match_pid" "$state" "$now" "$win" "$tab"
   } > "$tmp" && mv "$tmp" "$projections_file" 2>/dev/null
   rmdir "$lock" 2>/dev/null || true
 }
@@ -1877,12 +1877,13 @@ poll_once() {
   [[ -f "$hosts_file" ]] || return 0
   while IFS=$'\t' read -r host transport version mode prefix; do
     [[ -n "$host" && "$mode" == "active" ]] || continue
-    # Reconcile local projections: adopt live ones, remove dead ones.
+    # Reconcile local projections: adopt live ones, remove dead ones,
+    # upgrade opening rows to attached once the live projection appears.
     # We do NOT read the server layout here (that would require ssh).
     local p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab
     [[ -f "$projections_file" ]] || continue
     while IFS=$'\t' read -r p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab; do
-      [[ "$p_host" == "$host" && "$p_state" == "attached" ]] || continue
+      [[ "$p_host" == "$host" && ( "$p_state" == "attached" || "$p_state" == "opening" ) ]] || continue
       if [[ "$p_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$p_pid" 2>/dev/null; then
         # Projection process died; remove the local row. The remote close
         # transaction (ssh zmx kill) is handled by the reaper/surface shell.
@@ -1890,6 +1891,7 @@ poll_once() {
         pdbg "poller removed-dead host=$p_host session=$p_session pid=$p_pid"
       elif find_live_projection "$p_session" 2>/dev/null; then
         write_projection_row "$p_host" "$p_workspace" "$p_session" "$found_tty" "$found_match" attached "$found_win" "$found_tab"
+        [[ "$p_state" == "opening" ]] && pdbg "poller adopted host=$p_host session=$p_session pid=$found_match"
       fi
     done < "$projections_file"
   done < "$hosts_file"
@@ -2100,13 +2102,31 @@ end tell
 OSA
   _gzmx_widget_debug "widget opened host=$host_key session=$session"
 
+  # Write a local `opening` projection row under the per-host+session lock so
+  # the poller knows a projection is in flight for this session and does not
+  # open a duplicate. The poller upgrades it to `attached` once it scans the
+  # live Ghostty terminal. (The wrapper writes the server remote-layout
+  # `state=present` row when it starts; this local row is the client-side
+  # projection ledger.)
+  local _wl _wacq=0 _wi
+  _wl="$(ghostty_zmx_projection_lock_path "$host_key" "$session")" 2>/dev/null || _wl=""
+  if [[ -n "$_wl" ]]; then
+    mkdir -p "${_wl:h}" 2>/dev/null
+    for (( _wi=1; _wi<=50; _wi++ )); do
+      mkdir "$_wl" 2>/dev/null && { _wacq=1; break; }
+      sleep 0.02
+    done
+    [[ "$_wacq" -eq 1 ]] && ghostty_zmx_write_projection_row "$host_key" "$workspace" "$session" "-" "-" opening "-" "-" 2>/dev/null
+    rmdir "$_wl" 2>/dev/null || true
+  fi
+
   # The remote-layout `add` is NOT done here: the projection wrapper writes
   # the `state=present` row when it starts (the wrapper is the surface's own
   # command tree). The widget only records host metadata here and starts the
   # poller. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
-  { grep -v -F $'\t'"${host_key}"$'\t' "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null || true
-    print -r -- "${host_key}\t${transport}\t${version_value}\tactive\t${prefix_string}"
+  { awk -F '\t' -v h="$host_key" '$1 != h { print }' "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null || true
+    printf '%s\t%s\t%s\t%s\t%s\n' "$host_key" "$transport" "$version_value" active "$prefix_string"
   } > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" 2>/dev/null && mv "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null
 
   # Start the poller (detached) so future server-side layout changes
