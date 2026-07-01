@@ -22,6 +22,14 @@
 emulate -L zsh
 setopt no_sh_word_split
 
+# Debug logging to the state debug.log (mirrors the manager's _ghostty_zmx_debug).
+_gzmx_wdebug() {
+  [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
+  local _d="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}"
+  mkdir -p "$_d" 2>/dev/null
+  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') wrapper $*" >> "$_d/debug.log"
+}
+
 mode="${1:-}"
 case "$mode" in
   projection) shift ;;
@@ -100,6 +108,41 @@ if [[ "$session" == gzr-* ]]; then
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   if [[ "$_dropped_cmd" -eq 1 ]]; then
     "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || true
+  fi
+fi
+
+# Remote reboot scrollback restore: if the remote zmx session is missing
+# (remote host rebooted, zmx daemon lost) and a local scrollback snapshot
+# exists, inject the saved scrollback into a fresh remote session before
+# attaching. The snapshot is namespaced by host under
+# ~/.local/state/ghostty-zmx/history/<host>/<session>.txt. Mirrors the v0.1
+# local reboot scrollback restore, but the zmx run/print calls run over ssh -T
+# (no pty). Quoting: the snapshot is base64-encoded locally and decoded on the
+# remote so multi-line text / special chars survive the local-zsh -> ssh ->
+# remote-zsh -> zmx hop without shell-expansion issues.
+if [[ "$session" == gzr-* ]]; then
+  local _hist_file="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/history/$host/${session}.txt"
+  if [[ -s "$_hist_file" ]]; then
+    _gzmx_wdebug "reboot-restore host=$host session=$session snapshot=$_hist_file"
+    # Check whether the remote session already exists (reattach, not reboot).
+    # Use _add_argv (transport argv without the 'zmx attach ...' remote command
+    # arg) so the injection ssh calls don't carry the attach command. ssh joins
+    # trailing args into the remote command string, so inline the session name
+    # directly (hex+dashes — shell-safe).
+    if ! "${_add_argv[@]}" 'zmx list --short 2>/dev/null | grep -qxF '"$session" 2>/dev/null; then
+      _gzmx_wdebug "reboot-restore session missing — creating fresh + injecting host=$host session=$session"
+      # Session missing: create a fresh one, then inject banner + snapshot.
+      "${_add_argv[@]}" 'zmx run '"$session"' true >/dev/null 2>&1' 2>/dev/null || true
+      local _banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
+      # zmx print requires \r\n line endings (plain \n does not render in the
+      # session display). Convert the banner + snapshot before base64 encoding.
+      { print -r -- "$_banner"; cat "$_hist_file"; } | sed 's/$/\r/' | base64 | tr -d '\n' | \
+        "${_add_argv[@]}" 'b64=$(cat); printf "%s" "$b64" | base64 -d | zmx print '"$session" 2>/dev/null || true
+      _gzmx_wdebug "reboot-restore injected host=$host session=$session"
+      print -n $'\e]2;ghostty-zmx: restored '"$host"' ('"$session"')\a'
+    else
+      _gzmx_wdebug "reboot-restore session exists — reattach host=$host session=$session"
+    fi
   fi
 fi
 

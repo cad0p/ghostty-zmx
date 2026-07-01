@@ -1672,6 +1672,7 @@ debug_enabled="$6"
 ghostty_app_name="$7"
 install_dir="$8"
 ghostty_elapsed="${9:-0}"
+scrollback_lines="${10:-1000}"
 hosts_file="$data_home/remote-hosts"
 projections_file="$data_home/remote-projections"
 wrapper_path="$install_dir/ghostty-zmx"
@@ -1831,6 +1832,50 @@ close_remote_session() {
   notty="$(notty_prefix "$prefix")"
   helper='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
   ${(z)notty} "$helper" close "$session" >/dev/null 2>&1
+  # Intentional close deletes the lazy snapshot (same as local pane close).
+  rm -f "$state_home/history/$host/${session}.txt" 2>/dev/null || true
+}
+
+# Snapshot a single remote session's scrollback over ssh into the lazy
+# history store. Used on Cmd-Q (ghostty-exit) so a later reopen/restore can
+# inject the saved scrollback into a fresh remote session if the remote zmx
+# daemon/session was lost (remote reboot). Mirrors the v0.1 local reaper's
+# snapshot_history, but the zmx history call runs over ssh -T (no pty) and
+# the result is namespaced by host. Failures are logged and non-fatal: an
+# unreachable host leaves the prior snapshot (if any) for reboot restore.
+snapshot_remote_session() {
+  local host="$1" session="$2" prefix notty dir hist_file tmp
+  prefix="$(awk -F '\t' -v h="$host" '$1==h { print $5; exit }' "$hosts_file" 2>/dev/null)"
+  [[ -n "$prefix" ]] || return 1
+  notty="$(notty_prefix "$prefix")"
+  dir="$state_home/history/$host"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  hist_file="$dir/${session}.txt"
+  tmp="${hist_file}.tmp.$$"
+  # Fetch remote scrollback (no pty) and truncate to the configured line count.
+  # ssh concatenates trailing args into the remote command string, so inline the
+  # session name (hex+dashes — shell-safe) rather than using $0. A failure
+  # (host down, session gone) leaves the prior snapshot in place.
+  if ${(z)notty} 'zmx history '"$session"' 2>/dev/null' | tail -n "$scrollback_lines" > "$tmp" 2>/dev/null; then
+    [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    pdbg "remote snapshot host=$host session=$session file=$hist_file"
+  else
+    rm -f "$tmp" 2>/dev/null
+    pdbg "remote snapshot failed host=$host session=$session (left prior)"
+  fi
+}
+
+# Snapshot all currently-attached remote projections. Called on ghostty-exit
+# (Cmd-Q) so the lazy remote scrollback store is refreshed before the poller
+# stops. Each session is snapshotted independently; a single failure does not
+# abort the rest.
+snapshot_remote_sessions() {
+  [[ -f "$projections_file" ]] || return 0
+  local p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab
+  while IFS=$'\t' read -r p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab; do
+    [[ "$p_state" == "attached" && "$p_session" == gzr-* ]] || continue
+    snapshot_remote_session "$p_host" "$p_session" || true
+  done < "$projections_file"
 }
 
 # Convert a projection prefix (ssh -t ...) into a no-pty argv (ssh -T ...).
@@ -2031,16 +2076,19 @@ poll_once() {
           pdbg "poller adopted-dead-owner host=$p_host session=$p_session pid=$found_match"
         elif [[ "$p_state" == "opening" ]] && opening_fresh "$p_host" "$p_session" 2>/dev/null; then
           pdbg "poller skip-fresh-opening-dead-owner host=$p_host session=$p_session pid=$p_pid"
-        elif [[ "$_app_alive" -eq 1 ]]; then
+        elif [[ "$_app_alive" -eq 1 ]] && [[ "$startup_grace" -ne 1 ]]; then
           # Stale opening (no live projection, past TTL) or a dead attached row:
           # a real pane close. Run the server close transaction so the remote
           # zmx session is killed and other clients see the deletion. Skip the
           # ssh round-trip when the app is quitting (Cmd-Q) to preserve it.
+          # Also skip during startup_grace (first poll cycle) — those dead
+          # pids are from a prior Ghostty session and should not trigger a
+          # close; the remote session survives for re-attach on reopen.
           close_remote_session "$p_host" "$p_session" || true
           pdbg "poller close-txn host=$p_host session=$p_session pid=$p_pid"
           remove_projection "$p_host" "$p_session"
         else
-          pdbg "poller preserve-on-quit host=$p_host session=$p_session pid=$p_pid"
+          pdbg "poller preserve-on-quit host=$p_host session=$p_session pid=$p_pid startup_grace=$startup_grace"
           remove_projection "$p_host" "$p_session"
         fi
       elif find_live_projection "$p_session" 2>/dev/null; then
@@ -2053,6 +2101,12 @@ poll_once() {
 
 pdbg "started ghostty_pid=$ghostty_pid app=$ghostty_app_name interval=$interval elapsed=$ghostty_elapsed"
 pdbg "poller tty=$(tty 2>/dev/null || echo none) ppid=$ppid"
+# Startup grace: on the first poll cycle, dead-pid projection rows are stale
+# leftovers from a prior Ghostty session (Cmd-Q + reopen). Do NOT run the
+# server close transaction for them — the remote session should survive so
+# the reopen re-attaches. After the first cycle, a dead pid means a genuine
+# pane close (the app is alive and the user closed the pane).
+startup_grace=1
 sleep 1
 trap "rm -rf \"$flag\" 2>/dev/null || true" EXIT INT TERM
 # PID-reuse-safe loop: kill -0 succeeds against a reused PID, so re-derive
@@ -2064,14 +2118,17 @@ trap "rm -rf \"$flag\" 2>/dev/null || true" EXIT INT TERM
 while :; do
   cur_elapsed="$(elapsed_seconds "$ghostty_pid" 2>/dev/null)" || cur_elapsed=""
   if [[ -z "$cur_elapsed" ]]; then
+    snapshot_remote_sessions
     pdbg "stopped ghostty_pid=$ghostty_pid reason=ghostty-exit"
     break
   fi
   if [[ -n "$ghostty_elapsed" && "$cur_elapsed" -lt "$ghostty_elapsed" ]]; then
+    snapshot_remote_sessions
     pdbg "stopped ghostty_pid=$ghostty_pid reason=pid-reuse saved=$ghostty_elapsed cur=$cur_elapsed"
     break
   fi
   poll_once
+  startup_grace=0
   sleep "$interval"
 done
 rm -f "$0" 2>/dev/null
@@ -2095,10 +2152,10 @@ EOS
 if os.fork() != 0:
     os._exit(0)
 os.setsid()
-os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" </dev/null >"$poller_log" 2>&1 &
+os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" "${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}" </dev/null >"$poller_log" 2>&1 &
     disown
   else
-    nohup /bin/zsh -c 'nohup "/bin/zsh" "$0" "$@" </dev/null >"'$poller_log'" 2>&1 & disown; exit' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" </dev/null >/dev/null 2>&1 &!
+    nohup /bin/zsh -c 'nohup "/bin/zsh" "$0" "$@" </dev/null >"'$poller_log'" 2>&1 & disown; exit' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" "${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}" </dev/null >/dev/null 2>&1 &!
   fi
 }
 

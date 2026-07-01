@@ -382,6 +382,92 @@ This verifies that a native Ghostty split from a remote projection window inheri
 
 True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
 
+### Remote reboot scrollback restore
+
+This verifies that if a remote zmx session is lost (remote host rebooted, zmx daemon gone) and a local scrollback snapshot exists, ghostty-zmx injects the saved scrollback into a fresh remote session before attaching.
+
+1. Set up a projected remote session as in the multi-client scenario (pre-seed + launch, wait for `attached`). Use the direct binary launch if `open -na` produces zero windows:
+
+   ```sh
+   /Applications/Ghostty-tip.app/Contents/MacOS/Ghostty-tip \
+     --env=GHOSTTY_ZMX_AUTO_ATTACH=1 \
+     --env=GHOSTTY_ZMX_DEBUG=1 \
+     --env=GHOSTTY_ZMX_DATA_HOME="$TMPDATA" \
+     --env=GHOSTTY_ZMX_STATE_HOME="$TMPSTATE" \
+     --window-save-state=never \
+     --confirm-close-surface=false &
+   ```
+
+2. Focus the projection window and type a unique marker via input injection:
+
+   ```sh
+   osascript <<'OSA'
+   tell application "Ghostty-tip"
+     activate window 2
+   end tell
+   OSA
+   sleep 1
+   osascript <<'OSA'
+   tell application "Ghostty-tip"
+     input text "echo $MARKER" to focused terminal of selected tab of front window
+     send key "enter" to focused terminal of selected tab of front window
+   end tell
+   OSA
+   sleep 3
+   ```
+
+3. Verify the marker is in the remote scrollback:
+
+   ```sh
+   gtimeout 8 ssh -T -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $SESSION 2>/dev/null" | grep -q "$MARKER"
+   ```
+
+4. Cmd-Q (kill the Ghostty-tip binary only — do NOT `pkill -f Ghostty-tip`, which would kill the poller before it snapshots). Wait for the poller to detect the exit and snapshot:
+
+   ```sh
+   kill -9 $GHOSTPID
+   sleep 10
+   ```
+
+5. Verify the snapshot file exists and contains the marker:
+
+   ```sh
+   SNAP="$TMPSTATE/history/gzmx-fixture/${SESSION}.txt"
+   [[ -s "$SNAP" ]] && grep -q "$MARKER" "$SNAP"
+   grep 'remote snapshot' "$TMPSTATE/debug.log" | tail
+   ```
+
+6. Simulate remote reboot by killing the remote zmx session (the server `remote-layout` row stays `present`):
+
+   ```sh
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx kill $SESSION"
+   ```
+
+7. Reopen Ghostty-tip (direct binary launch). The poller re-projects; the `ghostty-zmx` wrapper detects the missing remote session, creates a fresh one via `zmx run`, and injects the banner + saved scrollback via base64 + `zmx print`:
+
+   ```sh
+   pkill -9 -f "remote-poller" 2>/dev/null   # clear the old poller
+   rm -rf /var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T/ghostty-zmx-501
+   /Applications/Ghostty-tip.app/Contents/MacOS/Ghostty-tip ... &
+   sleep 14
+   ```
+
+8. Verify the fresh session has both the banner and the marker in `zmx history`:
+
+   ```sh
+   gtimeout 8 ssh -T -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $SESSION 2>/dev/null" | grep -q "restored saved scrollback"
+   gtimeout 8 ssh -T -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $SESSION 2>/dev/null" | grep -q "$MARKER"
+   grep 'reboot-restore' "$TMPSTATE/debug.log" | tail
+   ```
+
+#### Pass criteria
+
+- Snapshot file created on Cmd-Q (`history/<host>/<session>.txt`) with the marker.
+- On reopen, the wrapper logs `reboot-restore session missing — creating fresh + injecting`.
+- Remote `zmx history` contains both the banner (`[ghostty-zmx restored saved scrollback...]`) and the marker.
+- The projection re-attaches (`clients=1`).
+- Intentional pane close still runs the close transaction (`present → closing → kill → deleted`) after the first poll cycle (`startup_grace` does not block genuine pane closes).
+
 ## Automated-test config override
 
 Automated tests may use a disposable or temporary Ghostty config that sets `confirm-close-surface = false` for close scenarios. Harnesses that touch the real Ghostty config must restore it byte-for-byte on every exit path and fail if the restored file differs from the original.
