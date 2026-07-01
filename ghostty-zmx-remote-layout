@@ -103,8 +103,9 @@ case "$cmd" in
       awk -F '\t' -v OFS='\t' -v s="$session" -v ns="closing" -v t="$_t" -v r="$_r" '$5==s {$9=ns; $10=t; $11=r} {print}' "$layout" > "$layout.tmp.$$" && mv "$layout.tmp.$$" "$layout"
     fi
     release_lock
-    # kill zmx outside the lock so a slow kill does not block other transactions
-    zmx kill "$session" >/dev/null 2>&1 || true
+    # kill zmx outside the lock so a slow kill does not block other transactions.
+    # Source .zshrc so zmx is found even when only on the interactive PATH.
+    ( . "$HOME/.zshrc" 2>/dev/null; zmx kill "$session" ) >/dev/null 2>&1 || true
     # deleted phase
     acquire_lock || { echo "close: lock-busy (deleted phase)" >&2; exit 70; }
     _t=$(now); _r=$(next_rev)

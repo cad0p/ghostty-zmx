@@ -184,12 +184,16 @@ print_plan() {
 }
 
 # Prerequisites: zsh and zmx. zmx is a prerequisite, not managed by this script.
-# Refuse if zmx is missing.
+# Refuse if zmx is missing. Check both the non-interactive PATH and the
+# interactive zsh PATH (some users add ~/.local/bin to PATH only in .zshrc,
+# which is sourced for interactive shells but not for `ssh host 'cmd'`).
 require_command zsh
 if ! command -v zmx >/dev/null 2>&1; then
-  print -u2 "zmx is not installed on this host. ghostty-zmx requires zmx as a prerequisite."
-  print -u2 "Install zmx first (see https://github.com/aurera/zmx or your package manager), then re-run this installer."
-  exit 1
+  if ! zsh -ic 'command -v zmx >/dev/null 2>&1' 2>/dev/null; then
+    print -u2 "zmx is not installed on this host. ghostty-zmx requires zmx as a prerequisite."
+    print -u2 "Install zmx first (see https://github.com/aurera/zmx or your package manager), then re-run this installer."
+    exit 1
+  fi
 fi
 
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }

@@ -1856,7 +1856,7 @@ snapshot_remote_session() {
   # ssh concatenates trailing args into the remote command string, so inline the
   # session name (hex+dashes — shell-safe) rather than using $0. A failure
   # (host down, session gone) leaves the prior snapshot in place.
-  if ${(z)notty} 'zmx history '"$session"' 2>/dev/null' | tail -n "$scrollback_lines" > "$tmp" 2>/dev/null; then
+  if ${(z)notty} 'source ~/.zshrc 2>/dev/null; zmx history '"$session"' 2>/dev/null' | tail -n "$scrollback_lines" > "$tmp" 2>/dev/null; then
     [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     pdbg "remote snapshot host=$host session=$session file=$hist_file"
   else
@@ -2282,7 +2282,11 @@ ghostty_zmx_accept_line() {
   [[ "$_have_t" -eq 1 ]] || probe_argv+=(-T)
   _gzmx_widget_debug "widget probe host=$host_key session=$session argv=${probe_argv[*]}"
   local version_output version_line version_value
-  version_output="$("${probe_argv[@]}" 'command -v zmx >/dev/null 2>&1 && zmx version | head -1' 2>/dev/null)"
+  # Source .zshrc so zmx is found even when it's only on the interactive PATH
+  # (some users add ~/.local/bin to PATH in .zshrc, which is not sourced for
+  # non-interactive `ssh -T host 'cmd'`). The projection itself runs with -t
+  # (interactive) so .zshrc is sourced and zmx is on PATH there.
+  version_output="$("${probe_argv[@]}" 'source ~/.zshrc 2>/dev/null; command -v zmx >/dev/null 2>&1 && zmx version | head -1' 2>/dev/null)"
   version_line="${version_output%%$'\n'*}"
   version_value="$(print -r -- "$version_line" | awk '{print $2}')"
   if [[ "$version_value" != 0.6.* ]]; then

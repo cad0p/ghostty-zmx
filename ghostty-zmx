@@ -129,15 +129,15 @@ if [[ "$session" == gzr-* ]]; then
     # arg) so the injection ssh calls don't carry the attach command. ssh joins
     # trailing args into the remote command string, so inline the session name
     # directly (hex+dashes — shell-safe).
-    if ! "${_add_argv[@]}" 'zmx list --short 2>/dev/null | grep -qxF '"$session" 2>/dev/null; then
+    if ! "${_add_argv[@]}" 'source ~/.zshrc 2>/dev/null; zmx list --short 2>/dev/null | grep -qxF '"$session" 2>/dev/null; then
       _gzmx_wdebug "reboot-restore session missing — creating fresh + injecting host=$host session=$session"
       # Session missing: create a fresh one, then inject banner + snapshot.
-      "${_add_argv[@]}" 'zmx run '"$session"' true >/dev/null 2>&1' 2>/dev/null || true
+      "${_add_argv[@]}" 'source ~/.zshrc 2>/dev/null; zmx run '"$session"' true >/dev/null 2>&1' 2>/dev/null || true
       local _banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
       # zmx print requires \r\n line endings (plain \n does not render in the
       # session display). Convert the banner + snapshot before base64 encoding.
       { print -r -- "$_banner"; cat "$_hist_file"; } | sed 's/$/\r/' | base64 | tr -d '\n' | \
-        "${_add_argv[@]}" 'b64=$(cat); printf "%s" "$b64" | base64 -d | zmx print '"$session" 2>/dev/null || true
+        "${_add_argv[@]}" 'source ~/.zshrc 2>/dev/null; b64=$(cat); printf "%s" "$b64" | base64 -d | zmx print '"$session" 2>/dev/null || true
       _gzmx_wdebug "reboot-restore injected host=$host session=$session"
       print -n $'\e]2;ghostty-zmx: restored '"$host"' ('"$session"')\a'
     else
