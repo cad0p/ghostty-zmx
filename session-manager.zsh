@@ -1818,6 +1818,21 @@ remove_projection() {
   mv "$tmp" "$projections_file" 2>/dev/null || true
 }
 
+# Server-side close transaction: present -> closing -> zmx kill -> deleted.
+# Invokes the ghostty-zmx-remote-layout helper over ssh (bare-word argv, no
+# metacharacters) with -T (no pty). Mirrors the manager's
+# ghostty_zmx_remote_close_transaction. The helper does the full transaction
+# under the remote lock and releases the lock across the zmx kill so a slow
+# kill does not block other transactions.
+close_remote_session() {
+  local host="$1" session="$2" prefix notty helper
+  prefix="$(awk -F '\t' -v h="$host" '$1==h { print $5; exit }' "$hosts_file" 2>/dev/null)"
+  [[ -n "$prefix" ]] || return 1
+  notty="$(notty_prefix "$prefix")"
+  helper='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+  ${(z)notty} "$helper" close "$session" >/dev/null 2>&1
+}
+
 # Convert a projection prefix (ssh -t ...) into a no-pty argv (ssh -T ...).
 notty_prefix() {
   local prefix_string="$1"
@@ -1989,13 +2004,32 @@ poll_once() {
     done <<< "$layout"
 
     # 3. Local-side cleanup: remove rows whose recorded pid died.
+    # Distinguish pane-close from app-exit: only trigger the server-side close
+    # transaction (present -> closing -> zmx kill -> deleted) when at least
+    # one Ghostty window remains (pane close). When windows==0 the app is
+    # quitting (Cmd-Q); the remote session must survive so a later reopen
+    # re-attaches. Mirrors the manager's ghostty_zmx_cleanup_closed_remote_
+    # projections windows-guard.
     [[ -f "$projections_file" ]] || continue
+    local _wc
+    _wc="$(wincount)"
+    local _app_alive=0
+    [[ "$_wc" =~ ^[0-9]+$ && "$_wc" -gt 0 ]] && _app_alive=1
     local p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab
     while IFS=$'\t' read -r p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab; do
       [[ "$p_host" == "$host" && ( "$p_state" == "attached" || "$p_state" == "opening" ) ]] || continue
       if [[ "$p_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$p_pid" 2>/dev/null; then
+        # Pane close (app still alive): run the server-side close transaction
+        # so the remote zmx session is killed and the server row becomes
+        # deleted (visible to other clients). Skip the ssh round-trip when the
+        # app is quitting (Cmd-Q) to preserve the remote session.
+        if [[ "$_app_alive" -eq 1 ]]; then
+          close_remote_session "$p_host" "$p_session" || true
+          pdbg "poller close-txn host=$p_host session=$p_session pid=$p_pid"
+        else
+          pdbg "poller preserve-on-quit host=$p_host session=$p_session pid=$p_pid"
+        fi
         remove_projection "$p_host" "$p_session"
-        pdbg "poller removed-dead host=$p_host session=$p_session pid=$p_pid"
       elif find_live_projection "$p_session" 2>/dev/null; then
         write_projection_row "$p_host" "$p_workspace" "$p_session" "$found_tty" "$found_match" attached "$found_win" "$found_tab"
         [[ "$p_state" == "opening" ]] && pdbg "poller adopted host=$p_host session=$p_session pid=$found_match"
