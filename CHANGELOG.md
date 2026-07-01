@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [calver-released]
+
+<!-- USER-EDITABLE SECTION START -->
+<!-- Add your curated release notes here. -->
+<!-- USER-EDITABLE SECTION END -->
+
+### 🚀 Features
+
+- *(v0.2)* Remote SSH/tsh session inheritance ([#18](https://github.com/cad0p/ghostty-zmx/pull/18))
+
+### 📚 Documentation
+
+- Document Homebrew install paths ([#17](https://github.com/cad0p/ghostty-zmx/pull/17))
+
+
 ## [0.1.4] - 2026-06-12
 
 <!-- USER-EDITABLE SECTION START -->
