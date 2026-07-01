@@ -1510,7 +1510,15 @@ ghostty_zmx_projection_command_string() {
   emulate -L zsh
   local host="$1" workspace="$2" session="$3" prefix="$4" wrapper
   wrapper="$(ghostty_zmx_wrapper_path)"
-  print -r -- "$wrapper projection --host $host --workspace $workspace --session $session -- $prefix 'zmx attach $session'"
+  # The remote command sources ~/.zshrc before `zmx attach` so zmx is found on
+  # hosts where it's only on the interactive PATH (e.g. ~/.local/bin added in
+  # .zshrc). `tsh ssh -t host 'zmx attach'` runs non-interactively (the command
+  # arg suppresses .zshrc sourcing), so zmx would be "command not found" and
+  # the wrapper exits immediately — making it look like `set command` was
+  # ignored. The 2>/dev/null keeps Docker fixtures (zmx on /usr/local/bin)
+  # quiet. The `zmx attach <session>` substring is preserved for process-arg
+  # scanning (find_live_projection).
+  print -r -- "$wrapper projection --host $host --workspace $workspace --session $session -- $prefix 'source ~/.zshrc 2>/dev/null; zmx attach $session'"
 }
 
 # The single entry point for opening a remote projection. Idempotent:
@@ -1908,9 +1916,11 @@ notty_prefix() {
 }
 
 # Build the Ghostty surface configuration command for a projection.
+# The remote command sources ~/.zshrc before `zmx attach` (see the manager's
+# ghostty_zmx_projection_command_string for rationale).
 projection_command_string() {
   local host="$1" workspace="$2" session="$3" prefix="$4"
-  print -r -- "$wrapper_path projection --host $host --workspace $workspace --session $session -- $prefix 'zmx attach $session'"
+  print -r -- "$wrapper_path projection --host $host --workspace $workspace --session $session -- $prefix 'source ~/.zshrc 2>/dev/null; zmx attach $session'"
 }
 
 # Open a projection window via osascript `new window with configuration`.
@@ -2445,7 +2455,9 @@ ghostty_zmx_inherit_remote_context_if_any() {
     # string with single quotes preserves the quotes as literal characters,
     # which ssh passes through and the remote shell mis-parses, causing
     # `zmx attach` to exit without creating the session.
-    exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
+    # Source ~/.zshrc on the remote so zmx is found when it's only on the
+    # interactive PATH (see ghostty_zmx_projection_command_string rationale).
+    exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "source ~/.zshrc 2>/dev/null; zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
   return 1
 }

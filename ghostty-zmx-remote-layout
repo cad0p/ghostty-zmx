@@ -104,8 +104,12 @@ case "$cmd" in
     fi
     release_lock
     # kill zmx outside the lock so a slow kill does not block other transactions.
-    # Source .zshrc so zmx is found even when only on the interactive PATH.
-    ( . "$HOME/.zshrc" 2>/dev/null; zmx kill "$session" ) >/dev/null 2>&1 || true
+    # Use zsh -ic so .zshrc is sourced (zmx may only be on the interactive PATH,
+    # e.g. ~/.local/bin added in .zshrc). The helper is #!/bin/sh (dash on Debian);
+    # sourcing .zshrc with '. "$HOME/.zshrc"' runs it in dash, which breaks on
+    # zsh-specific syntax and leaves zmx unfound. zsh -ic sources .zshrc correctly.
+    # Double quotes so sh expands $session; inner quotes are escaped for zsh.
+    zsh -ic "zmx kill \"$session\"" 2>/dev/null || true
     # deleted phase
     acquire_lock || { echo "close: lock-busy (deleted phase)" >&2; exit 70; }
     _t=$(now); _r=$(next_rev)
