@@ -2414,8 +2414,22 @@ _ghostty_zmx_auto_attach() {
   done
   [[ "$asReady" -eq 0 ]] && { _ghostty_zmx_debug "Ghostty PID detection failed"; return 0; }
 
-  typeset earlySurfaceIdentity="$(_ghostty_zmx_current_surface_identity)"
-  _ghostty_zmx_debug "auto-attach pre-inherit"
+  # Native split/tab inheritance: if this surface was created by splitting
+  # a remote-projection window, exec into a new projection for the same host.
+  # The new split terminal's AppleScript registration can lag shell init by a
+  # few hundred ms, so retry the identity lookup a few times before falling
+  # through to local auto-attach.
+  typeset earlySurfaceIdentity=""
+  typeset _inh_attempt
+  for (( _inh_attempt=1; _inh_attempt<=8; _inh_attempt++ )); do
+    earlySurfaceIdentity="$(_ghostty_zmx_current_surface_identity)"
+    if [[ -n "$earlySurfaceIdentity" ]]; then
+      break
+    fi
+    _ghostty_zmx_debug "auto-attach pre-inherit identity-not-ready attempt=$_inh_attempt"
+    sleep 0.25
+  done
+  _ghostty_zmx_debug "auto-attach pre-inherit attempt=$_inh_attempt"
   if [[ -n "$earlySurfaceIdentity" ]] && ghostty_zmx_inherit_remote_context_if_any "$earlySurfaceIdentity"; then
     return 0
   fi
