@@ -113,6 +113,33 @@ validate_managed_block_pairs() {
   fi
 }
 
+# Best-effort probe for the Ghostty 1.4.0 AppleScript `tty`/`pid` terminal
+# capability (PR #11922). The v0.2 remote features and tty-based identity
+# require it. We probe capability (does the hosting app respond to `tty of
+# focused terminal`?) rather than parsing TERM_PROGRAM_VERSION, because
+# pre-release dev builds (e.g. a tip build) already carry the 1.4.0 features
+# while reporting a 1.3.x version string. Warn but do not refuse — the
+# manager early-sources the v0.1 fallback on 1.3.x surfaces so they keep
+# unchanged v0.1 behavior. Only warn if a Ghostty app is actually running
+# but lacks the property; a not-yet-running Ghostty is not a warning.
+probe_ghostty_capability() {
+  local app_name="Ghostty"
+  if [[ -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then
+    local bundle="${GHOSTTY_RESOURCES_DIR%/Contents/Resources/ghostty}"
+    app_name="${bundle##*/}"
+    app_name="${app_name%.app}"
+  fi
+  # If no Ghostty app is running, osascript launches it; detect that by
+  # checking the running process list first so we don't false-alarm.
+  pgrep -if "Ghostty" >/dev/null 2>&1 || return 0
+  if ! osascript -e "tell application \"$app_name\" to get tty of focused terminal of selected tab of front window" >/dev/null 2>&1; then
+    print "Warning: the running Ghostty lacks the 1.4.0 tty/pid AppleScript capability."
+    print "         Remote SSH/tsh features and tty-based identity will be inactive;"
+    print "         surfaces on 1.3.x will use the v0.1 behavior (early-source fallback)."
+    print "         Upgrade to Ghostty 1.4.0+ to enable v0.2 remote features."
+  fi
+}
+
 warn_ghostty_conflicts() {
   local file="$1"
   local warned=0
@@ -200,6 +227,11 @@ require_command zmx
 require_command osascript
 require_command zsh
 refuse_symlinked_install_dir
+
+# Best-effort capability probe. Warn (do not refuse) if the running Ghostty
+# lacks the 1.4.0 tty/pid AppleScript capability — remote features and
+# tty-based identity will be inactive, and 1.3.x surfaces fall back to v0.1.
+probe_ghostty_capability
 
 print_plan
 confirm "Apply this installation plan?" || { print "Installation declined; no files changed."; exit 0; }
