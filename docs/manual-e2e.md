@@ -468,6 +468,70 @@ This verifies that if a remote zmx session is lost (remote host rebooted, zmx da
 - The projection re-attaches (`clients=1`).
 - Intentional pane close still runs the close transaction (`present → closing → kill → deleted`) after the first poll cycle (`startup_grace` does not block genuine pane closes).
 
+### Server installer (install-server.sh)
+
+These scenarios verify the server-side installer against the Docker sshd fixture. Run from iTerm2.
+
+#### Fixture setup
+
+Copy the installer and its dependencies to the fixture:
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -rf ~/.config/ghostty-zmx; echo "" > ~/.zshrc; rm -rf ~/.terminfo/x/xterm-ghostty 2>/dev/null; mkdir -p /tmp/gzmx-itest/terminfo'
+scp -F /tmp/ghostty-zmx-fixture-sshconfig \
+  install-server.sh session-manager.zsh ghostty-zmx-remote-layout \
+  gzmx-fixture:/tmp/gzmx-itest/
+scp -F /tmp/ghostty-zmx-fixture-sshconfig \
+  terminfo/xterm-ghostty.terminfo \
+  gzmx-fixture:/tmp/gzmx-itest/terminfo/
+```
+
+#### Install with --yes
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && ./install-server.sh --yes'
+```
+
+Verify:
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'ls ~/.config/ghostty-zmx/; cat ~/.zshrc; infocmp -x xterm-ghostty >/dev/null 2>&1 && echo "terminfo installed"'
+```
+
+Expected: `session-manager.zsh`, `ghostty-zmx-remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
+
+#### Idempotent re-run
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && ./install-server.sh --yes'
+```
+
+Expected: "Source line already present", "terminfo already installed; skipping tic". Source line count and BEGIN block count must both be 1 (no duplication).
+
+#### zmx missing refusal
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && PATH=/usr/bin:/bin ./install-server.sh --yes'
+```
+
+Expected: refuses with "zmx is not installed on this host" and exits non-zero.
+
+#### Interactive decline
+
+```sh
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'cd /tmp/gzmx-itest && echo "n" | ./install-server.sh'
+```
+
+Expected: "Installation declined; no files changed."
+
+#### Pass criteria
+
+- `--yes` install: all files present, zshrc has one source line + one remote-env block, terminfo installed.
+- Re-run is idempotent (no duplication).
+- zmx missing: refuses with a clear hint.
+- Interactive decline: no files changed.
+- After install, the `ghostty-zmx-remote-layout` helper works (`add` → `present`, `close` → `deleted`).
+
 ## Automated-test config override
 
 Automated tests may use a disposable or temporary Ghostty config that sets `confirm-close-surface = false` for close scenarios. Harnesses that touch the real Ghostty config must restore it byte-for-byte on every exit path and fail if the restored file differs from the original.
