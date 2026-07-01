@@ -2019,17 +2019,30 @@ poll_once() {
     while IFS=$'\t' read -r p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab; do
       [[ "$p_host" == "$host" && ( "$p_state" == "attached" || "$p_state" == "opening" ) ]] || continue
       if [[ "$p_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$p_pid" 2>/dev/null; then
-        # Pane close (app still alive): run the server-side close transaction
-        # so the remote zmx session is killed and the server row becomes
-        # deleted (visible to other clients). Skip the ssh round-trip when the
-        # app is quitting (Cmd-Q) to preserve the remote session.
-        if [[ "$_app_alive" -eq 1 ]]; then
+        # The recorded pid is dead. For an `opening` row this is expected: the
+        # original owner (e.g. a split shell that `exec`'d into the projection
+        # wrapper) is gone, but the projection ssh may still be starting up.
+        # Try to adopt a live projection first; only if none exists AND the
+        # opening row is stale (past its TTL) do we clean up. Never run the
+        # server close transaction for an opening row whose owner merely
+        # exec'd away — that would kill a projection that is still attaching.
+        if find_live_projection "$p_session" 2>/dev/null; then
+          write_projection_row "$p_host" "$p_workspace" "$p_session" "$found_tty" "$found_match" attached "$found_win" "$found_tab"
+          pdbg "poller adopted-dead-owner host=$p_host session=$p_session pid=$found_match"
+        elif [[ "$p_state" == "opening" ]] && opening_fresh "$p_host" "$p_session" 2>/dev/null; then
+          pdbg "poller skip-fresh-opening-dead-owner host=$p_host session=$p_session pid=$p_pid"
+        elif [[ "$_app_alive" -eq 1 ]]; then
+          # Stale opening (no live projection, past TTL) or a dead attached row:
+          # a real pane close. Run the server close transaction so the remote
+          # zmx session is killed and other clients see the deletion. Skip the
+          # ssh round-trip when the app is quitting (Cmd-Q) to preserve it.
           close_remote_session "$p_host" "$p_session" || true
           pdbg "poller close-txn host=$p_host session=$p_session pid=$p_pid"
+          remove_projection "$p_host" "$p_session"
         else
           pdbg "poller preserve-on-quit host=$p_host session=$p_session pid=$p_pid"
+          remove_projection "$p_host" "$p_session"
         fi
-        remove_projection "$p_host" "$p_session"
       elif find_live_projection "$p_session" 2>/dev/null; then
         write_projection_row "$p_host" "$p_workspace" "$p_session" "$found_tty" "$found_match" attached "$found_win" "$found_tab"
         [[ "$p_state" == "opening" ]] && pdbg "poller adopted host=$p_host session=$p_session pid=$found_match"
@@ -2293,9 +2306,17 @@ ghostty_zmx_inherit_remote_context_if_any() {
   cur_tab="$(print -r -- "$identity" | awk '{print $2}')"
   cur_tty="$(print -r -- "$identity" | awk '{print $5}')"
   [[ -n "$cur_win" && -n "$cur_tab" && "$cur_tty" == /dev/* ]] || return 1
-  local host workspace parent_session tty_path pid state updated local_win local_tab prefix session workspace_id remote_win remote_tab parent_pane pane parent axis ratio helper
+  local host workspace parent_session tty_path pid state updated local_win local_tab norm_win norm_tab prefix session workspace_id remote_win remote_tab parent_pane pane parent axis ratio helper
   while IFS=$'\t' read -r host workspace parent_session tty_path pid state updated local_win local_tab; do
-    [[ "$state" == "attached" && "$local_win" == "$cur_win" ]] || continue
+    [[ "$state" == "attached" ]] || continue
+    # The poller/manager store raw AppleScript window/tab ids (e.g.
+    # `tab-group-6000020060a0`); cur_win/cur_tab are hex-suffixes (e.g.
+    # `6000020060a0`). Normalize both sides through hex_suffix so the
+    # comparison matches regardless of which writer produced the row.
+    norm_win="$(ghostty_zmx_hex_suffix "$local_win" 2>/dev/null || print -r -- "$local_win")"
+    norm_tab="$(ghostty_zmx_hex_suffix "$local_tab" 2>/dev/null || print -r -- "$local_tab")"
+    [[ "$norm_win" == "$cur_win" ]] || continue
+    _ghostty_zmx_debug "inherit match host=$host parent_session=$parent_session cur_win=$cur_win cur_tab=$cur_tab norm_win=$norm_win norm_tab=$norm_tab"
     prefix="$(ghostty_zmx_remote_prefix_for_host "$host")"
     [[ -n "$prefix" ]] || continue
     local -a parts
@@ -2303,7 +2324,7 @@ ghostty_zmx_inherit_remote_context_if_any() {
     [[ "${parts[1]:-}" == "gzr" && ${#parts} -ge 5 ]] || continue
     workspace_id="${parts[2]}"
     remote_win="${parts[3]}"
-    if [[ "$local_tab" == "$cur_tab" ]]; then
+    if [[ "$norm_tab" == "$cur_tab" ]]; then
       remote_tab="${parts[4]}"
       parent_pane="${parts[5]}"
       axis="vertical"
