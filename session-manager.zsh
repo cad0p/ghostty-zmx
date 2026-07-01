@@ -2362,15 +2362,23 @@ ghostty_zmx_inherit_remote_context_if_any() {
     fi
     ghostty_zmx_write_projection_row "$host" "$workspace_id" "$session" "$cur_tty" "$$" opening "$cur_win" "$cur_tab"
     rmdir "$inh_lock" 2>/dev/null || true
-    local inh_command="$(ghostty_zmx_projection_command_string "$host" "$workspace_id" "$session" "$prefix")"
-    _ghostty_zmx_debug "inherit exec host=$host session=$session cur_win=$cur_win cur_tab=$cur_tab tty=$cur_tty cmd=$inh_command"
+    local wrapper_path="$(ghostty_zmx_wrapper_path)"
+    local -a notty_prefix
+    notty_prefix=(${(z)prefix})
+    _ghostty_zmx_debug "inherit exec host=$host session=$session cur_win=$cur_win cur_tab=$cur_tab tty=$cur_tty"
     # Native split/tab inheritance (per design): exec the projection wrapper
     # in-place so the split pane BECOMES the remote projection. The wrapper
     # writes the server layout row then execs the transport ssh. fds must be
     # pointed at the tty so the transport's `ssh -t ... zmx attach` gets a
     # real interactive pty; otherwise zmx attach exits and Ghostty reaps the
     # surface.
-    exec ${(z)inh_command} <"$cur_tty" >"$cur_tty" 2>&1
+    #
+    # Build the argv directly (not via ${(z)} on a string) so the remote
+    # command `zmx attach <session>` is a single clean word — ${(z)} on a
+    # string with single quotes preserves the quotes as literal characters,
+    # which ssh passes through and the remote shell mis-parses, causing
+    # `zmx attach` to exit without creating the session.
+    exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
   return 1
 }
