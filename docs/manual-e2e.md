@@ -349,6 +349,35 @@ sleep 8
 
 Verify the same as the multi-client scenario: `delta=1`, one ssh, `clients=1`, one `attached` row.
 
+### Remote split/tab inheritance (native split)
+
+This verifies that a native Ghostty split from a remote projection window inherits the remote context: the new split pane execs a projection wrapper and attaches to a **new** remote zmx session.
+
+1. Set up a projected remote session via the widget handoff above (wait for `attached`, `clients=1`).
+2. Trigger a native split on the projection window:
+
+   ```sh
+   osascript <<'OSA'
+   tell application "Ghostty-tip"
+     split (focused terminal of selected tab of front window) direction down
+   end tell
+   OSA
+   sleep 10
+   ```
+
+3. Verify the split pane inherited the remote context and attached to a new session:
+
+   ```sh
+   osascript -e 'tell application "Ghostty-tip" to count of terminals of every tab of every window'  # expect 3 (original proj + split proj + local)
+   ps -eo pid,ppid,comm,args | awk '$3=="ssh" && /zmx attach gzr-/{cnt++} END{print cnt+0}'  # expect 2
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list | grep gzr | grep clients'  # expect two clients=1
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'  # expect 2 present rows
+   cat "$TMPDATA/remote-projections"   # expect 2 attached rows
+   grep inherit "$TMPSTATE/debug.log" | tail  # expect inherit match + inherit exec
+   ```
+
+4. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
+
 ### Known limitation
 
 True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
