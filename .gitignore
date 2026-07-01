@@ -2,3 +2,5 @@
 *.log
 /tmp/
 pi-session-*.html
+*.bak.*
+session-manager.zsh.bak*

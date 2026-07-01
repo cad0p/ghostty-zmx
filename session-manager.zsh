@@ -1221,40 +1221,13 @@ ghostty_zmx_client_id_file() {
 # accept-line zle widget, which is the confirmed trigger for the Ghostty tip
 # build 07d31666e window-multiplication bug (complex ssh in zle spawns ~5 extra
 # surfaces). See changelog 2026-06-30-v0-2-multiplication-root-cause-ssh-in-zle-widget.
-ghostty_zmx_handoff_dir() {
-  print -r -- "${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}/handoff-pending"
-}
 
 # A pending handoff row: a TSV file named <token>.handoff where <token> is a
 # short unique id. Row fields:
 #   host  transport  prefix_string  workspace  window  tab  pane  session  created_at
-ghostty_zmx_write_handoff_pending() {
-  emulate -L zsh
-  local host="$1" transport="$2" prefix_string="$3" workspace="$4" window="$5" tab="$6" pane="$7" session="$8" dir token now row
-  [[ -n "$host" && -n "$session" && -n "$prefix_string" ]] || return 1
-  dir="$(ghostty_zmx_handoff_dir)"
-  mkdir -p "$dir" 2>/dev/null || return 1
-  token="$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
-  now="$(date +%s)"
-  row="${host}"$'\t'"${transport}"$'\t'"${prefix_string}"$'\t'"${workspace}"$'\t'"${window}"$'\t'"${tab}"$'\t'"${pane}"$'\t'"${session}"$'\t'"${now}"
-  print -r -- "$row" > "$dir/${token}.handoff" 2>/dev/null
-  _ghostty_zmx_debug "handoff-pending written host=$host session=$session token=$token"
-  print -r -- "$token"
-}
 
 # Read and remove a single pending handoff file, printing its row fields on
 # stdout. Returns 0 if a row was consumed, 1 if the queue is empty.
-ghostty_zmx_pop_handoff_pending() {
-  emulate -L zsh
-  local dir="$(ghostty_zmx_handoff_dir)" f row
-  [[ -d "$dir" ]] || return 1
-  f="$(ls -1t "$dir"/*.handoff 2>/dev/null | head -1)"
-  [[ -n "$f" && -f "$f" ]] || return 1
-  row="$(cat "$f" 2>/dev/null)"
-  rm -f "$f" 2>/dev/null
-  [[ -n "$row" ]] || return 1
-  print -r -- "$row"
-}
 
 # Probe remote zmx version and write the remote-layout row for a handoff.
 # Runs the remote zmx version probe ssh and the remote-layout write ssh. Must
@@ -1265,178 +1238,6 @@ ghostty_zmx_pop_handoff_pending() {
 # tip-build window-multiplication bug). On success writes remote-hosts and the
 # remote-layout row, prints the normalized version on stdout, returns 0. On
 # failure prints nothing and returns non-zero.
-ghostty_zmx_probe_and_write_remote_layout() {
-  emulate -L zsh
-  setopt local_options no_sh_word_split
-  local host="$1" transport="$2" prefix_string="$3" workspace="$4" window="$5" tab="$6" pane="$7" session="$8"
-  local -a probe
-  [[ -n "$host" && -n "$session" && -n "$prefix_string" ]] || return 1
-  # Build a no-pty ssh argv for non-interactive commands. ssh allocates a pty by
-  # default, and on Ghostty tip build a descendant process allocating a pty
-  # causes Ghostty to spawn a new surface for it (window multiplication). -T
-  # disables pty allocation, safe for the version probe and layout write.
-  probe=(${(z)$(ghostty_zmx_notty_prefix "$prefix_string")})
-  local version_output version_line version_value
-  version_output="$("${probe[@]}" 'command -v zmx >/dev/null 2>&1 && zmx version | head -1' 2>/dev/null)"
-  version_line="${version_output%%$'\n'*}"
-  version_value="$(print -r -- "$version_line" | awk '{print $2}')"
-  if [[ "$version_value" != 0.6.* ]]; then
-    _ghostty_zmx_debug "handoff probe-failed host=$host version=${version_value:-missing}"
-    return 2
-  fi
-  local helper="$(ghostty_zmx_remote_layout_helper_cmd)"
-  _ghostty_zmx_debug "handoff pre-helper-add win=$(ghostty_zmx_wincount 2>/dev/null)"
-  # The helper generates updated-at and a monotonic rev server-side under the
-  # remote lock; the client does not pass them. The ssh argv is bare words only.
-  if ! "${probe[@]}" "$helper" add "$workspace" "$window" "$tab" "$pane" "$session" - root 1 present >/dev/null 2>&1; then
-    _ghostty_zmx_debug "handoff remote-layout-write-failed host=$host session=$session"
-    return 1
-  fi
-  _ghostty_zmx_debug "handoff post-helper-add win=$(ghostty_zmx_wincount 2>/dev/null)"
-  { grep -v -F $'\t'"${host}"$'\t' "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null || true
-    print -r -- "${host}"$'\t'"${transport}"$'\t'"${version_value}"$'\t'"active"$'\t'"${prefix_string}"
-  } > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" 2>/dev/null && mv "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null
-  _ghostty_zmx_debug "handoff remote-layout-written host=$host session=$session version=$version_value"
-  print -r -- "$version_value"
-  return 0
-}
-
-# Process a single pending handoff: probe + remote-layout write + reconcile.
-# Designed to run as a detached `nohup` background job (not zle, not the
-# widget). Prints user-facing messages to the originating tty on failure by
-# writing to the widget's tty path is impractical; instead the projection
-# window itself is the feedback. Errors are logged via _ghostty_zmx_debug.
-ghostty_zmx_wincount() { osascript -e "tell application \"$_ghostty_app_name\" to count of windows" 2>/dev/null || echo '?'; }
-
-ghostty_zmx_complete_handoff() {
-  emulate -L zsh
-  setopt local_options no_sh_word_split
-  local host transport prefix_string workspace window tab pane session created_at version rc
-  {
-    IFS=$'\t' read -r host transport prefix_string workspace window tab pane session created_at
-  } <<< "$1"
-  [[ -n "$host" && -n "$session" && -n "$prefix_string" ]] || return 1
-  _ghostty_zmx_debug "handoff complete ENTER host=$host session=$session transport=$transport win_before_probe=$(ghostty_zmx_wincount)"
-  version="$(ghostty_zmx_probe_and_write_remote_layout "$host" "$transport" "$prefix_string" "$workspace" "$window" "$tab" "$pane" "$session")"
-  rc=$?
-  _ghostty_zmx_debug "handoff complete post-probe rc=$rc win_after_probe=$(ghostty_zmx_wincount)"
-  if [[ $rc -ne 0 ]]; then
-    _ghostty_zmx_debug "handoff complete FAILED host=$host session=$session rc=$rc"
-    return $rc
-  fi
-  _ghostty_zmx_debug "handoff complete reconcile host=$host session=$session win_before_reconcile=$(ghostty_zmx_wincount)"
-  ghostty_zmx_reconcile_remote_projection "$host" "$workspace" "$session" "$prefix_string" || return 1
-  _ghostty_zmx_debug "handoff complete OK host=$host session=$session win_after_reconcile=$(ghostty_zmx_wincount)"
-}
-
-# Start a detached background job that processes all currently-pending handoffs
-# and exits. Used by the widget to avoid running any ssh in the zle context.
-# The job runs as `nohup zsh -c '...' &!` so it survives the widget return.
-ghostty_zmx_start_handoff_worker() {
-  emulate -L zsh
-  local install_dir="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}"
-  local script="$(ghostty_zmx_handoff_dir)/worker-$$.zsh"
-  local log="$(ghostty_zmx_handoff_dir)/worker-$$.log"
-  local data_home="$GHOSTTY_ZMX_DATA_HOME" state_home="$GHOSTTY_ZMX_STATE_HOME"
-  local debug="${GHOSTTY_ZMX_DEBUG:-0}" app_name="$_ghostty_app_name"
-  mkdir -p "${script:h}" 2>/dev/null || return 1
-  # Standalone worker script: does NOT source session-manager.zsh. Sourcing the
-  # manager in a detached process and running ssh is the confirmed trigger for
-  # the Ghostty tip-build window-multiplication bug. The worker only does ssh
-  # probe + remote-layout write + remote-hosts write; it does NO osascript
-  # (projection windows are opened by the widget in the surface shell).
-  cat > "$script" <<'EOS'
-#!/bin/zsh
-# Standalone handoff worker. Does NOT source session-manager.zsh.
-# Drains handoff-pending: for each row, ssh probe zmx version + ssh write
-# remote-layout row + write remote-hosts. NO osascript (widget opens windows).
-data_home="__DATA_HOME__"
-state_home="__STATE_HOME__"
-debug="__DEBUG__"
-install_dir="__INSTALL_DIR__"
-hosts_file="$data_home/remote-hosts"
-handoff_dir="$data_home/handoff-pending"
-helper_cmd='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
-
-wdbg() {
-  [[ "$debug" == "1" ]] || return 0
-  mkdir -p "$state_home" 2>/dev/null
-  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') worker $*" >> "$state_home/debug.log"
-}
-
-# Convert a projection prefix (ssh -t ...) into a no-pty argv (ssh -T ...).
-notty_prefix() {
-  local prefix_string="$1"
-  local -a probe notty
-  probe=(${(z)prefix_string})
-  local inserted_t=0 i=1
-  if [[ "${probe[1]}" == "tsh" && "${probe[2]:-}" == "ssh" ]]; then
-    notty+=(tsh ssh)
-    i=3
-  else
-    notty+=("${probe[1]}")
-    i=2
-  fi
-  local _w
-  for (( ; i <= ${#probe}; i++ )); do
-    _w="${probe[$i]}"
-    case "$_w" in
-      -t|-tt|--tty) ;;
-      -T) notty+=(-T); inserted_t=1 ;;
-      *) notty+=("$_w") ;;
-    esac
-  done
-  [[ "$inserted_t" -eq 1 ]] || notty+=(-T)
-  print -r -- "${(j: :)notty}"
-}
-
-process_row() {
-  local row="$1" host transport prefix_string workspace window tab pane session created_at
-  {
-    IFS=$'\t' read -r host transport prefix_string workspace window tab pane session created_at
-  } <<< "$row"
-  [[ -n "$host" && -n "$session" && -n "$prefix_string" ]] || return 1
-  local -a probe
-  probe=(${(z)$(notty_prefix "$prefix_string")})
-  local version_output version_line version_value helper
-  version_output="$("${probe[@]}" 'command -v zmx >/dev/null 2>&1 && zmx version | head -1' 2>/dev/null)"
-  version_line="${version_output%%$'\n'*}"
-  version_value="$(print -r -- "$version_line" | awk '{print $2}')"
-  if [[ "$version_value" != 0.6.* ]]; then
-    wdbg "handoff probe-failed host=$host version=${version_value:-missing}"
-    return 2
-  fi
-  helper="$helper_cmd"
-  if ! "${probe[@]}" "$helper" add "$workspace" "$window" "$tab" "$pane" "$session" - root 1 present >/dev/null 2>&1; then
-    wdbg "handoff remote-layout-write-failed host=$host session=$session"
-    return 1
-  fi
-  { grep -v -F $'\t'"${host}"$'\t' "$hosts_file" 2>/dev/null || true
-    print -r -- "${host}\t${transport}\t${version_value}\tactive\t${prefix_string}"
-  } > "$hosts_file.tmp.$$" 2>/dev/null && mv "$hosts_file.tmp.$$" "$hosts_file" 2>/dev/null
-  wdbg "handoff remote-layout-written host=$host session=$session version=$version_value"
-}
-
-wdbg "handoff-worker started pid=$$"
-row=""
-while row="$(ls -1 "$handoff_dir" 2>/dev/null | head -1)" && [[ -n "$row" ]]; do
-  content="$(cat "$handoff_dir/$row" 2>/dev/null)"
-  rm -f "$handoff_dir/$row" 2>/dev/null
-  [[ -n "$content" ]] || continue
-  wdbg "worker-draining row=$content"
-  process_row "$content" || true
-done
-wdbg "handoff-worker done pid=$$"
-rm -f "$0" 2>/dev/null
-EOS
-  sed -e "s#__DATA_HOME__#$data_home#g" \
-      -e "s#__STATE_HOME__#$state_home#g" \
-      -e "s#__DEBUG__#$debug#g" \
-      -e "s#__INSTALL_DIR__#$install_dir#g" "$script" > "${script}.tmp" 2>/dev/null && mv "${script}.tmp" "$script" 2>/dev/null
-  chmod +x "$script" 2>/dev/null
-  nohup /bin/zsh "$script" >"$log" 2>&1 </dev/null &!
-  _ghostty_zmx_debug "handoff-worker spawned script=$script"
-}
 
 ghostty_zmx_client_id() {
   emulate -L zsh
@@ -1747,7 +1548,6 @@ ghostty_zmx_reconcile_remote_projection() {
   setopt local_options no_sh_word_split
   local host="$1" workspace="$2" session="$3" prefix="$4"
   local lock_path acquired=0 i now command_string applescript_command
-  _ghostty_zmx_debug "reconcile ENTER host=$host session=$session stack=$funcfiletrace win_at_enter=$(ghostty_zmx_wincount)"
   [[ -n "$host" && -n "$workspace" && -n "$session" && -n "$prefix" ]] || return 1
   lock_path="$(ghostty_zmx_projection_lock_path "$host" "$session")" || return 1
   mkdir -p "${lock_path:h}" 2>/dev/null
@@ -1759,7 +1559,6 @@ ghostty_zmx_reconcile_remote_projection() {
     _ghostty_zmx_debug "reconcile lock-busy host=$host session=$session"
     return 1
   fi
-  _ghostty_zmx_debug "reconcile post-lock host=$host session=$session win_at_postlock=$(ghostty_zmx_wincount)"
 
   # 1. Scan live projections under the lock; adopt if found.
   if ghostty_zmx_find_live_projection "$host" "$session"; then
@@ -1772,7 +1571,6 @@ ghostty_zmx_reconcile_remote_projection() {
     return 0
   fi
 
-  _ghostty_zmx_debug "reconcile post-scan host=$host session=$session win_at_postscan=$(ghostty_zmx_wincount)"
   # 2. No live projection. Skip if a fresh (non-stale) opening row exists.
   if ghostty_zmx_projection_opening_fresh "$host" "$session"; then
     _ghostty_zmx_debug "reconcile skip-fresh-opening host=$host session=$session"
@@ -1784,42 +1582,7 @@ ghostty_zmx_reconcile_remote_projection() {
   now="$(date +%s)"
   ghostty_zmx_write_projection_row "$host" "$workspace" "$session" "-" "-" opening "-" "-"
   command_string="$(ghostty_zmx_projection_command_string "$host" "$workspace" "$session" "$prefix")"
-  # Bisection override: if set, use a simple command instead of the
-  # wrapper+ssh projection command, to isolate whether the command string is
-  # the trigger.
-  [[ -n "${GHOSTTY_ZMX_PROJECTION_CMD_OVERRIDE:-}" ]] && command_string="$GHOSTTY_ZMX_PROJECTION_CMD_OVERRIDE"
-  applescript_command="${command_string//\\/\\\\}"
-  applescript_command="${applescript_command//\"/\\\"}"
-  # INSTRUMENTATION: count windows before/after the open, log a backtrace
-  # per new-window call, and dump the live process tree. This determines
-  # whether ghostty-zmx makes N calls (local bug) or 1 call (upstream bug).
-  local _win_before="$(osascript -e "tell application \"$_ghostty_app_name\" to count of windows" 2>/dev/null || echo '?')"
   _ghostty_zmx_debug "reconcile opening host=$host session=$session cmd=$command_string"
-  _ghostty_zmx_debug "reconcile opening win_before=$_win_before stack=$funcfiletrace"
-  # Dump the caller process ancestry + key env so we can compare the
-  # widget-started poller context vs a manually-started poller.
-  _ghostty_zmx_debug "reconcile opening caller_pid=$$ ppid=$ppid pgid=$sysparams[pgid] tty=$(tty 2>/dev/null || echo none)"
-  _ghostty_zmx_debug "reconcile opening env GHOSTTY_ZMX_INTERNAL_POLLER=${GHOSTTY_ZMX_INTERNAL_POLLER:-0} GHOSTTY_ZMX_AUTO_ATTACH=${GHOSTTY_ZMX_AUTO_ATTACH:-0} TERM_PROGRAM=${TERM_PROGRAM:-none} GHOSTTY_RESOURCES_DIR=${GHOSTTY_RESOURCES_DIR:-none} GHOSTTY_SURFACE_ID=${GHOSTTY_SURFACE_ID:-none}"
-  # Dump every terminal's pid/tty at the win_before moment so we can see what
-  # the pre-existing windows are (restore? inherit? ours?).
-  local _enum_file="$(_ghostty_zmx_runtime_dir 2>/dev/null)/enum-$$.txt"
-  osascript <<EOF > "$_enum_file" 2>/dev/null
-tell application "$_ghostty_app_name"
-  set out to ""
-  repeat with w in windows
-    repeat with tb in tabs of w
-      repeat with tm in terminals of tb
-        try
-          set out to out & (pid of tm as string) & " " & (tty of tm as string) & linefeed
-        end try
-      end repeat
-    end repeat
-  end repeat
-  return out
-end tell
-EOF
-  _ghostty_zmx_debug "reconcile opening enum=$(tr '\n' '|' < "$_enum_file" 2>/dev/null)"
-  rm -f "$_enum_file" 2>/dev/null
   # Open the projection window via AppleScript `new window with configuration`
   # targeting the hosting app by name. This delivers the window to the
   # already-running Ghostty process (the one that hosts the local shell),
@@ -1836,12 +1599,6 @@ tell application "$_ghostty_app_name"
   activate window w
 end tell
 OSA
-  local _win_after="$(osascript -e "tell application \"$_ghostty_app_name\" to count of windows" 2>/dev/null || echo '?')"
-  local _delta="?"
-  if [[ "$_win_after" =~ ^[0-9]+$ && "$_win_before" =~ ^[0-9]+$ ]]; then
-    _delta=$(( _win_after - _win_before ))
-  fi
-  _ghostty_zmx_debug "reconcile opening win_after=$_win_after delta=$_delta rc=$_open_rc"
   if [[ "$_open_rc" -ne 0 ]]; then
     rmdir "$lock_path" 2>/dev/null || true
     _ghostty_zmx_debug "reconcile open-failed host=$host session=$session rc=$_open_rc"
@@ -1853,13 +1610,6 @@ OSA
 }
 
 # Back-compat shim: callers that reserved externally now delegate to reconcile.
-ghostty_zmx_open_remote_projection() {
-  emulate -L zsh
-  setopt local_options no_sh_word_split
-  local host="$1" workspace="$2" session="$3" prefix="$4"
-  _ghostty_zmx_debug "open_remote_projection called host=$host session=$session prefix=$prefix caller=$funcfiletrace"
-  ghostty_zmx_reconcile_remote_projection "$host" "$workspace" "$session" "$prefix"
-}
 
 # Drain the handoff-pending queue: process each pending handoff by probing
 # remote zmx, writing the remote-layout row, and reconciling (opening the
@@ -1868,48 +1618,7 @@ ghostty_zmx_open_remote_projection() {
 # NOT from a widget-spawned worker (whose zle-derived process ancestry is the
 # confirmed trigger for the Ghostty window-multiplication bug). Returns the
 # number of handoffs processed.
-ghostty_zmx_drain_handoff_pending() {
-  emulate -L zsh
-  setopt local_options no_sh_word_split
-  local count=0 row
-  while row="$(ghostty_zmx_pop_handoff_pending 2>/dev/null)" && [[ -n "$row" ]]; do
-    _ghostty_zmx_debug "poller-draining-handoff row=$row"
-    ghostty_zmx_complete_handoff "$row" || true
-    count=$(( count + 1 ))
-  done
-  return $count
-}
 
-ghostty_zmx_poll_remote_hosts_once() {
-  emulate -L zsh
-  setopt local_options no_sh_word_split
-  local hosts_file="$(ghostty_zmx_remote_hosts_file)" host transport version mode prefix layout workspace window tab pane session parent axis ratio state updated rev
-  _ghostty_zmx_debug "poll_once ENTER stack=$funcfiletrace"
-  # Drain widget-queued handoffs first so the osascript `new window` runs from
-  # the poller's detached context, not a widget-spawned worker.
-  ghostty_zmx_drain_handoff_pending
-  ghostty_zmx_cleanup_closed_remote_projections
-  [[ -f "$hosts_file" ]] || return 0
-  while IFS=$'\t' read -r host transport version mode prefix; do
-    [[ -n "$host" && "$mode" == "active" && -n "$prefix" ]] || continue
-    helper="$(ghostty_zmx_remote_layout_helper_cmd)"
-    layout="$(${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$helper" read 2>/dev/null)" || continue
-    while IFS=$'\t' read -r workspace window tab pane session parent axis ratio state updated rev; do
-      [[ -n "$session" && "$session" == gzr-* ]] || continue
-      case "$state" in
-        present)
-          # Reconcile from live Ghostty terminals/process args under a
-          # per-host+session lock; adopts an existing projection or opens a
-          # new one only if none is live and no fresh opening row exists.
-          ghostty_zmx_reconcile_remote_projection "$host" "$workspace" "$session" "$prefix" || true
-          ;;
-        closing|deleted)
-          ghostty_zmx_remove_remote_projection "$host" "$session"
-          ;;
-      esac
-    done <<< "$layout"
-  done < "$hosts_file"
-}
 
 ghostty_zmx_detect_ghostty_pid() {
   emulate -L zsh
@@ -2134,46 +1843,7 @@ OSA
 # Does NOT open a projection window — the widget opens windows in the surface
 # shell context (osascript from a detached descendant triggers the Ghostty
 # tip-build multiplication bug). The poller only writes the server layout row.
-complete_handoff() {
-  local row="$1" host transport prefix_string workspace window tab pane session created_at
-  {
-    IFS=$'\t' read -r host transport prefix_string workspace window tab pane session created_at
-  } <<< "$row"
-  [[ -n "$host" && -n "$session" && -n "$prefix_string" ]] || return 1
-  local -a probe
-  probe=(${(z)$(notty_prefix "$prefix_string")})
-  local version_output version_line version_value helper
-  version_output="$("${probe[@]}" 'command -v zmx >/dev/null 2>&1 && zmx version | head -1' 2>/dev/null)"
-  version_line="${version_output%%$'\n'*}"
-  version_value="$(print -r -- "$version_line" | awk '{print $2}')"
-  if [[ "$version_value" != 0.6.* ]]; then
-    pdbg "handoff probe-failed host=$host version=${version_value:-missing}"
-    return 2
-  fi
-  helper="$helper_cmd"
-  if ! "${probe[@]}" "$helper" add "$workspace" "$window" "$tab" "$pane" "$session" - root 1 present >/dev/null 2>&1; then
-    pdbg "handoff remote-layout-write-failed host=$host session=$session"
-    return 1
-  fi
-  { grep -v -F $'\t'"${host}"$'\t' "$hosts_file" 2>/dev/null || true
-    print -r -- "${host}\t${transport}\t${version_value}\tactive\t${prefix_string}"
-  } > "$hosts_file.tmp.$$" 2>/dev/null && mv "$hosts_file.tmp.$$" "$hosts_file" 2>/dev/null
-  pdbg "handoff remote-layout-written host=$host session=$session version=$version_value"
-}
 
-drain_handoff_pending() {
-  local row file count=0
-  [[ -d "$handoff_dir" ]] || return 0
-  while file="$(ls -1 "$handoff_dir" 2>/dev/null | head -1)" && [[ -n "$file" ]]; do
-    row="$(cat "$handoff_dir/$file" 2>/dev/null)"
-    rm -f "$handoff_dir/$file" 2>/dev/null
-    [[ -n "$row" ]] || continue
-    pdbg "poller-draining-handoff row=$row"
-    complete_handoff "$row" || true
-    count=$(( count + 1 ))
-  done
-  return $count
-}
 
 poll_once() {
   # The poller does NOT run ssh. A detached process running ssh triggers the
@@ -2429,7 +2099,6 @@ ghostty_zmx_inherit_remote_context_if_any() {
   emulate -L zsh
   setopt local_options no_sh_word_split
   local identity="$1" projections_file="$(ghostty_zmx_remote_projections_file)" cur_win cur_tab cur_tty now
-  _ghostty_zmx_debug "inherit ENTER tty=$(print -r -- "$identity" | awk '{print $5}') stack=$funcfiletrace"
   # Bisection kill switch: disable the inherit hook entirely.
   [[ "${GHOSTTY_ZMX_DISABLE_INHERIT:-0}" != "1" ]] || { _ghostty_zmx_debug "inherit skipped reason=inherit-disabled"; return 1 }
   [[ -f "$projections_file" && -n "$identity" ]] || return 1
@@ -2539,7 +2208,7 @@ _ghostty_zmx_auto_attach() {
   [[ "$asReady" -eq 0 ]] && { _ghostty_zmx_debug "Ghostty PID detection failed"; return 0; }
 
   typeset earlySurfaceIdentity="$(_ghostty_zmx_current_surface_identity)"
-  _ghostty_zmx_debug "auto-attach pre-inherit win=$(ghostty_zmx_wincount 2>/dev/null)"
+  _ghostty_zmx_debug "auto-attach pre-inherit"
   if [[ -n "$earlySurfaceIdentity" ]] && ghostty_zmx_inherit_remote_context_if_any "$earlySurfaceIdentity"; then
     return 0
   fi
@@ -2555,9 +2224,9 @@ _ghostty_zmx_auto_attach() {
   elif [[ -n "$ghosttyPID" && -n "$restoreFlag" ]] && mkdir "$restoreFlag" 2>/dev/null; then
     restoreDriver=1
     _ghostty_zmx_mark_restore_attempted "$restoreAttemptedFlag" "$restoreProcessToken"
-    _ghostty_zmx_debug "restore-driver elected ghostty_pid=$ghosttyPID flag=$restoreFlag win_before_restore=$(ghostty_zmx_wincount 2>/dev/null)"
+    _ghostty_zmx_debug "restore-driver elected ghostty_pid=$ghosttyPID flag=$restoreFlag"
     _ghostty_zmx_restore
-    _ghostty_zmx_debug "restore-driver post-restore win_after_restore=$(ghostty_zmx_wincount 2>/dev/null)"
+    _ghostty_zmx_debug "restore-driver post-restore"
     typeset firstFile="$GHOSTTY_ZMX_DATA_HOME/restore-first"
     if [[ -s "$firstFile" ]]; then
       IFS= read -r sessionName < "$firstFile"
