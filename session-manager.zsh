@@ -1212,33 +1212,6 @@ ghostty_zmx_client_id_file() {
   print -r -- "${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}/client-id"
 }
 
-# Directory of pending handoff requests written by the accept-line widget and
-# processed by a detached background job (NOT in the zle widget context). The
-# widget does no ssh at all; it records the parsed command here and returns.
-# A detached `nohup` job reads these, performs the remote zmx version probe,
-# writes the remote-layout row over ssh, writes remote-hosts, and calls
-# reconcile to open the projection window. This keeps ALL ssh out of the zsh
-# accept-line zle widget, which is the confirmed trigger for the Ghostty tip
-# build 07d31666e window-multiplication bug (complex ssh in zle spawns ~5 extra
-# surfaces). See changelog 2026-06-30-v0-2-multiplication-root-cause-ssh-in-zle-widget.
-
-# A pending handoff row: a TSV file named <token>.handoff where <token> is a
-# short unique id. Row fields:
-#   host  transport  prefix_string  workspace  window  tab  pane  session  created_at
-
-# Read and remove a single pending handoff file, printing its row fields on
-# stdout. Returns 0 if a row was consumed, 1 if the queue is empty.
-
-# Probe remote zmx version and write the remote-layout row for a handoff.
-# Runs the remote zmx version probe ssh and the remote-layout write ssh. Must
-# be called from a detached context (background job or poller), NOT from the
-# zle widget. The remote-layout write goes through the server-side
-# ghostty-zmx-remote-layout helper as a bare-word argv so the ssh command
-# carries no awk/printf/tabs metacharacters (the trigger shape for the Ghostty
-# tip-build window-multiplication bug). On success writes remote-hosts and the
-# remote-layout row, prints the normalized version on stdout, returns 0. On
-# failure prints nothing and returns non-zero.
-
 ghostty_zmx_client_id() {
   emulate -L zsh
   local id_file="$(ghostty_zmx_client_id_file)" id
@@ -1452,11 +1425,11 @@ ghostty_zmx_remote_prefix_for_host() {
 }
 
 # Convert a projection prefix (ssh -t ...) into a no-pty argv (ssh -T ...) for
-# non-interactive commands (version probe, layout read/write, close transaction).
-# ssh allocates a pty by default, and on Ghostty tip build a descendant process
-# allocating a pty causes Ghostty to spawn a new surface for it (the window-
-# multiplication root cause). -T disables pty allocation, safe for non-
-# interactive commands. Prints the argv as a space-joined string.
+# non-interactive commands (version probe, layout read/write, close
+# transaction). ssh allocates a pty by default; -T disables pty allocation,
+# which is the correct mode for non-interactive commands and avoids
+# `Pseudo-terminal will not be allocated` noise. Prints the argv as a
+# space-joined string.
 ghostty_zmx_notty_prefix() {
   emulate -L zsh
   local prefix_string="$1" _w
@@ -1484,13 +1457,15 @@ ghostty_zmx_notty_prefix() {
   print -r -- "${(j: :)notty}"
 }
 
-# Path to the server-side ghostty-zmx-remote-layout helper, as invoked over ssh.
-# The helper is installed by install-server.sh to ~/.config/ghostty-zmx/ on the
-# remote host. We invoke it as a bare-word argv ($HOME/.config/ghostty-zmx/
-# ghostty-zmx-remote-layout <sub> <args>) so the ssh command carries NO
-# awk/printf/tabs/lock-loop metacharacters — the command shape that triggered
-# the Ghostty tip-build window-multiplication bug when run from a Ghostty pane.
-# See changelog 2026-06-30-v0-2-multiplication-real-root-cause-complex-ssh.
+# Path to the server-side ghostty-zmx-remote-layout helper, as invoked over
+# ssh. The helper is installed by install-server.sh to
+# ~/.config/ghostty-zmx/ on the remote host. We invoke it as a bare-word argv
+# ($HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout <sub> <args>) so the
+# ssh command is simple and carries no awk/printf/tabs/lock-loop
+# metacharacters. (A prior theory blamed such command shapes for surface
+# multiplication; that was disproven — the cause was orphaned poller shells.
+# The bare-word argv is kept because it is simpler and correct.) See
+# changelog 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
 ghostty_zmx_remote_layout_helper_cmd() {
   print -r -- "\$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout"
 }
@@ -1611,15 +1586,6 @@ OSA
 
 # Back-compat shim: callers that reserved externally now delegate to reconcile.
 
-# Drain the handoff-pending queue: process each pending handoff by probing
-# remote zmx, writing the remote-layout row, and reconciling (opening the
-# projection window). Called by the standalone poller so the osascript
-# `new window` runs from the poller's detached context (started at shell init),
-# NOT from a widget-spawned worker (whose zle-derived process ancestry is the
-# confirmed trigger for the Ghostty window-multiplication bug). Returns the
-# number of handoffs processed.
-
-
 ghostty_zmx_detect_ghostty_pid() {
   emulate -L zsh
   local p=$$ cmd
@@ -1636,7 +1602,7 @@ ghostty_zmx_detect_ghostty_pid() {
 
 ghostty_zmx_start_remote_poller() {
   emulate -L zsh
-  local force=0 ghostty_pid="${1:-}" runtime="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}" flag interval="${GHOSTTY_ZMX_REMOTE_POLL_INTERVAL:-3}" oldpid=""
+  local force=0 ghostty_pid="${1:-}" runtime="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}" flag interval="${GHOSTTY_ZMX_REMOTE_POLL_INTERVAL:-3}" oldpid="" old_elapsed="" cur_elapsed=""
   if [[ "$ghostty_pid" == "force" ]]; then
     force=1
     ghostty_pid=""
@@ -1644,24 +1610,44 @@ ghostty_zmx_start_remote_poller() {
   [[ "$force" -eq 1 || ( -z "${ZMX_SESSION:-}" && -z "${TMUX:-}" ) ]] || return 0
   [[ -n "$ghostty_pid" ]] || ghostty_pid="$(ghostty_zmx_detect_ghostty_pid)" || return 0
   [[ "$ghostty_pid" =~ ^[0-9]+$ ]] || return 0
+  # PID-reuse-safe token: capture the owning Ghostty's elapsed-seconds at
+  # startup. The poller loop re-derives current elapsed and exits if the
+  # owning PID is reused by a younger process (current < saved) or gone
+  # (empty). Mirrors the reaper's _ghostty_zmx_ghostty_elapsed_seconds check.
+  # See changelog
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
+  local ghostty_elapsed=""
+  ghostty_elapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghostty_pid" 2>/dev/null)" || ghostty_elapsed=0
   mkdir -p "$runtime" 2>/dev/null || return 0
   flag="$runtime/remote-poller-${_ghostty_app_name}-${ghostty_pid}.lock"
   if ! mkdir "$flag" 2>/dev/null; then
+    # Stale-owner check is PID-reuse-safe: verify the recorded owner is alive
+    # AND its current elapsed is >= the recorded elapsed (same process). A
+    # bare `kill -0 $oldpid` succeeds against a reused PID and lets a second
+    # poller stack on a dead lock's owner — the root cause of the orphaned-
+    # poller multiplication.
     [[ -f "$flag/pid" ]] && read -r oldpid < "$flag/pid" 2>/dev/null || oldpid=""
+    [[ -f "$flag/elapsed" ]] && read -r old_elapsed < "$flag/elapsed" 2>/dev/null || old_elapsed=""
     if [[ -n "$oldpid" && "$oldpid" =~ ^[0-9]+$ ]] && kill -0 "$oldpid" 2>/dev/null; then
-      return 0
+      cur_elapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$oldpid" 2>/dev/null)" || cur_elapsed=""
+      if [[ -z "$old_elapsed" || -z "$cur_elapsed" || "$cur_elapsed" -lt "$old_elapsed" ]]; then
+        _ghostty_zmx_debug "poller stale-owner reuse owner=$oldpid saved_elapsed=$old_elapsed cur_elapsed=$cur_elapsed; reclaiming"
+      else
+        # Live owner, same process. Keep it.
+        return 0
+      fi
     fi
     rm -rf "$flag" 2>/dev/null || return 0
     mkdir "$flag" 2>/dev/null || return 0
   fi
   # Generate a FULLY STANDALONE poller script that does NOT source the
   # manager. Sourcing the manager in a detached process and then running ssh
-  # (especially inside a function body with `emulate -L zsh`) is the confirmed
-  # trigger for the Ghostty tip-build window-multiplication bug: it spawns ~5
-  # duplicate bare-ssh surfaces with zero osascript calls from ghostty-zmx.
-  # The standalone script inlines the minimal poll logic (read remote-hosts,
-  # ssh read layout, osascript open projection, drain handoff-pending) using
-  # plain zsh with no manager functions and no `emulate -L zsh`. See changelog
+  # is a historical trigger for surface multiplication (sourced-manager + ssh
+  # in a detached process). The standalone script inlines the minimal poll
+  # logic — reconcile local projection state from already-known hosts (adopt
+  # live projections, remove dead ones) — using plain zsh with no manager
+  # functions and no `emulate -L zsh`. It does NOT run ssh and does NOT open
+  # projection windows. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-sourced-manager.
   local script="$runtime/remote-poller-${ghostty_pid}.zsh"
   local poller_log="$runtime/remote-poller-${ghostty_pid}.log"
@@ -1671,8 +1657,10 @@ ghostty_zmx_start_remote_poller() {
   cat >> "$script" <<'EOS'
 #!/bin/zsh
 # Standalone remote projection poller. Does NOT source session-manager.zsh.
-# Inlines the minimal poll/projection logic to avoid the Ghostty tip-build
-# multiplication trigger (sourced-manager + ssh in a detached process).
+# Inlines the minimal poll logic (reconcile local projection state for
+# already-known hosts: adopt live projections, remove dead ones). Does NOT run
+# ssh and does NOT open projection windows. See changelog
+# 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
 ghostty_pid="$1"
 flag="$2"
 data_home="$3"
@@ -1681,11 +1669,18 @@ interval="$5"
 debug_enabled="$6"
 ghostty_app_name="$7"
 install_dir="$8"
+ghostty_elapsed="${9:-0}"
 hosts_file="$data_home/remote-hosts"
 projections_file="$data_home/remote-projections"
-handoff_dir="$data_home/handoff-pending"
-helper_cmd='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
 wrapper_path="$install_dir/ghostty-zmx"
+
+# Record this poller's own pid + the owning Ghostty's elapsed-seconds token so
+# a later ghostty_zmx_start_remote_poller can detect (a) the owner is still
+# this process (current elapsed >= recorded) and (b) the owning Ghostty is
+# still the same process (not a reused PID). See changelog
+# 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
+print -r -- "$$" > "$flag/pid" 2>/dev/null || true
+print -r -- "$ghostty_elapsed" > "$flag/elapsed" 2>/dev/null || true
 
 pdbg() {
   [[ "$debug_enabled" == "1" ]] || return 0
@@ -1695,6 +1690,35 @@ pdbg() {
 
 wincount() {
   osascript -e "tell application \"$ghostty_app_name\" to count of windows" 2>/dev/null || echo '?'
+}
+
+# Parse ps -o etime= into seconds (handles [[dd-]hh:]mm:ss). Mirrors the
+# manager's _ghostty_zmx_parse_elapsed_seconds so the poller can detect PID
+# reuse without sourcing the manager.
+parse_elapsed_seconds() {
+  local elapsed="$1" days=0 hours=0 minutes seconds
+  local -a parts
+  [[ -n "$elapsed" ]] || return 1
+  if [[ "$elapsed" == *-* ]]; then
+    days="${elapsed%%-*}"
+    elapsed="${elapsed#*-}"
+    [[ "$days" =~ ^[0-9]+$ ]] || return 1
+  fi
+  parts=("${(@s/:/)elapsed}")
+  case ${#parts} in
+    2) minutes="${parts[1]}"; seconds="${parts[2]}" ;;
+    3) hours="${parts[1]}"; minutes="${parts[2]}"; seconds="${parts[3]}" ;;
+    *) return 1 ;;
+  esac
+  [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
+  print $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
+}
+
+# Return the owning Ghostty PID's elapsed seconds, or empty if the PID is gone.
+elapsed_seconds() {
+  local elapsed
+  elapsed="$(ps -o etime= -p "$ghostty_pid" 2>/dev/null | tr -d ' ')" || return 1
+  parse_elapsed_seconds "$elapsed"
 }
 
 # Scan live Ghostty terminals and return the terminal pid+tty whose process
@@ -1839,20 +1863,16 @@ end tell
 OSA
 }
 
-# Process a single pending handoff: probe ssh + remote-layout write ONLY.
-# Does NOT open a projection window — the widget opens windows in the surface
-# shell context (osascript from a detached descendant triggers the Ghostty
-# tip-build multiplication bug). The poller only writes the server layout row.
-
-
 poll_once() {
-  # The poller does NOT run ssh. A detached process running ssh triggers the
-  # Ghostty tip-build window-multiplication bug (detached-process ancestry +
-  # ssh). Layout reads for closing/deleted propagation happen via a precmd
-  # hook in the surface shell (surface-shell ssh does not multiply). The
-  # poller only reconciles local projection state for already-known hosts:
-  # adopts existing live projections and removes projections whose process
-  # died. It never opens new windows and never runs ssh.
+  # The poller does NOT run ssh and does NOT open projection windows. It
+  # only reconciles local projection state for already-known hosts: adopts
+  # live projections (found by scanning Ghostty terminal process trees) and
+  # removes projections whose process died. Server-layout changes
+  # (closing/deleted from another client) are propagated by a precmd hook in
+  # the surface shell, which is the only place ssh runs. Keeping ssh out of
+  # the detached poller avoids re-introducing the orphaned-poller-driven
+  # surface multiplication. See changelog
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   local host transport version mode prefix
   [[ -f "$hosts_file" ]] || return 0
   while IFS=$'\t' read -r host transport version mode prefix; do
@@ -1875,45 +1895,54 @@ poll_once() {
   done < "$hosts_file"
 }
 
-pdbg "started ghostty_pid=$ghostty_pid app=$ghostty_app_name interval=$interval"
+pdbg "started ghostty_pid=$ghostty_pid app=$ghostty_app_name interval=$interval elapsed=$ghostty_elapsed"
 pdbg "poller tty=$(tty 2>/dev/null || echo none) ppid=$ppid"
 sleep 1
 trap "rm -rf \"$flag\" 2>/dev/null || true" EXIT INT TERM
-while kill -0 "$ghostty_pid" 2>/dev/null; do
+# PID-reuse-safe loop: kill -0 succeeds against a reused PID, so re-derive
+# the owning Ghostty's elapsed each iteration and exit if it is empty (PID
+# gone) or younger than the saved token (PID reused by a different process).
+# This is what stops orphaned pollers from looping forever against a dead or
+# reused Ghostty PID. See changelog
+# 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
+while :; do
+  cur_elapsed="$(elapsed_seconds "$ghostty_pid" 2>/dev/null)" || cur_elapsed=""
+  if [[ -z "$cur_elapsed" ]]; then
+    pdbg "stopped ghostty_pid=$ghostty_pid reason=ghostty-exit"
+    break
+  fi
+  if [[ -n "$ghostty_elapsed" && "$cur_elapsed" -lt "$ghostty_elapsed" ]]; then
+    pdbg "stopped ghostty_pid=$ghostty_pid reason=pid-reuse saved=$ghostty_elapsed cur=$cur_elapsed"
+    break
+  fi
   poll_once
   sleep "$interval"
 done
-pdbg "stopped ghostty_pid=$ghostty_pid reason=ghostty-exit"
 rm -f "$0" 2>/dev/null
 EOS
   chmod +x "$script" 2>/dev/null
-  # Re-parent the poller to launchd AND detach its controlling tty. A process
-  # with a controlling tty inherited from a Ghostty surface causes Ghostty to
-  # multiply a single `new window with configuration` osascript call into 6
-  # windows; a process with no controlling tty (tty=??) creates exactly 1.
-  # macOS has no `setsid`, so use python3 to call os.setsid() (new session,
-  # detach controlling tty) before execing the poller. Fall back to the
-  # nohup double-fork (which re-parents to launchd but does NOT detach the
-  # tty) if python3 is unavailable. See changelog
-  # 2026-06-30-v0-2-multiplication-root-cause-surface-ancestry-fix-confirmed.
+  # Re-parent the poller to launchd AND detach its controlling tty via
+  # os.setsid(). Detaching the tty is hygiene: it keeps the poller from
+  # receiving terminal-driven signals (SIGHUP) if the originating surface
+  # closes, so the poller dies only when its owning Ghostty PID exits (per
+  # the elapsed-token loop above). macOS has no `setsid`, so use python3 to
+  # call os.setsid() (new session, no controlling tty) before execing the
+  # poller. Fall back to the nohup double-fork (re-parents to launchd but
+  # does not detach the tty) if python3 is unavailable.
   if command -v python3 >/dev/null 2>&1; then
     # Detach the poller's controlling tty AND re-parent to launchd. zsh's
-    # background job control puts the child in a new process group (making it a
-    # pgrp leader, which blocks os.setsid() with EPERM). To get a non-leader
-    # child, python3 forks first; the forked child is not a pgrp leader and can
-    # call os.setsid() to create a new session with no controlling tty. A
-    # process with a controlling tty inherited from a Ghostty surface causes
-    # Ghostty to multiply a single `new window with configuration` osascript
-    # call into ~6 windows; a process with no controlling tty creates exactly 1.
-    # See changelog 2026-06-30-v0-2-multiplication-root-cause-surface-ancestry-fix-confirmed.
+    # background job control puts the child in a new process group (making it
+    # a pgrp leader, which blocks os.setsid() with EPERM). To get a non-leader
+    # child, python3 forks first; the forked child is not a pgrp leader and
+    # can call os.setsid() to create a new session with no controlling tty.
     python3 -c 'import os, sys
 if os.fork() != 0:
     os._exit(0)
 os.setsid()
-os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" </dev/null >"$poller_log" 2>&1 &
+os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" </dev/null >"$poller_log" 2>&1 &
     disown
   else
-    nohup /bin/zsh -c 'nohup "/bin/zsh" "$0" "$@" </dev/null >"'$poller_log'" 2>&1 & disown; exit' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" </dev/null >/dev/null 2>&1 &!
+    nohup /bin/zsh -c 'nohup "/bin/zsh" "$0" "$@" </dev/null >"'$poller_log'" 2>&1 & disown; exit' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" </dev/null >/dev/null 2>&1 &!
   fi
 }
 
@@ -2020,17 +2049,14 @@ ghostty_zmx_accept_line() {
   local prefix_string="${(j: :)projection}"
   mkdir -p "$GHOSTTY_ZMX_DATA_HOME" 2>/dev/null
 
-  # ALL ssh runs in THIS surface-shell (zle) context. ssh from the surface
-  # shell does NOT multiply. See changelog
-  # 2026-07-01-v0-2-multiplication-root-cause-present-row-trigger.
-  #
-  # CRITICAL ORDERING: open the projection window BEFORE writing the
-  # `present` remote-layout row. A successful `ghostty-zmx-remote-layout add`
-  # (writing a `state=present` row) combined with a subsequent `osascript new
-  # window with configuration` triggers the Ghostty tip-build multiplication
-  # bug (delta=5+, bare-ssh extras). Opening the window first (no present row
-  # exists yet) avoids the trigger. The wrapper's `zmx attach` creates the
-  # remote session; the `add` records the layout row after.
+  # The widget opens the projection window; the ghostty-zmx wrapper (the
+  # surface command) writes the remote-layout `state=present` row when it
+  # starts, then execs ssh. This split keeps osascript `new window` in the
+  # surface-shell (zle) context and the remote-layout write in the surface's
+  # own command tree. (An earlier revision feared a `state=present` row
+  # triggered a Ghostty tip-build multiplication bug; that was disproven —
+  # the cause was surviving orphaned poller shells. See changelog
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   local -a probe_argv=()
   local _have_t=0 _w
   for _w in "${projection[@]}"; do
@@ -2054,11 +2080,11 @@ ghostty_zmx_accept_line() {
   fi
   _gzmx_widget_debug "widget probe-ok host=$host_key version=$version_value"
 
-  # Open the projection window from THIS surface-shell (zle) context BEFORE
-  # writing the remote-layout row. osascript `new window with configuration`
-  # from the surface shell creates exactly 1 window when no `present` row
-  # exists. See changelog
-  # 2026-07-01-v0-2-multiplication-root-cause-present-row-trigger.
+  # Open the projection window from THIS surface-shell (zle) context. The
+  # ghostty-zmx wrapper (the surface's own command) writes the remote-layout
+  # `state=present` row when it starts; the widget does not write the layout
+  # row. See changelog
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   local command_string applescript_command
   command_string="$(ghostty_zmx_projection_command_string "$host_key" "$workspace" "$session" "$prefix_string")"
   applescript_command="${command_string//\\\\/\\\\\\\\}"
@@ -2074,12 +2100,11 @@ end tell
 OSA
   _gzmx_widget_debug "widget opened host=$host_key session=$session"
 
-  # The remote-layout `add` is NOT done here. A successful `add` (writing a
-  # `state=present` row) from the widget's zle context triggers the Ghostty
-  # tip-build multiplication bug (delta=5+). Instead, the projection wrapper
-  # writes the layout row after attaching (the wrapper's ssh is the surface's
-  # own command, which does not trigger multiplication). See changelog
-  # 2026-07-01-v0-2-multiplication-root-cause-present-row-trigger.
+  # The remote-layout `add` is NOT done here: the projection wrapper writes
+  # the `state=present` row when it starts (the wrapper is the surface's own
+  # command tree). The widget only records host metadata here and starts the
+  # poller. See changelog
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   { grep -v -F $'\t'"${host_key}"$'\t' "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null || true
     print -r -- "${host_key}\t${transport}\t${version_value}\tactive\t${prefix_string}"
   } > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" 2>/dev/null && mv "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null
@@ -2132,8 +2157,7 @@ ghostty_zmx_inherit_remote_context_if_any() {
     helper="$(ghostty_zmx_remote_layout_helper_cmd)"
     # The helper generates updated-at and a monotonic rev server-side under the
     # remote lock; the ssh argv is bare words only (no awk/printf/tabs).
-    # Use no-pty ssh (-T) so the descendant ssh doesn't allocate a pty and
-    # trigger Ghostty surface multiplication.
+    # Use no-pty ssh (-T) for the non-interactive layout write.
     ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$helper" add "$workspace_id" "$remote_win" "$remote_tab" "$pane" "$session" "$parent_pane" "$axis" "$ratio" present >/dev/null 2>&1 || return 1
     # Write the local projection row via the helper (under the file lock) so the
     # poller sees an opening row and skips; reuse the per-host+session lock.

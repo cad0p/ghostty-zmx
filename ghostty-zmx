@@ -91,20 +91,23 @@ if [[ "$session" == gzr-* ]]; then
       _add_argv+=("$_arg")
     fi
   done
-  # Write the layout row with state=opening. A state=present row triggers the
-  # Ghostty tip-build multiplication bug (extras spawn when a new window is
-  # created while a present row exists). state=opening does not trigger it.
-  # The row is transitioned to `present` later (by the poller or a hook) once
-  # the projection is attached, so other clients can discover and project it.
+  # Write the layout row with state=present so other clients' pollers can
+  # discover and project this session. (An earlier revision wrote
+  # state=opening here as a workaround for a suspected Ghostty tip-build
+  # window-multiplication bug; that root cause was disproven — the
+  # multiplication was caused by surviving orphaned poller shells, not by
+  # the present row. See changelog
+  # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   if [[ "$_dropped_cmd" -eq 1 ]]; then
-    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 opening >/dev/null 2>&1 || true
+    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || true
   fi
 fi
 
 # Run the transport in the FOREGROUND via exec so it keeps the controlling TTY.
-# The transport's remote command transitions the layout row to `present` then
-# attaches. This runs as the surface's own command (the ssh -t), so the
-# `present` transition happens on the remote side without a laptop-side ssh.
+# The layout row was already written state=present above; the transport's
+# remote `zmx attach` attaches to the remote session. This runs as the
+# surface's own command (the ssh -t), so the attach happens on the remote
+# side with a real pty.
 # Backgrounding ssh ("$@" &) detaches it from the TTY, so `ssh -t` cannot
 # allocate a pseudo-terminal ("Pseudo-terminal will not be allocated because
 # stdin is not a terminal"), the remote `zmx attach` runs non-interactively and
