@@ -2301,6 +2301,11 @@ ghostty_zmx_inherit_remote_context_if_any() {
   local identity="$1" projections_file="$(ghostty_zmx_remote_projections_file)" cur_win cur_tab cur_tty now
   # Bisection kill switch: disable the inherit hook entirely.
   [[ "${GHOSTTY_ZMX_DISABLE_INHERIT:-0}" != "1" ]] || { _ghostty_zmx_debug "inherit skipped reason=inherit-disabled"; return 1 }
+  # Never inherit inside a projection surface. The projection wrapper sets
+  # GHOSTTY_ZMX_PROJECTION=1; if a newly-opened projection window's shell runs
+  # auto_attach, it must NOT re-inherit (which would cascade: each new
+  # projection window opens another, ad infinitum).
+  [[ "${GHOSTTY_ZMX_PROJECTION:-}" == "1" ]] && { _ghostty_zmx_debug "inherit skipped reason=projection-surface"; return 1 }
   [[ -f "$projections_file" && -n "$identity" ]] || return 1
   cur_win="$(print -r -- "$identity" | awk '{print $1}')"
   cur_tab="$(print -r -- "$identity" | awk '{print $2}')"
@@ -2359,7 +2364,13 @@ ghostty_zmx_inherit_remote_context_if_any() {
     rmdir "$inh_lock" 2>/dev/null || true
     local inh_command="$(ghostty_zmx_projection_command_string "$host" "$workspace_id" "$session" "$prefix")"
     _ghostty_zmx_debug "inherit exec host=$host session=$session cur_win=$cur_win cur_tab=$cur_tab tty=$cur_tty cmd=$inh_command"
-    exec ${(z)inh_command}
+    # Native split/tab inheritance (per design): exec the projection wrapper
+    # in-place so the split pane BECOMES the remote projection. The wrapper
+    # writes the server layout row then execs the transport ssh. fds must be
+    # pointed at the tty so the transport's `ssh -t ... zmx attach` gets a
+    # real interactive pty; otherwise zmx attach exits and Ghostty reaps the
+    # surface.
+    exec ${(z)inh_command} <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
   return 1
 }
