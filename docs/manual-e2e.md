@@ -310,6 +310,45 @@ This verifies that quitting Ghostty (Cmd-Q) does **not** trigger the server clos
 - Cmd-Q: server row stays `present`, remote zmx session survives `clients=0`.
 - No orphaned poller shells after Ghostty-tip exits (`lsof ~/.config/ghostty-zmx/session-manager.zsh` empty).
 
+### Idempotence stress (delete projection row while ssh lives)
+
+This verifies the poller repairs a lost local projection row by adopting the live ssh rather than opening a duplicate.
+
+1. Set up a projected remote session as in the multi-client scenario (pre-seed + launch, wait for `attached`).
+2. Delete the local `remote-projections` row (simulating local state loss) while keeping the live ssh and server row intact:
+
+   ```sh
+   rm -f "$TMPDATA/remote-projections"
+   sleep 8
+   ```
+3. Verify the poller repaired the row without opening a duplicate:
+
+   ```sh
+   # exactly one ssh child (count by comm==ssh to avoid the login/wrapper parent)
+   ps -eo pid,ppid,comm,args | awk '$3=="ssh" && /zmx attach gzr-/{cnt++} END{print cnt+0}'  # expect 1
+   cat "$TMPDATA/remote-projections"   # expect one attached row, same pid as before
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list | grep gzr | grep clients'  # expect clients=1
+   grep adopted "$TMPSTATE/debug.log" | tail   # expect poller adopted
+   ```
+
+4. The window count must not increase (no duplicate projection).
+
+### Widget handoff via AppleScript input injection
+
+`input text` + `send key "enter"` **does** trigger the zle `accept-line` widget (the prior claim that it doesn't was test contamination from the orphaned-poller era). This enables end-to-end handoff E2E without pre-seeding:
+
+```sh
+osascript <<'OSA'
+tell application "Ghostty-tip"
+  input text "ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture" to focused terminal of selected tab of front window
+  send key "enter" to focused terminal of selected tab of front window
+end tell
+OSA
+sleep 8
+```
+
+Verify the same as the multi-client scenario: `delta=1`, one ssh, `clients=1`, one `attached` row.
+
 ### Known limitation
 
 True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
