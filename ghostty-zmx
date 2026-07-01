@@ -80,15 +80,18 @@ if [[ "$session" == gzr-* ]]; then
   local _tab="${_rest%%-*}"
   local _pane="${_rest#*-}"
   local -a _notty=()
-  local _have_t=0 _arg
+  local _have_t=0 _is_tsh=0 _arg
+  if [[ "${@[1]}" == "tsh" && "${@[2]:-}" == "ssh" ]]; then
+    _is_tsh=1
+  fi
   for _arg in "$@"; do
     case "$_arg" in
       -t|-tt|--tty) ;;
-      -T) _notty+=(-T); _have_t=1 ;;
+      -T) [[ "$_is_tsh" -eq 0 ]] && { _notty+=(-T); _have_t=1 } ;;
       *) _notty+=("$_arg") ;;
     esac
   done
-  [[ "$_have_t" -eq 1 ]] || _notty+=(-T)
+  [[ "$_is_tsh" -eq 1 || "$_have_t" -eq 1 ]] || _notty+=(-T)
   # Drop the remote command arg (the 'zmx attach ...' last arg) for the add call.
   local -a _add_argv=()
   local _dropped_cmd=0

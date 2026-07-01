@@ -1424,23 +1424,23 @@ ghostty_zmx_remote_prefix_for_host() {
   awk -F '\t' -v host="$host" '$1 == host { print $5; exit }' "$hosts_file" 2>/dev/null
 }
 
-# Convert a projection prefix (ssh -t ...) into a no-pty argv (ssh -T ...) for
+# Convert a projection prefix (ssh -t ...) into a no-pty argv for
 # non-interactive commands (version probe, layout read/write, close
-# transaction). ssh allocates a pty by default; -T disables pty allocation,
-# which is the correct mode for non-interactive commands and avoids
-# `Pseudo-terminal will not be allocated` noise. Prints the argv as a
-# space-joined string.
+# transaction). For ssh, -T disables pty allocation (avoids
+# `Pseudo-terminal will not be allocated` noise). For tsh ssh, -T/-t are
+# not supported flags — tsh ssh is non-interactive when a command arg is
+# provided, so no flag is needed. Prints the argv as a space-joined string.
 ghostty_zmx_notty_prefix() {
   emulate -L zsh
   local prefix_string="$1" _w
   local -a probe=(${(z)prefix_string}) notty=()
-  # Insert -T after the ssh/tsh ssh binary, not at the front. ssh must be argv[0].
   local inserted_t=0
   local i=1
-  # If the prefix is "tsh ssh ...", skip both tokens before inserting -T.
+  local is_tsh=0
   if [[ "${probe[1]}" == "tsh" && "${probe[2]:-}" == "ssh" ]]; then
     notty+=(tsh ssh)
     i=3
+    is_tsh=1
   else
     notty+=("${probe[1]}")
     i=2
@@ -1449,11 +1449,11 @@ ghostty_zmx_notty_prefix() {
     _w="${probe[$i]}"
     case "$_w" in
       -t|-tt|--tty) ;;  # drop forced pty
-      -T) notty+=(-T); inserted_t=1 ;;
+      -T) [[ "$is_tsh" -eq 0 ]] && { notty+=(-T); inserted_t=1 } ;;
       *) notty+=("$_w") ;;
     esac
   done
-  [[ "$inserted_t" -eq 1 ]] || notty+=(-T)
+  [[ "$is_tsh" -eq 1 || "$inserted_t" -eq 1 ]] || notty+=(-T)
   print -r -- "${(j: :)notty}"
 }
 
@@ -1878,15 +1878,18 @@ snapshot_remote_sessions() {
   done < "$projections_file"
 }
 
-# Convert a projection prefix (ssh -t ...) into a no-pty argv (ssh -T ...).
+# Convert a projection prefix (ssh -t ...) into a no-pty argv. For ssh,
+# -T disables pty allocation; for tsh ssh, -T/-t are not supported and tsh
+# is non-interactive when a command arg is provided.
 notty_prefix() {
   local prefix_string="$1"
   local -a probe notty
   probe=(${(z)prefix_string})
-  local inserted_t=0 i=1
+  local inserted_t=0 i=1 is_tsh=0
   if [[ "${probe[1]}" == "tsh" && "${probe[2]:-}" == "ssh" ]]; then
     notty+=(tsh ssh)
     i=3
+    is_tsh=1
   else
     notty+=("${probe[1]}")
     i=2
@@ -1896,11 +1899,11 @@ notty_prefix() {
     _w="${probe[$i]}"
     case "$_w" in
       -t|-tt|--tty) ;;
-      -T) notty+=(-T); inserted_t=1 ;;
+      -T) [[ "$is_tsh" -eq 0 ]] && { notty+=(-T); inserted_t=1 } ;;
       *) notty+=("$_w") ;;
     esac
   done
-  [[ "$inserted_t" -eq 1 ]] || notty+=(-T)
+  [[ "$is_tsh" -eq 1 || "$inserted_t" -eq 1 ]] || notty+=(-T)
   print -r -- "${(j: :)notty}"
 }
 
@@ -2271,15 +2274,18 @@ ghostty_zmx_accept_line() {
   # the cause was surviving orphaned poller shells. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   local -a probe_argv=()
-  local _have_t=0 _w
+  local _have_t=0 _w _is_tsh=0
+  if [[ "${projection[1]}" == "tsh" && "${projection[2]:-}" == "ssh" ]]; then
+    _is_tsh=1
+  fi
   for _w in "${projection[@]}"; do
     case "$_w" in
       -t|-tt|--tty) ;;
-      -T) probe_argv+=(-T); _have_t=1 ;;
+      -T) [[ "$_is_tsh" -eq 0 ]] && { probe_argv+=(-T); _have_t=1 } ;;
       *) probe_argv+=("$_w") ;;
     esac
   done
-  [[ "$_have_t" -eq 1 ]] || probe_argv+=(-T)
+  [[ "$_is_tsh" -eq 1 || "$_have_t" -eq 1 ]] || probe_argv+=(-T)
   _gzmx_widget_debug "widget probe host=$host_key session=$session argv=${probe_argv[*]}"
   local version_output version_line version_value
   # Source .zshrc so zmx is found even when it's only on the interactive PATH
@@ -2460,6 +2466,15 @@ _ghostty_zmx_auto_attach() {
   fi
   if [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" != "1" ]]; then
     _ghostty_zmx_debug "auto-attach skipped reason=disabled value=${GHOSTTY_ZMX_AUTO_ATTACH:-}"
+    return 0
+  fi
+  # Never auto-attach inside a projection surface. The ghostty-zmx wrapper sets
+  # GHOSTTY_ZMX_PROJECTION=1; if .zprofile sources this manager inside a
+  # projection pane (Ghostty runs `command` via `login -c "exec -l ..."`, which
+  # sources .zprofile), auto-attach would attach to a LOCAL zmx session
+  # instead of letting the wrapper exec the transport ssh.
+  if [[ "${GHOSTTY_ZMX_PROJECTION:-}" == "1" ]]; then
+    _ghostty_zmx_debug "auto-attach skipped reason=projection-surface"
     return 0
   fi
   if [[ -n "$ZMX_SESSION" || -n "$TMUX" ]]; then
