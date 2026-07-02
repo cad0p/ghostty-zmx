@@ -27,22 +27,21 @@ source "$_gzmx_early_dir/session-manager-lib.zsh"
 # Capability gate: fail open on Ghostty 1.3.x / non-scriptable surfaces.
 ghostty_zmx_has_tty_capability || return 0
 
-# Once the early hook has the capability to make the inherit decision, mark it
-# as definitive for this shell. The full ~/.zshrc manager skips its inherit
-# block when this is set, avoiding a second late inherit attempt that would
-# reintroduce ~/.zshrc query leakage. Do NOT export this marker: it is only
-# meaningful for the current startup shell, and exporting it would make nested
-# shells skip their own early-inherit checks incorrectly.
-GHOSTTY_ZMX_EARLY_INHERIT_RAN=1
-
 # AppleScript registration can lag shell startup slightly, mirroring the full
-# manager's native-split inherit retry loop.
+# manager's native-split inherit retry loop. If identity never becomes
+# available, do NOT mark early-inherit as done: let the later ~/.zshrc manager
+# retry the legacy inherit path rather than incorrectly falling through to a
+# local zmx pane. Likewise, if identity is available but the projection row is
+# not yet visible, the shared inherit function returns without setting the
+# marker so ~/.zshrc can retry.
 typeset _gzmx_early_identity="" _gzmx_early_attempt
-for (( _gzmx_early_attempt=1; _gzmx_early_attempt<=8; _gzmx_early_attempt++ )); do
+typeset -i _gzmx_early_attempts="${GHOSTTY_ZMX_EARLY_INHERIT_ATTEMPTS:-8}"
+typeset _gzmx_early_delay="${GHOSTTY_ZMX_EARLY_INHERIT_DELAY:-0.25}"
+for (( _gzmx_early_attempt=1; _gzmx_early_attempt<=_gzmx_early_attempts; _gzmx_early_attempt++ )); do
   _gzmx_early_identity="$(_ghostty_zmx_current_surface_identity 2>/dev/null)"
   [[ -n "$_gzmx_early_identity" ]] && break
   _ghostty_zmx_debug "early-inherit identity-not-ready attempt=$_gzmx_early_attempt"
-  sleep 0.25
+  sleep "$_gzmx_early_delay"
 done
 
 if [[ -n "$_gzmx_early_identity" ]]; then

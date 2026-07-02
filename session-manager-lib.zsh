@@ -397,6 +397,12 @@ ghostty_zmx_inherit_remote_context_if_any() {
     local -a notty_prefix
     notty_prefix=(${(z)prefix})
     _ghostty_zmx_debug "inherit exec host=$host session=$session cur_win=$cur_win cur_tab=$cur_tab tty=$cur_tty"
+    # If this function was reached from the ~/.zprofile early hook, mark the
+    # current shell as handled immediately before exec. Do not set this marker
+    # earlier: transient identity/projection-row races should fall back to the
+    # later ~/.zshrc inherit attempt rather than starting a wrong local pane.
+    # Do not export it: it is meaningful only for this startup shell.
+    GHOSTTY_ZMX_EARLY_INHERIT_RAN=1
     # Native split/tab inheritance (per design): exec the projection wrapper
     # in-place so the split pane BECOMES the remote projection. The wrapper
     # writes the server layout row then execs the transport ssh. fds must be
