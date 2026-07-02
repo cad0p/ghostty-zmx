@@ -37,6 +37,7 @@ data_accept="$workdir/data-accept/ghostty-zmx"
 mkdir -p "$home_accept" "${config_accept:h}" "$data_accept"
 printf 'y\n' | run_install "$home_accept" "$config_accept" "$data_accept" > "$workdir/interactive-install.out"
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home_accept/.zshrc" || { print -u2 "interactive install source line missing"; exit 1; }
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"' "$home_accept/.zprofile" || { print -u2 "interactive install early source line missing"; exit 1; }
 grep -q '^# BEGIN ghostty-zmx$' "$config_accept" || { print -u2 "interactive install managed block missing"; exit 1; }
 grep -q 'Managed Ghostty block to add:' "$workdir/interactive-install.out" || { print -u2 "interactive install plan missing managed block"; exit 1; }
 
@@ -46,6 +47,7 @@ data_unterminated="$workdir/data-unterminated/ghostty-zmx"
 mkdir -p "$home_unterminated" "${config_unterminated:h}" "$data_unterminated"
 run_install "$home_unterminated" "$config_unterminated" "$data_unterminated" --yes > "$workdir/unterminated-install.out"
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home_unterminated/.zshrc" || { print -u2 "plain install source line missing"; exit 1; }
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"' "$home_unterminated/.zprofile" || { print -u2 "plain install early source line missing"; exit 1; }
 
 home_symlink_install="$workdir/home-symlink-install"
 install_target="$workdir/install-target/ghostty-zmx"
@@ -74,6 +76,11 @@ CFG
 
 run_install "$home" "$config" "$data" --yes > "$workdir/install.out"
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home/.zshrc" || { print -u2 "source line missing"; exit 1; }
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"' "$home/.zprofile" || { print -u2 "early source line missing"; exit 1; }
+[[ -f "$home/.config/ghostty-zmx/session-manager-lib.zsh" ]] || { print -u2 "shared lib missing"; exit 1; }
+[[ -f "$home/.config/ghostty-zmx/session-manager-early.zsh" ]] || { print -u2 "early manager missing"; exit 1; }
+zsh -n "$home/.config/ghostty-zmx/session-manager-lib.zsh" || { print -u2 "shared lib fails syntax check"; exit 1; }
+zsh -n "$home/.config/ghostty-zmx/session-manager-early.zsh" || { print -u2 "early manager fails syntax check"; exit 1; }
 # v0.2: wrapper, server installer, and vendored terminfo must be installed.
 [[ -x "$home/.config/ghostty-zmx/ghostty-zmx" ]] || { print -u2 "wrapper missing or not executable"; exit 1; }
 [[ -x "$home/.config/ghostty-zmx/install-server.sh" ]] || { print -u2 "server installer missing or not executable"; exit 1; }
@@ -108,6 +115,7 @@ grep -q 'quit-after-last-window-closed = true is unsupported' "$workdir/user-con
 
 run_install "$home" "$config" "$data" --yes > /dev/null
 [[ "$(grep -cF 'session-manager.zsh' "$home/.zshrc")" == 1 ]] || { print -u2 "source line not idempotent"; exit 1; }
+[[ "$(grep -cF 'session-manager-early.zsh' "$home/.zprofile")" == 1 ]] || { print -u2 "early source line not idempotent"; exit 1; }
 [[ "$(grep -c '^# BEGIN ghostty-zmx$' "$config")" == 1 ]] || { print -u2 "managed block not idempotent"; exit 1; }
 
 home_existing="$workdir/home-existing"
@@ -120,7 +128,9 @@ grep -qxF 'zmx-existing-11112222-33334444-aaaaaaaa' "$data_existing/sessions" ||
 [[ "$(wc -l < "$data_existing/sessions" | tr -d ' ')" == 1 ]] || { print -u2 "existing sessions file changed"; exit 1; }
 
 run_uninstall "$home" "$config" "$data" "$state" --yes > "$workdir/uninstall.out"
-[[ -d "$home/.config/ghostty-zmx" ]] || { print -u2 "--yes removed install dir"; exit 1; }
+[[ ! -e "$home/.config/ghostty-zmx/session-manager-lib.zsh" ]] || { print -u2 "--yes left shared lib installed"; exit 1; }
+[[ ! -e "$home/.config/ghostty-zmx/session-manager-early.zsh" ]] || { print -u2 "--yes left early manager installed"; exit 1; }
+! grep -q 'session-manager-early.zsh' "$home/.zprofile" 2>/dev/null || { print -u2 "--yes left early source line"; exit 1; }
 [[ -d "$data" ]] || { print -u2 "--yes removed data"; exit 1; }
 [[ -d "$state" ]] || { print -u2 "--yes removed state"; exit 1; }
 grep -q -- '--remove-data' "$workdir/uninstall.out" || { print -u2 "non-destructive uninstall guidance missing"; exit 1; }
@@ -134,6 +144,10 @@ cat > "$home_prompt/.zshrc" <<'ZSHRC'
 # ghostty-zmx
 [[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"
 ZSHRC
+cat > "$home_prompt/.zprofile" <<'ZPROFILE'
+# ghostty-zmx
+[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"
+ZPROFILE
 cat > "$config_prompt" <<'CFG'
 # BEGIN ghostty-zmx
 env = GHOSTTY_ZMX_AUTO_ATTACH=1
@@ -141,10 +155,12 @@ env = GHOSTTY_ZMX_AUTO_ATTACH=1
 CFG
 printf 'n\nn\n' | run_uninstall "$home_prompt" "$config_prompt" "$data_prompt" "$state_prompt" > "$workdir/uninstall-decline.out"
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home_prompt/.zshrc" || { print -u2 "interactive decline removed source line"; exit 1; }
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"' "$home_prompt/.zprofile" || { print -u2 "interactive decline removed early source line"; exit 1; }
 grep -qxF '# ghostty-zmx' "$home_prompt/.zshrc" || { print -u2 "interactive decline removed installer comment"; exit 1; }
 grep -q '^# BEGIN ghostty-zmx$' "$config_prompt" || { print -u2 "interactive decline removed Ghostty block"; exit 1; }
 printf 'y\ny\n' | run_uninstall "$home_prompt" "$config_prompt" "$data_prompt" "$state_prompt" > "$workdir/uninstall-accept.out"
 ! grep -q 'session-manager.zsh' "$home_prompt/.zshrc" || { print -u2 "interactive accept left source line"; exit 1; }
+! grep -q 'session-manager-early.zsh' "$home_prompt/.zprofile" || { print -u2 "interactive accept left early source line"; exit 1; }
 ! grep -q '^# ghostty-zmx$' "$home_prompt/.zshrc" || { print -u2 "interactive accept left installer comment"; exit 1; }
 ! grep -q '^# BEGIN ghostty-zmx$' "$config_prompt" || { print -u2 "interactive accept left Ghostty block"; exit 1; }
 [[ -d "$data_prompt" && -d "$state_prompt" ]] || { print -u2 "interactive accept removed data/state without flags"; exit 1; }

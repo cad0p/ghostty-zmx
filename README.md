@@ -91,14 +91,24 @@ The installer verifies `zmx`, `osascript`, and `zsh`, installs:
 
 ```text
 ~/.config/ghostty-zmx/session-manager.zsh
+~/.config/ghostty-zmx/session-manager-lib.zsh
+~/.config/ghostty-zmx/session-manager-early.zsh
 ~/.config/ghostty-zmx/uninstall.sh
 ```
 
-and appends this single guarded source line to `~/.zshrc`:
+and appends this guarded source line to `~/.zshrc`:
 
 ```zsh
 [[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"
 ```
+
+For Ghostty 1.4.0+ remote-split inheritance, the installer also appends an early guarded source line to `~/.zprofile`:
+
+```zsh
+[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"
+```
+
+That early hook runs before `.zshrc` only for Ghostty surfaces, and only to replace a native split of a remote projection pane with the projection wrapper before local shell plugins run. Ordinary local panes fall through to `.zshrc`, so aliases/prompts/plugins still load normally.
 
 The installer saves timestamped backups before editing shell or Ghostty config files.
 
@@ -208,7 +218,7 @@ or non-interactively:
 ~/.config/ghostty-zmx/uninstall.sh --yes
 ```
 
-Uninstall removes the `.zshrc` source line, removes the managed Ghostty block when accepted interactively or when `--yes` is used, removes generated runtime files, and leaves zmx sessions alive by default. `--yes` is non-interactive but still preserves installed files, data, and state unless explicit destructive flags are provided:
+Uninstall removes the `.zshrc` and `.zprofile` source lines, removes the managed Ghostty block when accepted interactively or when `--yes` is used, removes generated runtime files, removes installed ghostty-zmx files under `~/.config/ghostty-zmx` where present, and leaves zmx sessions/data/state alive by default. `--yes` is non-interactive but still preserves data and state unless explicit destructive flags are provided:
 
 ```sh
 ~/.config/ghostty-zmx/uninstall.sh --yes --remove-install-dir --remove-data --remove-state
