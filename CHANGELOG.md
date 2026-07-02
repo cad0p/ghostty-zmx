@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 ### 🐛 Bug Fixes
 
 - *(v0.2)* Correct widget error on unreachable host + newline formatting ([#21](https://github.com/cad0p/ghostty-zmx/pull/21))
+- *(v0.2)* Stray poller self-heal, close-no-reopen, split-inherits-remote ([#25](https://github.com/cad0p/ghostty-zmx/pull/25))
 
 ### 🚜 Refactor
 
