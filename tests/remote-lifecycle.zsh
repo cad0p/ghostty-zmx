@@ -96,6 +96,9 @@ if ! kill -0 "$live_poller_zpid" 2>/dev/null; then
 fi
 print "  ok: live-owner poller survived"
 kill -9 "$live_poller_zpid" 2>/dev/null
+# Also kill any leftover sleep children from the dead-owner poller (kill -9 the
+# poller zsh doesn't always reap its sleep child immediately).
+pkill -9 -f 'sleep 3600' 2>/dev/null || true
 
 # Cleanup the fake scripts/locks.
 rm -f "$dead_script" "$live_script"
@@ -222,6 +225,28 @@ _row_state_after="$(awk -F '\t' -v s="$_p_session" '$3==s {print $6; exit}' "$pr
 [[ "$_row_state_after" == "closing" ]] || { print -u2 "FAIL: expected closing state, got $_row_state_after"; exit 1 }
 print "  ok: row state is closing (preserved for retry, not removed)"
 print "  PASS test 4"
+
+# ---------------------------------------------------------------------------
+# Test 5: ghostty_zmx_projection_closing returns 0 only for `closing` rows.
+#         This is the guard that prevents the grouped restore from re-opening
+#         a session whose close-txn is in progress.
+# ---------------------------------------------------------------------------
+print ""
+print "test 5: projection_closing detects closing state"
+
+printf 'gzmx-fixture\tws1\tgzr-test-attached\t/dev/ttys001\t100\tattached\t100\twin1\ttab1\n' > "$projections_file"
+printf 'gzmx-fixture\tws1\tgzr-test-closing\t/dev/ttys002\t200\tclosing\t100\twin1\ttab1\n' >> "$projections_file"
+printf 'gzmx-fixture\tws1\tgzr-test-opening\t/dev/ttys003\t300\topening\t100\twin1\ttab1\n' >> "$projections_file"
+
+ghostty_zmx_projection_closing "gzmx-fixture" "gzr-test-attached" 2>/dev/null && { print -u2 "FAIL: attached should not be closing"; exit 1 }
+print "  ok: attached row is not closing"
+ghostty_zmx_projection_closing "gzmx-fixture" "gzr-test-closing" 2>/dev/null || { print -u2 "FAIL: closing row should be detected"; exit 1 }
+print "  ok: closing row is detected"
+ghostty_zmx_projection_closing "gzmx-fixture" "gzr-test-opening" 2>/dev/null && { print -u2 "FAIL: opening should not be closing"; exit 1 }
+print "  ok: opening row is not closing"
+ghostty_zmx_projection_closing "gzmx-fixture" "gzr-test-missing" 2>/dev/null && { print -u2 "FAIL: missing row should not be closing"; exit 1 }
+print "  ok: missing row is not closing"
+print "  PASS test 5"
 
 print ""
 print "all remote-lifecycle tests passed"
