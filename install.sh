@@ -37,6 +37,15 @@ managed_block='# BEGIN ghostty-zmx
 env = GHOSTTY_ZMX_AUTO_ATTACH=1
 window-save-state = never
 confirm-close-surface = true
+# Prototype D: split-IPC keybinds. Ghostty keybinds can only emit byte
+# sequences (text:), so these emit a private DCS that the local zle widget
+# (ghostty_zmx_split_request_widget) catches and forwards to the IPC listener.
+# The listener AppleScript-splits with a projection command, so the new pane
+# never starts a local shell and the axis is known. NOTE: these only fire in
+# LOCAL (non-projection) panes; the DCS reaches the remote shell in projection
+# panes (documented limitation).
+keybind = super+d=text:\eP1z|gzmx:split:right\e\\
+keybind = super+shift+d=text:\eP1z|gzmx:split:down\e\\
 # END ghostty-zmx'
 
 backup_file() {

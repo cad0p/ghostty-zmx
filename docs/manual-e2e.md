@@ -637,3 +637,76 @@ This verifies that after Cmd-Q + reopen, the poller recreates the remote window/
 Automated tests may use a disposable or temporary Ghostty config that sets `confirm-close-surface = false` for close scenarios. Harnesses that touch the real Ghostty config must restore it byte-for-byte on every exit path and fail if the restored file differs from the original.
 
 Never leave `confirm-close-surface = false` in the production managed block after automated tests.
+
+## Prototype D — keybind `text:` → local IPC listener (remote split without local shell)
+
+This prototype replaces native-split-then-inherit with a keybind-driven AppleScript
+split whose `surface configuration` `command` is the projection wrapper, so the new
+split pane never starts a local shell (no `.zshrc` → no OSC 11 / CSI 6n leak) and
+the split axis is known (`right` → `horizontal`, `down` → `vertical`).
+
+### Mechanism
+
+1. The installer adds two Ghostty keybinds (managed block):
+   ```ini
+   keybind = super+d=text:\eP1z|gzmx:split:right\e\\
+   keybind = super+shift+d=text:\eP1z|gzmx:split:down\e\\
+   ```
+   These override the defaults (`new_split:right` / `new_split:down`) and emit a
+   private DCS sequence to the focused terminal's pty.
+2. A zle widget (`ghostty_zmx_split_request_widget`) is bound to the DCS payload in
+   every managed local pane. It parses the direction and writes
+   `<tty>\t<direction>\n` to a Unix socket at
+   `$XDG_RUNTIME_DIR/ghostty-zmx-$UID/split.sock`.
+3. A standalone listener daemon (`ghostty_zmx_start_split_listener`, launched
+   alongside the poller) reads the socket, looks up the parent `gzr-*` projection
+   by the requesting tty, writes the remote-layout row with the **real axis**,
+   writes the local opening projection row, and AppleScript-splits the focused
+   terminal with `split t direction <dir> with configuration cfg` where
+   `cfg.command = ghostty-zmx projection ...`.
+4. The new split pane runs the projection wrapper directly (no local `.zshrc`), so
+   there is no terminal-query leak and the axis is recorded.
+
+### Critical limitation (remote-pane trigger gap)
+
+The Ghostty `text:` keybind writes the DCS bytes to the **focused terminal's
+pty**. For a remote projection pane that pty is the ssh transport, so the bytes
+travel to the **remote shell** — a local zle widget never sees them.
+
+Consequence: `Cmd+D` / `Cmd+Shift+D` inside a remote projection pane does NOT
+trigger the IPC path; it falls back to Ghostty's native `new_split` (which the
+prototype does NOT override for projection panes), and the native-split inherit
+path (with its `.zshrc` leak) still applies there. The IPC path works when the
+focused pane is a **local** (non-projection) Ghostty pane that happens to have a
+`gzr-*` projection ancestor in the same window — which is not the common case
+for a pure remote workflow.
+
+This gap is the fundamental constraint of the `text:`-keybind approach and is
+documented as the known limitation of this prototype. A remote-side trap +
+back-channel to the laptop would be required to close it; that is out of scope.
+
+### Manual verification (local-pane path)
+
+1. Install ghostty-zmx with this prototype; restart Ghostty.
+2. From a managed local pane, type `ssh <fixture-host>` (or `tsh ssh pcad-dev`)
+   so a `gzr-*` projection window opens.
+3. Focus the projection window, then `Cmd+D` (or `Cmd+Shift+D`).
+   - If the focused terminal is the projection pane itself, the native split
+     path runs (limitation above); use `goto_split` to focus a local pane in
+     the same window, or pre-create a local split before `ssh`.
+4. Verify the new split attaches to a new `gzr-*` remote session, `zmx list` on
+   the remote shows `clients=2`, and the remote-layout row for the new pane has
+   the real `axis` (`horizontal` for right, `vertical` for down).
+5. Verify no `11;rgb:...1R` leak appears in the new pane's scrollback.
+
+### Kill switch
+
+`GHOSTTY_ZMX_DISABLE_SPLIT_IPC=1` disables the listener, the zle widgets, and
+the listener startup, restoring default `new_split:right`/`new_split:down`.
+
+### Automated unit tests
+
+`tests/split-ipc.zsh` covers the pure decision function
+(`ghostty_zmx_split_axis_for_direction`), the parent-by-tty lookup
+(`ghostty_zmx_split_find_parent_by_tty`), and the socket path. The IPC listener
+and the AppleScript split are exercised only by live E2E.

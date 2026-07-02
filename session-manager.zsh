@@ -2677,6 +2677,296 @@ ghostty_zmx_inherit_remote_context_if_any() {
   return 1
 }
 
+# --- Prototype D: keybind text: -> local IPC listener ----------------------
+# A standalone Unix-socket listener receives split requests triggered by
+# Ghostty keybind `text:` DCS sequences. Because Ghostty keybinds cannot run
+# commands (only emit byte sequences to the focused pty), a zle widget in the
+# LOCAL pane catches the DCS and forwards `<tty>\t<direction>\n` to the
+# socket. The listener performs the AppleScript split with a surface
+# configuration whose command is the projection wrapper, so the new split
+# pane never starts a local shell (no OSC 11 / CSI 6n leak) AND the axis is
+# known (right -> horizontal, down -> vertical).
+#
+# IMPORTANT LIMITATION (documented, not fixed in this prototype): the DCS
+# bytes from a Ghostty keybind are written to the FOCUSED terminal's pty.
+# For a remote projection pane that pty is the ssh transport, so the bytes
+# travel to the REMOTE shell — a local zle widget never sees them. This
+# means Prototype D only works when the focused pane is a LOCAL (non-projection)
+# pane, OR when augmented with a remote-side trap + a back-channel to the
+# laptop. The prototype implements the local-pane path and the IPC plumbing;
+# the remote-pane path is left as the known gap (see docs/manual-e2e.md).
+
+# Socket path for the split-request IPC listener.
+ghostty_zmx_split_socket_path() {
+  typeset runtime="$(_ghostty_zmx_runtime_dir 2>/dev/null)" || return 1
+  print -r -- "$runtime/split.sock"
+}
+
+# zle widget: bound to the DCS sequence emitted by the Ghostty keybind.
+# $BUFFER contains the DCS payload (e.g. "gzmx:split:right"). Parse the
+# direction and forward `<tty>\t<direction>\n` to the IPC socket. The widget
+# does NOT accept the line; it clears the injected bytes and resets the prompt.
+ghostty_zmx_split_request_widget() {
+  emulate -L zsh
+  local payload="${BUFFER:-}" direction="" tty="" sock
+  case "$payload" in
+    *gzmx:split:right) direction="right" ;;
+    *gzmx:split:down)  direction="down"  ;;
+    *) _ghostty_zmx_debug "split-widget unknown payload=$payload"; BUFFER=""; zle reset-prompt; return ;;
+  esac
+  tty="${TTY:-}"
+  [[ "$tty" == /dev/* ]] || tty="$(_ghostty_zmx_shell_tty 2>/dev/null)"
+  sock="$(ghostty_zmx_split_socket_path 2>/dev/null)"
+  if [[ -n "$tty" && -S "$sock" ]]; then
+    print -rn -- "${tty}\t${direction}\n" | socat - UNIX-CONNECT:"$sock" 2>/dev/null \
+      || print -rn -- "${tty}\t${direction}\n" | nc -U "$sock" -w 1 2>/dev/null \
+      || _ghostty_zmx_debug "split-widget socket-send-failed tty=$tty dir=$direction"
+    _ghostty_zmx_debug "split-widget forwarded tty=$tty dir=$direction"
+  else
+    _ghostty_zmx_debug "split-widget no-socket-or-tty tty=$tty sock=$sock"
+  fi
+  BUFFER=""
+  zle reset-prompt
+}
+
+# Install the split-request zle widgets (bound to the DCS payloads). Only in
+# managed interactive Ghostty surfaces. The DCS payloads are emitted by the
+# Ghostty keybind `text:` actions managed by install.sh.
+_ghostty_zmx_install_split_request_widgets() {
+  [[ -o interactive ]] || return 0
+  [[ "${TERM_PROGRAM:-}" == "ghostty" ]] || return 0
+  [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" ]] || return 0
+  [[ "${GHOSTTY_ZMX_DISABLE_SPLIT_IPC:-0}" != "1" ]] || return 0
+  zle -N ghostty_zmx_split_request_widget 2>/dev/null || return 0
+  # The keybind emits: ESC P 1 z | gzmx:split:<dir> ESC backslash
+  # zsh binds the full sequence as a key; the payload lands in $BUFFER.
+  bindkey $'\eP1z|gzmx:split:right\e\\' ghostty_zmx_split_request_widget 2>/dev/null || true
+  bindkey $'\eP1z|gzmx:split:down\e\\'  ghostty_zmx_split_request_widget 2>/dev/null || true
+}
+
+# Find the parent gzr-* projection row whose local tty matches the given tty.
+# Sets _gzmx_split_parent_host / _gzmx_split_parent_workspace /
+# _gzmx_split_parent_session / _gzmx_split_parent_win / _gzmx_split_parent_tab.
+# Returns 0 if found, 1 otherwise.
+ghostty_zmx_split_find_parent_by_tty() {
+  emulate -L zsh
+  local want_tty="$1" projections_file host workspace session tty pid state updated win tab
+  _gzmx_split_parent_host="" _gzmx_split_parent_workspace="" _gzmx_split_parent_session=""
+  _gzmx_split_parent_win="" _gzmx_split_parent_tab=""
+  projections_file="$(ghostty_zmx_remote_projections_file)"
+  [[ -n "$want_tty" && -f "$projections_file" ]] || return 1
+  while IFS=$'	' read -r host workspace session tty pid state updated win tab; do
+    [[ "$tty" == "$want_tty" && "$session" == gzr-* ]] || continue
+    _gzmx_split_parent_host="$host"
+    _gzmx_split_parent_workspace="$workspace"
+    _gzmx_split_parent_session="$session"
+    _gzmx_split_parent_win="$win"
+    _gzmx_split_parent_tab="$tab"
+    return 0
+  done < "$projections_file"
+  return 1
+}
+
+# Pure decision function: map a direction token to the layout axis.
+# right -> horizontal, down -> vertical. Returns 1 on unknown direction.
+ghostty_zmx_split_axis_for_direction() {
+  local direction="$1"
+  case "$direction" in
+    right) print -r -- "horizontal"; return 0 ;;
+    down)  print -r -- "vertical";   return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Perform the remote split for the requesting tty + direction. Called by the
+# IPC listener. Looks up the parent projection, generates the new pane id +
+# gzr session name, writes the remote-layout row with the REAL axis, writes
+# the local opening projection row, and AppleScript-splits the focused
+# terminal with a surface configuration whose command is the projection
+# wrapper (so the split pane never starts a local shell).
+ghostty_zmx_perform_remote_split() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+  local want_tty="$1" direction="$2" axis parent_host parent_ws parent_session
+  local parts workspace_id remote_win remote_tab parent_pane pane session
+  local prefix helper notty_prefix wrapper_path command_string as_cmd
+  local lock acquired i new_tty
+  [[ "$want_tty" == /dev/* ]] || return 1
+  axis="$(ghostty_zmx_split_axis_for_direction "$direction")" || return 1
+  ghostty_zmx_split_find_parent_by_tty "$want_tty" || return 1
+  parent_host="$_gzmx_split_parent_host"
+  parent_ws="$_gzmx_split_parent_workspace"
+  parent_session="$_gzmx_split_parent_session"
+  [[ -n "$parent_host" && -n "$parent_session" ]] || return 1
+  parts=(${(@s:-:)parent_session})
+  [[ "${parts[1]:-}" == "gzr" && ${#parts} -ge 5 ]] || return 1
+  workspace_id="${parts[2]}"
+  remote_win="${parts[3]}"
+  remote_tab="${parts[4]}"
+  parent_pane="${parts[5]}"
+  pane="${$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')[1,6]}"
+  session="gzr-${workspace_id}-${remote_win}-${remote_tab}-${pane}"
+  prefix="$(ghostty_zmx_remote_prefix_for_host "$parent_host")"
+  [[ -n "$prefix" ]] || return 1
+  helper="$(ghostty_zmx_remote_layout_helper_cmd)"
+  notty_prefix=(${(z)prefix})
+  wrapper_path="$(ghostty_zmx_wrapper_path)"
+  _ghostty_zmx_debug "split-perform tty=$want_tty dir=$direction axis=$axis host=$parent_host parent=$parent_session new=$session"
+  # Write the remote-layout row with the REAL axis under the remote lock.
+  "${notty_prefix[@]}" "$helper" add "$workspace_id" "$remote_win" "$remote_tab" "$pane" "$session" "$parent_pane" "$axis" 0.5 present >/dev/null 2>&1 || return 1
+  # Write the local opening projection row so the poller adopts it.
+  lock="$(ghostty_zmx_projection_lock_path "$parent_host" "$session")" || return 1
+  mkdir -p "${lock:h}" 2>/dev/null
+  acquired=0
+  for (( i=1; i<=50; i++ )); do
+    mkdir "$lock" 2>/dev/null && { acquired=1; break; }
+    sleep 0.03
+  done
+  [[ "$acquired" -eq 1 ]] || { _ghostty_zmx_debug "split-perform lock-busy host=$parent_host session=$session"; return 1; }
+  ghostty_zmx_write_projection_row "$parent_host" "$workspace_id" "$session" "-" "-" opening "-" "-"
+  rmdir "$lock" 2>/dev/null || true
+  # Build the projection command string + AppleScript-split the focused terminal.
+  command_string="$(ghostty_zmx_projection_command_string "$parent_host" "$workspace_id" "$session" "$prefix")"
+  as_cmd="${command_string//\\\\/\\\\\\\\}"
+  as_cmd="${as_cmd//\"/\\\"}"
+  osascript <<OSA 2>/dev/null || { _ghostty_zmx_debug "split-perform applescript-failed host=$parent_host session=$session"; return 1; }
+tell application "$_ghostty_app_name"
+  set targetWindow to missing value
+  repeat with w in windows
+    set winStr to id of w as string
+    repeat with tb in tabs of w
+      repeat with tm in terminals of tb
+        try
+          if (tty of tm as string) is "$want_tty" then
+            set targetWindow to w
+            exit repeat
+          end if
+        end try
+      end repeat
+      if targetWindow is not missing value then exit repeat
+    end repeat
+  end repeat
+  if targetWindow is missing value then error "terminal not found for tty $want_tty"
+  set cfg to new surface configuration
+  set command of cfg to "$as_cmd"
+  set t to focused terminal of targetWindow
+  set newTerminal to split t direction $direction with configuration cfg
+end tell
+OSA
+  _ghostty_zmx_debug "split-perform ok host=$parent_host session=$session dir=$direction"
+  return 0
+}
+
+# Start the split-request IPC listener (standalone daemon, re-parented to
+# launchd like the poller). The listener opens a Unix socket, reads
+# `<tty>\t<direction>\n` lines, and calls ghostty_zmx_perform_remote_split.
+# PID-reuse-safe: exits when the owning Ghostty PID dies (elapsed token).
+ghostty_zmx_start_split_listener() {
+  emulate -L zsh
+  local ghostty_pid="${1:-}" runtime flag interval="${GHOSTTY_ZMX_SPLIT_LISTENER_INTERVAL:-3}"
+  local oldpid old_elapsed cur_elapsed script log ghostty_elapsed manager_src
+  [[ "${GHOSTTY_ZMX_DISABLE_SPLIT_IPC:-0}" != "1" ]] || return 0
+  [[ -n "$ghostty_pid" ]] || ghostty_pid="$(ghostty_zmx_detect_ghostty_pid)" || return 0
+  [[ "$ghostty_pid" =~ ^[0-9]+$ ]] || return 0
+  runtime="$(_ghostty_zmx_runtime_dir)" || return 0
+  ghostty_elapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghostty_pid" 2>/dev/null)" || ghostty_elapsed=0
+  flag="$runtime/split-listener-${_ghostty_app_name}-${ghostty_pid}.lock"
+  if ! mkdir "$flag" 2>/dev/null; then
+    [[ -f "$flag/pid" ]] && read -r oldpid < "$flag/pid" 2>/dev/null || oldpid=""
+    [[ -f "$flag/elapsed" ]] && read -r old_elapsed < "$flag/elapsed" 2>/dev/null || old_elapsed=""
+    if [[ -n "$oldpid" && "$oldpid" =~ ^[0-9]+$ ]] && kill -0 "$oldpid" 2>/dev/null; then
+      cur_elapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$oldpid" 2>/dev/null)" || cur_elapsed=""
+      if [[ -z "$old_elapsed" || -z "$cur_elapsed" || "$cur_elapsed" -lt "$old_elapsed" ]]; then
+        _ghostty_zmx_debug "split-listener stale-owner reuse owner=$oldpid; reclaiming"
+      else
+        return 0
+      fi
+    fi
+    rm -rf "$flag" 2>/dev/null || return 0
+    mkdir "$flag" 2>/dev/null || return 0
+  fi
+  manager_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh"
+  script="$runtime/split-listener-${ghostty_pid}.zsh"
+  log="$runtime/split-listener-${ghostty_pid}.log"
+  set -o noclobber
+  { print '#!/bin/zsh' > "$script"; } 2>/dev/null || { set +o noclobber; return 0; }
+  set +o noclobber
+  cat >> "$script" <<'EOS'
+#!/bin/zsh
+# Split-request IPC listener (Prototype D). Sources the manager
+# (GHOSTTY_ZMX_INTERNAL_SPLIT_LISTENER=1 guard: defines functions, returns
+# before widget/auto-attach side effects), then opens a Unix socket and
+# serves split requests until the owning Ghostty PID exits.
+ghostty_pid="$1"
+flag="$2"
+data_home="$3"
+state_home="$4"
+deb="$5"
+app_name="$6"
+install_dir="$7"
+ghostty_elapsed="${8:-0}"
+manager_src="${9:-$install_dir/session-manager.zsh}"
+export GHOSTTY_ZMX_DATA_HOME="$data_home"
+export GHOSTTY_ZMX_STATE_HOME="$state_home"
+export GHOSTTY_ZMX_DEBUG="$deb"
+export _ghostty_app_name="$app_name"
+export GHOSTTY_ZMX_INTERNAL_SPLIT_LISTENER=1
+source "$manager_src" 2>/dev/null || exit 70
+sock="$(ghostty_zmx_split_socket_path 2>/dev/null)" || exit 71
+rm -f "$sock" 2>/dev/null || true
+mkdir -p "${sock:h}" 2>/dev/null || true
+trap 'rm -f "$sock" 2>/dev/null; rm -rf "$flag" 2>/dev/null' EXIT INT TERM
+while :; do
+  cur_elapsed="$(ps -o etime= -p "$ghostty_pid" 2>/dev/null | tr -d ' ')"
+  cur_elapsed="$( _ghostty_zmx_parse_elapsed_seconds "$cur_elapsed" 2>/dev/null)" || cur_elapsed=""
+  if [[ -z "$cur_elapsed" ]]; then
+    _ghostty_zmx_debug "split-listener stopped ghostty_pid=$ghostty_pid reason=ghostty-exit"
+    break
+  fi
+  if [[ -n "$ghostty_elapsed" && "$cur_elapsed" -lt "$ghostty_elapsed" ]]; then
+    _ghostty_zmx_debug "split-listener stopped ghostty_pid=$ghostty_pid reason=pid-reuse saved=$ghostty_elapsed cur=$cur_elapsed"
+    break
+  fi
+  # Serve one connection, read one line, dispatch. Use zsh's ztcp (loadable).
+  zmodload zsh/net/socket 2>/dev/null || break
+  zsocket -l "$sock" 2>/dev/null
+  srv=$?
+  # zsocket -l binds a server; the fd is returned via REPLY for listening.
+  # Simpler portable approach: use socat/nc in a loop.
+  if command -v socat >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      tty="${line%%$'\t'*}"
+      dir="${line#*$'\t'}"
+      [[ "$dir" == right || "$dir" == down ]] || continue
+      ghostty_zmx_perform_remote_split "$tty" "$dir" 2>/dev/null || true
+    done < <(socat UNIX-LISTEN:"$sock",fork - 2>/dev/null)
+  elif command -v nc >/dev/null 2>&1; then
+    while IFS= read -r line; do
+      tty="${line%%$'\t'*}"
+      dir="${line#*$'\t'}"
+      [[ "$dir" == right || "$dir" == down ]] || continue
+      ghostty_zmx_perform_remote_split "$tty" "$dir" 2>/dev/null || true
+    done < <(nc -lU "$sock" 2>/dev/null)
+  else
+    _ghostty_zmx_debug "split-listener no-socat-no-nc; cannot serve socket"
+    break
+  fi
+  sleep "$interval"
+done
+rm -f "$0" 2>/dev/null
+EOS
+  chmod +x "$script" 2>/dev/null
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import os, sys
+if os.fork() != 0:
+    os._exit(0)
+os.setsid()
+os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" "$manager_src" </dev/null >"$log" 2>&1 &!
+  else
+    nohup /bin/zsh "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" "$manager_src" </dev/null >"$log" 2>&1 &!
+  fi
+}
+
 _ghostty_zmx_install_accept_line_widget() {
   [[ -o interactive ]] || return 0
   [[ "${TERM_PROGRAM:-}" == "ghostty" ]] || return 0
@@ -2684,6 +2974,7 @@ _ghostty_zmx_install_accept_line_widget() {
   zle -N ghostty_zmx_accept_line 2>/dev/null || return 0
   bindkey '^M' ghostty_zmx_accept_line 2>/dev/null || true
   bindkey '^J' ghostty_zmx_accept_line 2>/dev/null || true
+  _ghostty_zmx_install_split_request_widgets
 }
 
 _ghostty_zmx_auto_attach() {
@@ -2851,6 +3142,10 @@ if [[ "${GHOSTTY_ZMX_DISABLE_POLLER:-0}" != "1" && "${TERM_PROGRAM:-}" == "ghost
   typeset _gzmx_self_pid="$(ghostty_zmx_detect_ghostty_pid 2>/dev/null)" && [[ -n "$_gzmx_self_pid" ]] && ghostty_zmx_kill_orphaned_pollers "$_gzmx_self_pid" 2>/dev/null
 fi
 [[ "${GHOSTTY_ZMX_DISABLE_POLLER:-0}" != "1" ]] && [[ -f "$(ghostty_zmx_remote_hosts_file 2>/dev/null)" ]] && ghostty_zmx_start_remote_poller
+# Prototype D: start the split-request IPC listener alongside the poller so
+# Ghostty keybind DCS sequences can trigger AppleScript splits with a known
+# axis and no local shell in the new pane.
+[[ "${GHOSTTY_ZMX_DISABLE_SPLIT_IPC:-0}" != "1" && "${TERM_PROGRAM:-}" == "ghostty" ]] && ghostty_zmx_start_split_listener
 _ghostty_zmx_auto_attach
 # v0.2: do NOT unfunction the _ghostty_zmx_* private helpers. The remote
 # projection functions (reconcile, poller, projection lock/state) are invoked
