@@ -2,6 +2,8 @@
 
 Run these checks from iTerm2 or another terminal outside managed Ghostty and outside any zmx session. Do not run the orchestrating shell inside Ghostty, because several checks quit or close Ghostty surfaces.
 
+**Always use a disposable `GHOSTTY_ZMX_DATA_HOME` / `GHOSTTY_ZMX_STATE_HOME`** (tmpdirs) when launching Ghostty-tip for E2E. Never `rm` or overwrite files under your real `~/.local/share/ghostty-zmx/` or `~/.local/state/ghostty-zmx/` as test cleanup — this destroys your real `remote-hosts` and breaks reopen. See "Clean state before each scenario" below for the safe isolation pattern.
+
 Use disposable marker text for every scenario, for example:
 
 ```sh
@@ -164,13 +166,26 @@ ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx version | tr "\t" " 
 
 ### Clean state before each scenario
 
+**Always run E2E with a disposable `GHOSTTY_ZMX_DATA_HOME` / `GHOSTTY_ZMX_STATE_HOME`** (see the no-prompt harness below). Never `rm` or overwrite files under your real `~/.local/share/ghostty-zmx/` or `~/.local/state/ghostty-zmx/` as test cleanup — doing so destroys your real `remote-hosts`, `remote-projections`, and `sessions` state. A prior E2E run that ran `rm -f ~/.local/share/ghostty-zmx/remote-hosts` as "cleanup" deleted the user's real host config, which silently broke Cmd-Q+reopen (the poller only starts if `remote-hosts` exists). The disposable-`DATA_HOME` harness isolates all test state in a tmpdir that can be `rm -rf`'d safely.
+
+The only real-path cleanup that is safe is the runtime tmpdir (orphaned pollers/reapers) and the macOS saved-state:
+
 ```sh
 pkill -9 -f Ghostty-tip 2>/dev/null; sleep 1
 rm -rf /var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T/ghostty-zmx-501
 rm -rf ~/Library/Saved\ Application\ State/com.mitchellh.ghostty.tip.savedState
+# Fixture server state (disposable Docker container, safe to wipe):
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -f ~/.local/share/ghostty-zmx/remote-layout ~/.local/share/ghostty-zmx/remote-layout.rev; rmdir ~/.local/share/ghostty-zmx/remote-layout.lock 2>/dev/null; pkill zmx 2>/dev/null'
 # verify no orphaned pollers
 lsof ~/.config/ghostty-zmx/session-manager.zsh   # must be empty
+```
+
+If you must test against your real `DATA_HOME` (e.g. to reproduce a user-reported issue with real state), back up `remote-hosts` first and restore it on exit:
+
+```sh
+cp ~/.local/share/ghostty-zmx/remote-hosts /tmp/remote-hosts.bak
+# ... run E2E ...
+cp /tmp/remote-hosts.bak ~/.local/share/ghostty-zmx/remote-hosts
 ```
 
 ### No-prompt harness (client launch)
@@ -378,9 +393,11 @@ This verifies that a native Ghostty split from a remote projection window inheri
 
 4. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
 
-### Known limitation
+### Known limitations
 
-True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
+**Simultaneous multi-client E2E** — True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
+
+**Terminal-query response leak on native splits** — When a user creates a native Ghostty split inside a remote-projection window (Cmd-D), the split pane briefly runs the user's local login shell (which sources `.zshrc`) before the inherit path `exec`s the wrapper. Plugins loaded by `.zshrc` (or Ghostty itself) can issue terminal queries such as OSC 11 (foreground color) and CSI 6n (cursor position). Ghostty's responses arrive on the tty as input; they may reach the pty AFTER the wrapper drains (before `exec ssh`) and are then forwarded to the remote zmx session, appearing in the prompt as literal text like `11;rgb:f7f7/f7f7/f7f71R`. The correct fix is to bypass the local shell for splits by AppleScript-splitting with the wrapper as the surface `command` (like the widget path does for new windows), so no `.zshrc` runs in the split pane. Tracked as a v0.2 follow-up; a shell-exec drain is not sufficient because Ghostty may deliver responses after `exec ssh` starts.
 
 ### Remote reboot scrollback restore
 
@@ -531,6 +548,89 @@ Expected: "Installation declined; no files changed."
 - zmx missing: refuses with a clear hint.
 - Interactive decline: no files changed.
 - After install, the `ghostty-zmx-remote-layout` helper works (`add` → `present`, `close` → `deleted`).
+
+### Remote grouped layout restore (windows/tabs/splits after Cmd-Q)
+
+This verifies that after Cmd-Q + reopen, the poller recreates the remote window/tab/split structure from the server `remote-layout` (not one flat window per session), and that unique markers survive in each session's `zmx history`.
+
+1. Pre-seed a server layout with 2 windows, each with 1 tab, each tab with 2 split panes (4 `present` rows with split geometry):
+
+   ```sh
+   H='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H add wsXX aaaaaaaa aabbba aaa111 gzr-wsXX-aaaaaaaa-aabbba-aaa111 - root 1 present"
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H add wsXX aaaaaaaa aabbba aaa222 gzr-wsXX-aaaaaaaa-aabbba-aaa222 aaa111 vertical 0.5 present"
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H add wsXX bbbbbbbb bbb111 bbb111 gzr-wsXX-bbbbbbbb-bbb111-bbb111 - root 1 present"
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H add wsXX bbbbbbbb bbb111 bbb222 gzr-wsXX-bbbbbbbb-bbb111-bbb222 bbb111 vertical 0.5 present"
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H read"  # 4 present rows, split geometry preserved
+   ```
+
+2. Pre-seed `remote-hosts` and launch Ghostty-tip (no-prompt harness). Wait ~14s.
+3. Verify the initial restore:
+
+   ```sh
+   osascript -e 'tell application "Ghostty-tip" to count of windows'  # expect 3
+   # terminals per window (expect "2 2 1")
+   osascript -e 'tell application "Ghostty-tip" to set out to "
+   repeat with w in windows
+     set c to 0
+     repeat with tb in tabs of w
+       set c to c + (count of terminals of tb)
+     end repeat
+     set out to out & c & " "
+   end repeat
+   return out'
+   ps -eo pid,ppid,comm,args | awk '$3=="ssh" && /zmx attach gzr-/{cnt++} END{print cnt+0}'  # expect 4
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list 2>/dev/null | grep gzr | grep -o "clients=[0-9]"'  # expect 4x clients=1
+   ```
+
+4. Inject unique markers into each remote session via `zmx send`:
+
+   ```sh
+   M=$'\n'
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx send gzr-wsXX-aaaaaaaa-aabbba-aaa111 'echo MARKER-AAA111${M}'"
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx send gzr-wsXX-aaaaaaaa-aabbba-aaa222 'echo MARKER-AAA222${M}'"
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx send gzr-wsXX-bbbbbbbb-bbb111-bbb111 'echo MARKER-BBB111${M}'"
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx send gzr-wsXX-bbbbbbbb-bbb111-bbb222 'echo MARKER-BBB222${M}'"
+   sleep 2
+   # verify each marker in zmx history
+   for s in gzr-wsXX-aaaaaaaa-aabbba-aaa111 gzr-wsXX-aaaaaaaa-aabbba-aaa222 gzr-wsXX-bbbbbbbb-bbb111-bbb111 gzr-wsXX-bbbbbbbb-bbb111-bbb222; do
+     echo -n "$s: "
+     ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $s 2>/dev/null | grep -o 'MARKER-[A-Z0-9]*' | tail -1"
+   done
+   ```
+
+5. Cmd-Q (kill the Ghostty-tip process only) and verify preservation:
+
+   ```sh
+   GHOSTPID=$(pgrep -f "Ghostty-tip.app/Contents/MacOS" | head -1)
+   kill -9 "$GHOSTPID"; sleep 8
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list 2>/dev/null | grep gzr | grep -o "clients=[0-9]"'  # expect 4x clients=0
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read | grep -c present'  # expect 4
+   lsof ~/.config/ghostty-zmx/session-manager.zsh  # expect empty (no orphaned pollers)
+   ```
+
+6. Reopen Ghostty-tip with the same `GHOSTTY_ZMX_DATA_HOME`/`STATE_HOME` and wait ~14s.
+7. Verify the layout is restored AND markers survived:
+
+   ```sh
+   osascript -e 'tell application "Ghostty-tip" to count of windows'  # expect 3
+   # terminals per window (expect "2 2 1")
+   ps -eo pid,ppid,comm,args | awk '$3=="ssh" && /zmx attach gzr-/{cnt++} END{print cnt+0}'  # expect 4
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list 2>/dev/null | grep gzr | grep -o "clients=[0-9]"'  # expect 4x clients=1
+   # markers survived
+   for s in gzr-wsXX-aaaaaaaa-aabbba-aaa111 gzr-wsXX-aaaaaaaa-aabbba-aaa222 gzr-wsXX-bbbbbbbb-bbb111-bbb111 gzr-wsXX-bbbbbbbb-bbb111-bbb222; do
+     echo -n "$s: "
+     ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "zmx history $s 2>/dev/null | grep -o 'MARKER-[A-Z0-9]*' | tail -1"
+   done
+   ```
+
+#### Pass criteria (grouped restore)
+
+- Initial restore: 3 windows, `2 2 1` terminals, 4 ssh, 4 `clients=1`.
+- Split geometry preserved in server layout (`vertical 0.5` not clobbered to `root 1`).
+- Cmd-Q: 4 `present` rows, 4 `clients=0`, no close-txn, no orphaned pollers.
+- Reopen: 3 windows, `2 2 1` terminals, 4 ssh, 4 `clients=1`.
+- All 4 markers survive in their correct sessions after reopen.
 
 ## Automated-test config override
 
