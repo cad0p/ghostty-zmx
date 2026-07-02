@@ -2103,8 +2103,12 @@ ghostty_zmx_kill_orphaned_pollers() {
       for _zpid in $(pgrep -f "remote-poller-${ppid_from_name}\.zsh" 2>/dev/null); do
         kill -9 "$_zpid" 2>/dev/null || true
       done
-      # Clean up its lock dir too.
-      rm -rf "$runtime"/remote-poller-*-${ppid_from_name}.lock 2>/dev/null || true
+      # Clean up its lock dir too. Use nullglob (N) so a non-matching glob is
+      # empty instead of erroring with "no matches found" under nomatch.
+      local _oldlock
+      for _oldlock in "$runtime"/remote-poller-*-${ppid_from_name}.lock(N); do
+        rm -rf "$_oldlock" 2>/dev/null || true
+      done
       _ghostty_zmx_debug "poller killed-orphan ghostty_pid=$ppid_from_name script=${script:t}"
       continue
     fi

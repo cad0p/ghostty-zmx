@@ -162,4 +162,25 @@ fi
 # replaced by the transport, so the `--session <gzr>` marker leaves `ps args`, but
 # the descendant-walk scan still matches `zmx attach <gzr>` in the transport's
 # args and GHOSTTY_ZMX_PROJECTION_SESSION in its env.
+#
+# Terminal-query cleanup: the remote shell's startup (oh-my-zsh,
+# zsh-autosuggestions, etc.) emits OSC 11 (foreground color) and CSI 6n
+# (cursor position) queries. Ghostty responds, and those responses arrive as
+# INPUT on the remote pty — captured by zmx as stray text like
+# `11;rgb:f7f7/f7f7/f7f71R` in the scrollback. This only affects splits/tabs
+# (inherit path) because the original projection's shell starts before zmx
+# captures. We can't stop the remote shell from querying, so background a
+# short delay then emit a clear-screen via zmx print to wipe the stray
+# sequences. This is best-effort: if the remote shell is slow to start, the
+# clear may run before the responses arrive. The delay (1.5s) is tuned for
+# the common case.
+if [[ "$session" == gzr-* && "${GHOSTTY_ZMX_DISABLE_QUERY_CLEAR:-0}" != "1" ]]; then
+  (
+    sleep 1.5
+    # \ec (RIS) and \e[2J clear too much; only clear the current prompt line
+    # and return to column 0. This targets late terminal query responses
+    # inserted into zle's input buffer without wiping the session scrollback.
+    printf '\r\e[2K' | "${_add_argv[@]}" "source ~/.zshrc 2>/dev/null; zmx print $session" >/dev/null 2>&1
+  ) &!
+fi
 exec "$@"
