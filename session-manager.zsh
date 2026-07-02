@@ -1590,6 +1590,15 @@ ghostty_zmx_restore_remote_layout() {
       ghostty_zmx_write_projection_row "$host" "$s_ws" "$s_session" "$_gzmx_found_tty" "$_gzmx_found_match_pid" attached "$win" "$tab"
       continue
     fi
+    # Skip if ANY local projection row exists for this session (attached, opening,
+    # or closing). The dead-pid cleanup path owns removing stale rows; if the
+    # grouped restore re-opens a session that still has a local row, it races
+    # the cleanup and creates a duplicate window (the "window recreated after
+    # close" bug). Only open projections for sessions with NO local row at all.
+    if ghostty_zmx_projection_known "$host" "$s_session" 2>/dev/null; then
+      _ghostty_zmx_debug "restore-layout skip-known host=$host session=$s_session"
+      continue
+    fi
     # Skip if a fresh opening row exists for this session.
     if ghostty_zmx_projection_opening_fresh "$host" "$s_session" 2>/dev/null; then
       continue
@@ -1983,8 +1992,17 @@ ghostty_zmx_poll_once() {
               _ghostty_zmx_debug "poller close-txn-failed host=$p_host session=$p_session pid=$p_pid retry-next-cycle"
             fi
           else
+            # startup_grace (first poll cycle after Ghostty launch): the dead
+            # pid may be a stale leftover from a prior session (Cmd-Q+reopen)
+            # OR a genuine pane close that happened before the first poll. We
+            # cannot distinguish them, so PRESERVE the row as-is (do NOT remove
+            # it, do NOT run close-txn). The next cycle (startup_grace=0) will
+            # either: (a) if it was a stale pid from a prior session, the live
+            # projection will have appeared and we adopt it; or (b) if it was a
+            # genuine close, the pid stays dead and we run the close-txn then.
+            # Removing the row here would cause the grouped restore to re-open
+            # the projection (the "window recreated after close" bug).
             _ghostty_zmx_debug "poller preserve-on-quit host=$p_host session=$p_session pid=$p_pid startup_grace=$startup_grace"
-            ghostty_zmx_remove_remote_projection "$p_host" "$p_session"
           fi
         elif ghostty_zmx_find_live_projection "$p_host" "$p_session" 2>/dev/null; then
           local win="-" tab="-"
@@ -2019,8 +2037,11 @@ ghostty_zmx_poll_once() {
                # will retry the close next cycle. Re-opening here would undo
                # the close (the "window recreated after close" bug).
           elif ghostty_zmx_projection_known "$host" "$s_session" 2>/dev/null; then
-            :  # stale opening — the grouped restore will reclaim or reopen it
-            _need_grouped_restore=1
+            :  # A local row exists (attached/opening/closing). The dead-pid
+               # cleanup path owns removing stale rows; the grouped restore
+               # skips known rows to avoid racing the cleanup. Do NOT set
+               # _need_grouped_restore here — that would re-open a session
+               # whose local row is being cleaned up.
           else
             _need_grouped_restore=1
           fi
