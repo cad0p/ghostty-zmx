@@ -16,12 +16,14 @@ done
 
 repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
+source_v01_manager="$repo_dir/session-manager-v0.1.zsh"
 source_wrapper="$repo_dir/ghostty-zmx"
 source_uninstall="$repo_dir/uninstall.sh"
 source_server_install="$repo_dir/install-server.sh"
 source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
+v01_manager_dest="$install_dir/session-manager-v0.1.zsh"
 wrapper_dest="$install_dir/ghostty-zmx"
 uninstall_dest="$install_dir/uninstall.sh"
 server_install_dest="$install_dir/install-server.sh"
@@ -218,6 +220,7 @@ print_plan() {
 }
 
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }
+[[ -f "$source_v01_manager" ]] || { print -u2 "Missing $source_v01_manager"; exit 1; }
 [[ -f "$source_wrapper" ]] || { print -u2 "Missing $source_wrapper"; exit 1; }
 [[ -f "$source_uninstall" ]] || { print -u2 "Missing $source_uninstall"; exit 1; }
 [[ -f "$source_server_install" ]] || { print -u2 "Missing $source_server_install"; exit 1; }
@@ -245,6 +248,7 @@ if [[ -L "$install_dir" ]]; then
   exit 1
 fi
 install -m 0644 "$source_manager" "$manager_dest"
+install -m 0644 "$source_v01_manager" "$v01_manager_dest"
 install -m 0755 "$source_wrapper" "$wrapper_dest"
 install -m 0755 "$source_uninstall" "$uninstall_dest"
 install -m 0755 "$source_server_install" "$server_install_dest"
@@ -254,6 +258,7 @@ install -m 0755 "$source_server_install" "$server_install_dest"
 # Ghostty fails, fall back to the repo's committed copy.
 refresh_vendored_terminfo "$terminfo_dest"
 print "Installed $manager_dest"
+print "Installed $v01_manager_dest"
 print "Installed $wrapper_dest"
 print "Installed $uninstall_dest"
 print "Installed $server_install_dest"
