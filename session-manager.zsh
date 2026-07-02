@@ -2357,6 +2357,7 @@ ghostty_zmx_accept_line() {
     return
   fi
 
+  local original_buffer="$BUFFER"
   local -a words prefix projection
   words=(${(z)BUFFER})
   local transport="" start=0 host_index=0 host_target="" host_key="" expect_arg=0 saw_tty=0
@@ -2414,6 +2415,13 @@ ghostty_zmx_accept_line() {
 
   host_key="${host_target##*@}"
   [[ -n "$host_key" ]] || { zle .accept-line; return }
+
+  # The widget intercepts the line instead of calling zle .accept-line, so zsh
+  # would not add the typed ssh/tsh command to history. Explicitly push it so
+  # Up-arrow and zsh-autosuggestions behave as if the user had executed it.
+  # Unsupported/one-shot commands fall through to normal accept-line and are
+  # recorded by zsh itself, so only do this for confirmed interactive handoffs.
+  print -s -- "$original_buffer" 2>/dev/null || true
 
   local -a probe
   projection=(${words[@]})
