@@ -17,6 +17,10 @@ All notable changes to this project will be documented in this file.
 
 - *(v0.2)* Correct widget error on unreachable host + newline formatting ([#21](https://github.com/cad0p/ghostty-zmx/pull/21))
 
+### 🚜 Refactor
+
+- *(v0.2)* Poller sources manager instead of inlining 400 lines of dup ([#23](https://github.com/cad0p/ghostty-zmx/pull/23))
+
 ### 📚 Documentation
 
 - Document Homebrew install paths ([#17](https://github.com/cad0p/ghostty-zmx/pull/17))
