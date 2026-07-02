@@ -1473,7 +1473,7 @@ ghostty_zmx_remote_layout_helper_cmd() {
 ghostty_zmx_remote_close_transaction() {
   emulate -L zsh
   setopt local_options no_sh_word_split
-  local host="$1" session="$2" prefix helper
+  local host="$1" session="$2" prefix helper rc
   [[ -n "$host" && -n "$session" ]] || return 1
   prefix="$(ghostty_zmx_remote_prefix_for_host "$host")"
   [[ -n "$prefix" ]] || return 1
@@ -1481,7 +1481,31 @@ ghostty_zmx_remote_close_transaction() {
   helper="$(ghostty_zmx_remote_layout_helper_cmd)"
   # `close` is a full transaction on the server: closing -> zmx kill -> deleted,
   # with the lock released across the zmx kill. The ssh argv is bare words only.
+  # Return the ssh exit status so callers can detect a failed close (host
+  # unreachable, etc.) and avoid deleting the local projection row — which
+  # would cause the next poll cycle to re-open the just-closed projection.
   ${(z)prefix} "$helper" close "$session" >/dev/null 2>&1
+  rc=$?
+  return $rc
+}
+
+# Verify that a server layout row has reached `deleted` state. Used after a
+# close transaction to decide whether it's safe to remove the local
+# projection row: if the server didn't confirm `deleted` (ssh failure, or the
+# helper exited non-zero), the local row must stay so the next cycle retries
+# rather than re-opening a fresh projection for the still-`present` row.
+ghostty_zmx_server_confirmed_deleted() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+  local host="$1" session="$2" prefix helper layout state
+  [[ -n "$host" && -n "$session" ]] || return 1
+  prefix="$(ghostty_zmx_remote_prefix_for_host "$host")"
+  [[ -n "$prefix" ]] || return 1
+  prefix="$(ghostty_zmx_notty_prefix "$prefix")"
+  helper="$(ghostty_zmx_remote_layout_helper_cmd)"
+  layout="$("${(z)prefix}" "$helper" read 2>/dev/null)" || return 1
+  state="$(print -r -- "$layout" | awk -F '\t' -v s="$session" '$5==s {print $9; exit}')"
+  [[ "$state" == "deleted" ]]
 }
 
 ghostty_zmx_cleanup_closed_remote_projections() {
@@ -1915,7 +1939,7 @@ ghostty_zmx_poll_once() {
       [[ "$_wc" =~ ^[0-9]+$ && "$_wc" -gt 0 ]] && _app_alive=1
       local p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab
       while IFS=$'\t' read -r p_host p_workspace p_session p_tty p_pid p_state p_updated p_win p_tab; do
-        [[ "$p_host" == "$host" && ( "$p_state" == "attached" || "$p_state" == "opening" ) ]] || continue
+        [[ "$p_host" == "$host" && ( "$p_state" == "attached" || "$p_state" == "opening" || "$p_state" == "closing" ) ]] || continue
         if [[ "$p_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$p_pid" 2>/dev/null; then
           if ghostty_zmx_find_live_projection "$p_host" "$p_session" 2>/dev/null; then
             local win="-" tab="-"
@@ -1926,9 +1950,24 @@ ghostty_zmx_poll_once() {
           elif [[ "$p_state" == "opening" ]] && ghostty_zmx_projection_opening_fresh "$p_host" "$p_session" 2>/dev/null; then
             _ghostty_zmx_debug "poller skip-fresh-opening-dead-owner host=$p_host session=$p_session pid=$p_pid"
           elif [[ "$_app_alive" -eq 1 ]] && [[ "$startup_grace" -ne 1 ]] && { [[ -z "$ghostty_pid" ]] || kill -0 "$ghostty_pid" 2>/dev/null; }; then
-            ghostty_zmx_remote_close_transaction "$p_host" "$p_session" || true
-            _ghostty_zmx_debug "poller close-txn host=$p_host session=$p_session pid=$p_pid"
-            ghostty_zmx_remove_remote_projection "$p_host" "$p_session"
+            # Pane close: run the server close transaction. Only remove the
+            # local projection row if the server confirmed `deleted` — if the
+            # close-txn failed (ssh timeout, host unreachable), the server
+            # row stays `present` and removing the local row would cause the
+            # next poll cycle's grouped restore to re-open the just-closed
+            # projection (the "reopen after close" bug). Keep the row as
+            # `closing` so the next cycle retries the close-txn.
+            if ghostty_zmx_remote_close_transaction "$p_host" "$p_session" 2>/dev/null && ghostty_zmx_server_confirmed_deleted "$p_host" "$p_session" 2>/dev/null; then
+              ghostty_zmx_remove_remote_projection "$p_host" "$p_session"
+              _ghostty_zmx_debug "poller close-txn host=$p_host session=$p_session pid=$p_pid server=deleted"
+            else
+              # Close-txn failed (or server still not deleted). Mark the row
+              # `closing` so the next cycle retries; do NOT remove it, which
+              # would trigger a re-open. Also kill the dead ssh pid's entry so
+              # it's not mistaken for a live projection.
+              ghostty_zmx_write_projection_row "$p_host" "$p_workspace" "$p_session" "$p_tty" "$p_pid" closing "$p_win" "$p_tab"
+              _ghostty_zmx_debug "poller close-txn-failed host=$p_host session=$p_session pid=$p_pid retry-next-cycle"
+            fi
           else
             _ghostty_zmx_debug "poller preserve-on-quit host=$p_host session=$p_session pid=$p_pid startup_grace=$startup_grace"
             ghostty_zmx_remove_remote_projection "$p_host" "$p_session"
@@ -1983,6 +2022,54 @@ ghostty_zmx_poll_once() {
   done < "$hosts_file"
 }
 
+# Kill orphaned remote-poller scripts whose owning Ghostty PID is dead or
+# PID-reused. Called at the top of start_remote_poller so a fresh shell
+# self-heals leftover pollers from crashed/killed Ghostty instances instead
+# of accumulating them (the stray-poller root cause). Never kills the poller
+# for the current $exclude_pid (the live owner).
+ghostty_zmx_kill_orphaned_pollers() {
+  emulate -L zsh
+  local exclude_pid="$1" runtime="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}"
+  [[ -d "$runtime" ]] || return 0
+  local script ppid_from_name owner_elapsed
+  for script in "$runtime"/remote-poller-*.zsh(N); do
+    # Extract the ghostty pid from the script filename: remote-poller-<pid>.zsh
+    ppid_from_name="${script:t}"
+    ppid_from_name="${ppid_from_name#remote-poller-}"
+    ppid_from_name="${ppid_from_name%.zsh}"
+    [[ "$ppid_from_name" =~ ^[0-9]+$ ]] || continue
+    [[ "$ppid_from_name" == "$exclude_pid" ]] && continue
+    # Is that Ghostty PID still alive? If not, the poller is orphaned.
+    if ! kill -0 "$ppid_from_name" 2>/dev/null; then
+      # Find the actual zsh process running this script and kill it.
+      local _zpid
+      for _zpid in $(pgrep -f "remote-poller-${ppid_from_name}\.zsh" 2>/dev/null); do
+        kill -9 "$_zpid" 2>/dev/null || true
+      done
+      # Clean up its lock dir too.
+      rm -rf "$runtime"/remote-poller-*-${ppid_from_name}.lock 2>/dev/null || true
+      _ghostty_zmx_debug "poller killed-orphan ghostty_pid=$ppid_from_name script=${script:t}"
+      continue
+    fi
+    # PID alive — but is it a reused (younger) PID? If the owning Ghostty's
+    # current elapsed is less than a nominal threshold, the PID was reused.
+    owner_elapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ppid_from_name" 2>/dev/null)" || owner_elapsed=""
+    # Heuristic: a real Ghostty process has elapsed > 0. A reused PID for a
+    # short-lived process will have a very small elapsed. We can't compare
+    # against a saved token here (the orphan may predate the token fix), so
+    # only treat as orphan if the lock dir has NO elapsed file (pre-fix style).
+    local _lock="$runtime/remote-poller-${_ghostty_app_name}-${ppid_from_name}.lock"
+    if [[ -d "$_lock" && ! -f "$_lock/elapsed" ]]; then
+      local _zpid
+      for _zpid in $(pgrep -f "remote-poller-${ppid_from_name}\.zsh" 2>/dev/null); do
+        kill -9 "$_zpid" 2>/dev/null || true
+      done
+      rm -rf "$_lock" 2>/dev/null || true
+      _ghostty_zmx_debug "poller killed-pre-fix-orphan ghostty_pid=$ppid_from_name script=${script:t}"
+    fi
+  done
+}
+
 ghostty_zmx_start_remote_poller() {
   emulate -L zsh
   local force=0 ghostty_pid="${1:-}" runtime="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}" flag interval="${GHOSTTY_ZMX_REMOTE_POLL_INTERVAL:-3}" oldpid="" old_elapsed="" cur_elapsed=""
@@ -1993,6 +2080,12 @@ ghostty_zmx_start_remote_poller() {
   [[ "$force" -eq 1 || ( -z "${ZMX_SESSION:-}" && -z "${TMUX:-}" ) ]] || return 0
   [[ -n "$ghostty_pid" ]] || ghostty_pid="$(ghostty_zmx_detect_ghostty_pid)" || return 0
   [[ "$ghostty_pid" =~ ^[0-9]+$ ]] || return 0
+  # Self-heal orphaned pollers before starting a new one. This kills leftover
+  # poller scripts whose owning Ghostty PID is dead or was a pre-fix orphan
+  # (no elapsed token). Without this, a fresh shell stacks alongside the
+  # orphans, and each orphan independently polls the server layout and re-opens
+  # projections — the stray-poller root cause.
+  ghostty_zmx_kill_orphaned_pollers "$ghostty_pid"
   # PID-reuse-safe token: capture the owning Ghostty's elapsed-seconds at
   # startup. The poller loop re-derives current elapsed and exits if the
   # owning PID is reused by a younger process (current < saved) or gone
@@ -2384,11 +2477,23 @@ ghostty_zmx_inherit_remote_context_if_any() {
   [[ -n "$cur_win" && -n "$cur_tab" && "$cur_tty" == /dev/* ]] || return 1
   local host workspace parent_session tty_path pid state updated local_win local_tab norm_win norm_tab prefix session workspace_id remote_win remote_tab parent_pane pane parent axis ratio helper
   while IFS=$'\t' read -r host workspace parent_session tty_path pid state updated local_win local_tab; do
-    [[ "$state" == "attached" ]] || continue
+    [[ "$state" == "attached" || "$state" == "opening" ]] || continue
     # The poller/manager store raw AppleScript window/tab ids (e.g.
     # `tab-group-6000020060a0`); cur_win/cur_tab are hex-suffixes (e.g.
     # `6000020060a0`). Normalize both sides through hex_suffix so the
     # comparison matches regardless of which writer produced the row.
+    # An `opening` row may have local_win="-" (widget hasn't recorded the
+    # real window id yet). In that case scan live terminals for the parent
+    # session's projection and use its window id — this closes the timing
+    # window where a split happens before the poller upgrades the row to
+    # `attached`, which previously caused the split to miss the match and
+    # start a local zmx session instead of inheriting the remote context.
+    if [[ "$local_win" == "-" ]]; then
+      if ghostty_zmx_find_live_projection "$host" "$parent_session" 2>/dev/null; then
+        local_win="$_gzmx_found_win"
+        local_tab="$_gzmx_found_tab"
+      fi
+    fi
     norm_win="$(ghostty_zmx_hex_suffix "$local_win" 2>/dev/null || print -r -- "$local_win")"
     norm_tab="$(ghostty_zmx_hex_suffix "$local_tab" 2>/dev/null || print -r -- "$local_tab")"
     [[ "$norm_win" == "$cur_win" ]] || continue
@@ -2620,6 +2725,15 @@ if [[ "${GHOSTTY_ZMX_INTERNAL_POLLER:-0}" == "1" ]]; then
 fi
 
 _ghostty_zmx_install_accept_line_widget
+# Always self-heal orphaned pollers on shell init, even when no remote-hosts
+# file exists yet. Leftover poller scripts from crashed/killed Ghostty
+# instances survive `pkill -f Ghostty-tip` (reparented to launchd) and
+# independently poll the server layout, re-opening projections. Killing
+# them here on every new shell prevents accumulation. Only run when inside
+# a Ghostty surface and a Ghostty PID can be detected.
+if [[ "${GHOSTTY_ZMX_DISABLE_POLLER:-0}" != "1" && "${TERM_PROGRAM:-}" == "ghostty" ]]; then
+  typeset _gzmx_self_pid="$(ghostty_zmx_detect_ghostty_pid 2>/dev/null)" && [[ -n "$_gzmx_self_pid" ]] && ghostty_zmx_kill_orphaned_pollers "$_gzmx_self_pid" 2>/dev/null
+fi
 [[ "${GHOSTTY_ZMX_DISABLE_POLLER:-0}" != "1" ]] && [[ -f "$(ghostty_zmx_remote_hosts_file 2>/dev/null)" ]] && ghostty_zmx_start_remote_poller
 _ghostty_zmx_auto_attach
 # v0.2: do NOT unfunction the _ghostty_zmx_* private helpers. The remote
