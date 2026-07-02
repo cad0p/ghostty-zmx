@@ -74,6 +74,10 @@ CFG
 
 run_install "$home" "$config" "$data" --yes > "$workdir/install.out"
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$home/.zshrc" || { print -u2 "source line missing"; exit 1; }
+# Prototype A: early-source line in .zprofile + early manager installed.
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"' "$home/.zprofile" || { print -u2 "early source line missing from .zprofile"; exit 1; }
+[[ -f "$home/.config/ghostty-zmx/session-manager-early.zsh" ]] || { print -u2 "early manager missing"; exit 1; }
+zsh -n "$home/.config/ghostty-zmx/session-manager-early.zsh" || { print -u2 "early manager fails syntax check"; exit 1; }
 # v0.2: wrapper, server installer, and vendored terminfo must be installed.
 [[ -x "$home/.config/ghostty-zmx/ghostty-zmx" ]] || { print -u2 "wrapper missing or not executable"; exit 1; }
 [[ -x "$home/.config/ghostty-zmx/install-server.sh" ]] || { print -u2 "server installer missing or not executable"; exit 1; }
@@ -108,6 +112,8 @@ grep -q 'quit-after-last-window-closed = true is unsupported' "$workdir/user-con
 
 run_install "$home" "$config" "$data" --yes > /dev/null
 [[ "$(grep -cF 'session-manager.zsh' "$home/.zshrc")" == 1 ]] || { print -u2 "source line not idempotent"; exit 1; }
+# Prototype A: early-source line must also be idempotent in .zprofile.
+[[ "$(grep -cF 'session-manager-early.zsh' "$home/.zprofile")" == 1 ]] || { print -u2 "early source line not idempotent"; exit 1; }
 [[ "$(grep -c '^# BEGIN ghostty-zmx$' "$config")" == 1 ]] || { print -u2 "managed block not idempotent"; exit 1; }
 
 home_existing="$workdir/home-existing"
@@ -124,6 +130,8 @@ run_uninstall "$home" "$config" "$data" "$state" --yes > "$workdir/uninstall.out
 [[ -d "$data" ]] || { print -u2 "--yes removed data"; exit 1; }
 [[ -d "$state" ]] || { print -u2 "--yes removed state"; exit 1; }
 grep -q -- '--remove-data' "$workdir/uninstall.out" || { print -u2 "non-destructive uninstall guidance missing"; exit 1; }
+# Prototype A: uninstall must remove the early-source line from .zprofile.
+! grep -q 'session-manager-early.zsh' "$home/.zprofile" || { print -u2 "uninstall left early source line in .zprofile"; exit 1; }
 
 home_prompt="$workdir/home-prompt"
 config_prompt="$workdir/config-prompt/config.ghostty"

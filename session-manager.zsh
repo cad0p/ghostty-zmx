@@ -2741,19 +2741,32 @@ _ghostty_zmx_auto_attach() {
   # The new split terminal's AppleScript registration can lag shell init by a
   # few hundred ms, so retry the identity lookup a few times before falling
   # through to local auto-attach.
-  typeset earlySurfaceIdentity=""
-  typeset _inh_attempt
-  for (( _inh_attempt=1; _inh_attempt<=8; _inh_attempt++ )); do
-    earlySurfaceIdentity="$(_ghostty_zmx_current_surface_identity)"
-    if [[ -n "$earlySurfaceIdentity" ]]; then
-      break
+  #
+  # Prototype A (.zprofile early-exec): session-manager-early.zsh, sourced
+  # from ~/.zprofile, runs the inherit check BEFORE ~/.zshrc so the split
+  # pane execs the wrapper before any plugin (oh-my-zsh, autosuggestions)
+  # emits OSC 11 / CSI 6n terminal queries. If the early hook ran, it set
+  # GHOSTTY_ZMX_EARLY_INHERIT_RAN=1; skip the .zshrc inherit block to avoid
+  # a double-fire (the early hook either exec'd already — in which case this
+  # code is unreachable — or decided no ancestor, in which case re-trying
+  # here would re-emit the queries the early hook was designed to avoid).
+  if [[ "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-0}" != "1" ]]; then
+    typeset earlySurfaceIdentity=""
+    typeset _inh_attempt
+    for (( _inh_attempt=1; _inh_attempt<=8; _inh_attempt++ )); do
+      earlySurfaceIdentity="$(_ghostty_zmx_current_surface_identity)"
+      if [[ -n "$earlySurfaceIdentity" ]]; then
+        break
+      fi
+      _ghostty_zmx_debug "auto-attach pre-inherit identity-not-ready attempt=$_inh_attempt"
+      sleep 0.25
+    done
+    _ghostty_zmx_debug "auto-attach pre-inherit attempt=$_inh_attempt"
+    if [[ -n "$earlySurfaceIdentity" ]] && ghostty_zmx_inherit_remote_context_if_any "$earlySurfaceIdentity"; then
+      return 0
     fi
-    _ghostty_zmx_debug "auto-attach pre-inherit identity-not-ready attempt=$_inh_attempt"
-    sleep 0.25
-  done
-  _ghostty_zmx_debug "auto-attach pre-inherit attempt=$_inh_attempt"
-  if [[ -n "$earlySurfaceIdentity" ]] && ghostty_zmx_inherit_remote_context_if_any "$earlySurfaceIdentity"; then
-    return 0
+  else
+    _ghostty_zmx_debug "auto-attach pre-inherit skipped reason=early-hook-ran"
   fi
 
   typeset restoreFlag="$(_ghostty_zmx_runtime_path "restore-${ghosttyPID}.lock")"
