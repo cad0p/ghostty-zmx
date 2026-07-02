@@ -28,10 +28,12 @@ source "$_gzmx_early_dir/session-manager-lib.zsh"
 ghostty_zmx_has_tty_capability || return 0
 
 # Once the early hook has the capability to make the inherit decision, mark it
-# as definitive. The full ~/.zshrc manager skips its inherit block when this is
-# set, avoiding a second late inherit attempt that would reintroduce ~/.zshrc
-# query leakage.
-export GHOSTTY_ZMX_EARLY_INHERIT_RAN=1
+# as definitive for this shell. The full ~/.zshrc manager skips its inherit
+# block when this is set, avoiding a second late inherit attempt that would
+# reintroduce ~/.zshrc query leakage. Do NOT export this marker: it is only
+# meaningful for the current startup shell, and exporting it would make nested
+# shells skip their own early-inherit checks incorrectly.
+GHOSTTY_ZMX_EARLY_INHERIT_RAN=1
 
 # AppleScript registration can lag shell startup slightly, mirroring the full
 # manager's native-split inherit retry loop.

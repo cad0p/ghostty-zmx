@@ -54,6 +54,27 @@ fail() {
   [[ -z "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" ]] || fail "early marker set when auto attach disabled"
 ) || exit 1
 
+# When the capability probe succeeds, the early marker is set in the current
+# shell but is deliberately NOT exported. Exporting it would leak into nested
+# shells and make later Ghostty surfaces skip their own early-inherit checks.
+(
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  cat > "$tmp/osascript" <<'EOS'
+#!/bin/sh
+exit 0
+EOS
+  chmod +x "$tmp/osascript"
+  export PATH="$tmp:$PATH"
+  export TERM_PROGRAM=ghostty
+  export GHOSTTY_RESOURCES_DIR=/Applications/Ghostty.app/Contents/Resources/ghostty
+  export GHOSTTY_ZMX_AUTO_ATTACH=1
+  unset GHOSTTY_ZMX_EARLY_INHERIT_RAN GHOSTTY_ZMX_PROJECTION || true
+  source ./session-manager-early.zsh
+  [[ "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" == "1" ]] || fail "early marker not set after successful capability probe"
+  typeset -p GHOSTTY_ZMX_EARLY_INHERIT_RAN | grep -q '^typeset ' || fail "early marker was exported"
+) || exit 1
+
 # Early file idempotence: if the marker is already set, sourcing is a no-op.
 (
   export TERM_PROGRAM=ghostty
