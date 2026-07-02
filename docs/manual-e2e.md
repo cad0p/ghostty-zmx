@@ -2,6 +2,8 @@
 
 Run these checks from iTerm2 or another terminal outside managed Ghostty and outside any zmx session. Do not run the orchestrating shell inside Ghostty, because several checks quit or close Ghostty surfaces.
 
+**Always use a disposable `GHOSTTY_ZMX_DATA_HOME` / `GHOSTTY_ZMX_STATE_HOME`** (tmpdirs) when launching Ghostty-tip for E2E. Never `rm` or overwrite files under your real `~/.local/share/ghostty-zmx/` or `~/.local/state/ghostty-zmx/` as test cleanup — this destroys your real `remote-hosts` and breaks reopen. See "Clean state before each scenario" below for the safe isolation pattern.
+
 Use disposable marker text for every scenario, for example:
 
 ```sh
@@ -164,13 +166,26 @@ ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx version | tr "\t" " 
 
 ### Clean state before each scenario
 
+**Always run E2E with a disposable `GHOSTTY_ZMX_DATA_HOME` / `GHOSTTY_ZMX_STATE_HOME`** (see the no-prompt harness below). Never `rm` or overwrite files under your real `~/.local/share/ghostty-zmx/` or `~/.local/state/ghostty-zmx/` as test cleanup — doing so destroys your real `remote-hosts`, `remote-projections`, and `sessions` state. A prior E2E run that ran `rm -f ~/.local/share/ghostty-zmx/remote-hosts` as "cleanup" deleted the user's real host config, which silently broke Cmd-Q+reopen (the poller only starts if `remote-hosts` exists). The disposable-`DATA_HOME` harness isolates all test state in a tmpdir that can be `rm -rf`'d safely.
+
+The only real-path cleanup that is safe is the runtime tmpdir (orphaned pollers/reapers) and the macOS saved-state:
+
 ```sh
 pkill -9 -f Ghostty-tip 2>/dev/null; sleep 1
 rm -rf /var/folders/z6/fqkn3gjj1q704xr2s_xvgpq00000gn/T/ghostty-zmx-501
 rm -rf ~/Library/Saved\ Application\ State/com.mitchellh.ghostty.tip.savedState
+# Fixture server state (disposable Docker container, safe to wipe):
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -f ~/.local/share/ghostty-zmx/remote-layout ~/.local/share/ghostty-zmx/remote-layout.rev; rmdir ~/.local/share/ghostty-zmx/remote-layout.lock 2>/dev/null; pkill zmx 2>/dev/null'
 # verify no orphaned pollers
 lsof ~/.config/ghostty-zmx/session-manager.zsh   # must be empty
+```
+
+If you must test against your real `DATA_HOME` (e.g. to reproduce a user-reported issue with real state), back up `remote-hosts` first and restore it on exit:
+
+```sh
+cp ~/.local/share/ghostty-zmx/remote-hosts /tmp/remote-hosts.bak
+# ... run E2E ...
+cp /tmp/remote-hosts.bak ~/.local/share/ghostty-zmx/remote-hosts
 ```
 
 ### No-prompt harness (client launch)
