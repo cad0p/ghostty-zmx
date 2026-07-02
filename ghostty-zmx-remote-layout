@@ -77,10 +77,19 @@ case "$cmd" in
     ws="$1" win="$2" tab="$3" pane="$4" session="$5" parent="$6" axis="$7" ratio="$8" state="$9"
     acquire_lock || { echo "add: lock-busy" >&2; exit 70; }
     _t=$(now); _r=$(next_rev); tmp="$layout.tmp.$$"
-    {
-      [ -f "$layout" ] && awk -F '\t' -v s="$session" '$5 != s { print }' "$layout" || true
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$win" "$tab" "$pane" "$session" "$parent" "$axis" "$ratio" "$state" "$_t" "$_r"
-    } > "$tmp" && mv "$tmp" "$layout"
+    # Idempotent upsert: if a row with this session already exists, preserve it
+    # (including its parent-pane/axis/ratio — a split-inherited pane's row was
+    # written by the inherit path with the correct split geometry, and the
+    # projection wrapper's `add` call must NOT clobber it with `- root 1`).
+    # Only insert a new row if the session is absent.
+    if [ -f "$layout" ] && awk -F '\t' -v s="$session" '$5==s {found=1} END{exit found?0:1}' "$layout"; then
+      : # row exists; preserve it
+    else
+      {
+        [ -f "$layout" ] && awk -F '\t' -v s="$session" '$5 != s { print }' "$layout" || true
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ws" "$win" "$tab" "$pane" "$session" "$parent" "$axis" "$ratio" "$state" "$_t" "$_r"
+      } > "$tmp" && mv "$tmp" "$layout"
+    fi
     release_lock
     ;;
   transition)
