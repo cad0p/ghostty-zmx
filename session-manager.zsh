@@ -2556,6 +2556,65 @@ OSA
   zle reset-prompt
 }
 
+# Prototype C: drain terminal-query responses from a tty's input buffer before
+# exec-ing into the transport (ssh). The native-split inherit path sources the
+# local .zshrc, which (via oh-my-zsh + zsh-autosuggestions + prompt plugins)
+# emits terminal queries: OSC 11 (foreground color), CSI 6n (cursor position),
+# DA1/DA2. Ghostty responds; the responses sit in the tty input buffer. If we
+# exec ssh without draining, ssh forwards those bytes to the remote pty where
+# the remote shell echoes them into the prompt (e.g. `11;rgb:...1R`).
+#
+# This function reads and discards pending input from the tty, waits a short
+# burst for in-flight responses, then drains again. It is BEST-EFFORT:
+#   - Responses arriving AFTER the drain window (slow plugin queries) still leak.
+#   - It cannot fix responses that the remote shell's OWN .zshrc emits after
+#     attach (those are remote-originated, not in the local tty buffer).
+# The robust fix is Prototype B (bypass the local shell via AppleScript
+# split-with-configuration). This drain is the keep-the-native-split path.
+#
+# Uses `stty -echo -icanon min 0 time 0` to disable line buffering, then a
+# `read -rd '' -t <delay>` loop to consume whatever bytes are pending. The
+# `-rd ''` reads up to a NUL (which never appears in terminal data, so it
+# reads everything available until the timeout). `-t <delay>` bounds the wait.
+# Looping until a read times out (returns non-zero) with zero new bytes ensures
+# we drain both the initial backlog and any responses that arrive during the
+# drain window. stty state is restored afterward so exec ssh sees a clean tty.
+#
+# NOTE: `read -t 0 -k 1` (zero-timeout poll + read-1-char) does NOT work here —
+# empirically it consumes 0 bytes even when FIONREAD reports data pending
+# (zsh's `read -k` on a non-canonical tty doesn't poll the input buffer the
+# way FIONREAD does). The `read -rd '' -t <delay>` form is the working
+# primitive; verified against a python pty.openpty() harness consuming a
+# 27-byte payload.
+#
+# Opt out entirely via GHOSTTY_ZMX_DISABLE_TTY_DRAIN=1.
+ghostty_zmx_drain_tty_queries() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+  local tty_path="$1"
+  [[ "${GHOSTTY_ZMX_DISABLE_TTY_DRAIN:-0}" != "1" ]] || { _ghostty_zmx_debug "drain skipped reason=disabled"; return 0; }
+  [[ -n "$tty_path" && -r "$tty_path" && -w "$tty_path" ]] || return 0
+  local delay="${GHOSTTY_ZMX_DRAIN_DELAY:-0.05}"
+  local iterations="${GHOSTTY_ZMX_DRAIN_ITERATIONS:-3}"
+  local saved_stty drained=0 i buf got=0
+  # Save and restore stty so we don't leave the tty in raw mode if exec fails.
+  saved_stty="$(stty -g <"$tty_path" 2>/dev/null)" || return 0
+  stty -echo -icanon min 0 time 0 <"$tty_path" 2>/dev/null || return 0
+  # Drain: loop until a read yields zero bytes (buffer quiet) or we hit the
+  # iteration cap. NOTE: `read -rd '' -t <delay>` returns rc=1 (timeout) even
+  # when it successfully read bytes — because the NUL delimiter is never
+  # found in terminal data. So we must inspect ${#buf}, not the return code.
+  for (( i=1; i<=iterations; i++ )); do
+    buf=""
+    IFS= read -rd '' -t "$delay" buf 2>/dev/null <"$tty_path" || true
+    got=${#buf}
+    (( got == 0 )) && break
+    drained=$((drained + got))
+  done
+  stty "$saved_stty" <"$tty_path" 2>/dev/null || true
+  _ghostty_zmx_debug "drain tty=$tty_path bytes=$drained iterations=$i"
+}
+
 ghostty_zmx_inherit_remote_context_if_any() {
   emulate -L zsh
   setopt local_options no_sh_word_split
@@ -2661,17 +2720,19 @@ ghostty_zmx_inherit_remote_context_if_any() {
     # Source ~/.zshrc on the remote so zmx is found when it's only on the
     # interactive PATH (see ghostty_zmx_projection_command_string rationale).
     #
-    # Known limitation: because the split's local shell sources .zshrc before
-    # this exec, plugins or Ghostty itself may issue terminal queries (OSC 11
-    # foreground color, CSI 6n cursor position, DA1/DA2) whose responses land
-    # in the tty's input buffer (or arrive shortly after exec). ssh then
-    # forwards those bytes to the remote pty, where the remote shell echoes
-    # them into the prompt (`11;rgb:...1R`). The correct fix is to bypass the
-    # local shell entirely by AppleScript-splitting with the wrapper as the
-    # surface command (like the widget path for new windows), so no .zshrc
-    # runs in the split pane. That's tracked as a follow-up; the shell-exec
-    # path here preserves inherit's simplicity at the cost of this cosmetic
-    # leak. See docs/manual-e2e.md "known limitations".
+    # Prototype C: drain terminal-query responses from the tty input buffer
+    # BEFORE exec ssh. The split's local .zshrc (oh-my-zsh + autosuggestions)
+    # emits OSC 11 (fg color) / CSI 6n (cursor pos) / DA1/DA2 queries; Ghostty
+    # responds; the responses sit in the tty input buffer. Without draining,
+    # exec ssh forwards them to the remote pty where the remote shell echoes
+    # them into the prompt (`11;rgb:...1R`). The drain reads and discards
+    # pending input, then waits a short burst for in-flight responses, then
+    # drains again. This is best-effort: responses that arrive AFTER the
+    # drain window (e.g. a slow plugin query) still leak. The robust fix is
+    # Prototype B (bypass the local shell entirely via AppleScript
+    # split-with-configuration); this drain is the keep-the-native-split path.
+    # See debugging/2026-07-02-osc11-csi6n-query-responses-leak-into-split-scrollback.
+    ghostty_zmx_drain_tty_queries "$cur_tty"
     exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "source ~/.zshrc 2>/dev/null; zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
   return 1

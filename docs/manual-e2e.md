@@ -393,6 +393,19 @@ This verifies that a native Ghostty split from a remote projection window inheri
 
 4. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
 
+### Prototype C — native split with tty drain (best-effort leak mitigation)
+
+Prototype C keeps the native split (default shell sources `.zshrc`, inherit `exec`s the wrapper) but adds a `ghostty_zmx_drain_tty_queries` call right before `exec ssh`. The drain reads and discards pending input from the tty's input buffer — the OSC 11 / CSI 6n query responses that the local `.zshrc`'s plugins emitted and Ghostty answered. Without draining, `exec ssh` forwards those bytes to the remote pty where the remote shell echoes them into the prompt.
+
+**Best-effort, timing-dependent.** The drain runs for a configurable number of iterations (default 3) with a small sleep between, but responses that arrive AFTER the drain window (slow plugin queries) still leak. The robust fix is Prototype B (bypass the local shell entirely). This drain is the keep-the-native-split path.
+
+Configuration:
+- `GHOSTTY_ZMX_DISABLE_TTY_DRAIN=1` — opt out entirely.
+- `GHOSTTY_ZMX_DRAIN_ITERATIONS=3` — number of drain iterations.
+- `GHOSTTY_ZMX_DRAIN_DELAY=0.05` — seconds between iterations.
+
+**Does not record split axis** — like Prototype A, it reacts to a native split whose direction AppleScript cannot observe.
+
 ### Known limitations
 
 **Simultaneous multi-client E2E** — True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
