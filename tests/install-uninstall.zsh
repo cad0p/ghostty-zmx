@@ -77,6 +77,9 @@ grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$
 # v0.2: wrapper, server installer, and vendored terminfo must be installed.
 [[ -x "$home/.config/ghostty-zmx/ghostty-zmx" ]] || { print -u2 "wrapper missing or not executable"; exit 1; }
 [[ -x "$home/.config/ghostty-zmx/install-server.sh" ]] || { print -u2 "server installer missing or not executable"; exit 1; }
+# v0.2: frozen v0.1 fallback manager must be installed (early-sourced on 1.3.x).
+[[ -f "$home/.config/ghostty-zmx/session-manager-v0.1.zsh" ]] || { print -u2 "v0.1 fallback manager missing"; exit 1; }
+zsh -n "$home/.config/ghostty-zmx/session-manager-v0.1.zsh" || { print -u2 "v0.1 fallback manager fails syntax check"; exit 1; }
 [[ -f "$home/.config/ghostty-zmx/terminfo/xterm-ghostty.terminfo" ]] || { print -u2 "vendored terminfo missing"; exit 1; }
 grep -q '^xterm-ghostty|ghostty|Ghostty,' "$home/.config/ghostty-zmx/terminfo/xterm-ghostty.terminfo" || { print -u2 "vendored terminfo malformed"; exit 1; }
 grep -qxF 'env = GHOSTTY_ZMX_AUTO_ATTACH=1' "$config" || { print -u2 "user auto-attach env was removed"; exit 1; }
