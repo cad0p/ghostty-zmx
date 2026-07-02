@@ -2213,6 +2213,11 @@ export GHOSTTY_ZMX_STATE_HOME="$state_home"
 export GHOSTTY_ZMX_DEBUG="$debug_enabled"
 export _ghostty_app_name="$ghostty_app_name"
 
+# Paths used by the startup cleanup below and by poll_once (which re-derives
+# them, but defining them here makes the startup cleanup self-contained).
+hosts_file="$data_home/remote-hosts"
+projections_file="$data_home/remote-projections"
+
 # PID-reuse-safe token: the owning Ghostty's elapsed-seconds at startup.
 print -r -- "$$" > "$flag/pid" 2>/dev/null || true
 print -r -- "$ghostty_elapsed" > "$flag/elapsed" 2>/dev/null || true
@@ -2222,6 +2227,30 @@ print -r -- "$ghostty_elapsed" > "$flag/elapsed" 2>/dev/null || true
 # ghostty_zmx_snapshot_remote_sessions, ghostty_zmx_find_live_projection, etc.
 # — the same functions the widget and reconcile path use, so they cannot diverge.
 GHOSTTY_ZMX_INTERNAL_POLLER=1 source "$manager_src" 2>/dev/null || exit 70
+
+# Startup cleanup: clear stale local projection rows whose recorded pid is
+# dead. After Cmd-Q+reopen, the local remote-projections file still has rows
+# from the prior session (pids that no longer exist). Without this cleanup,
+# (a) the grouped restore skips those sessions (projection_known returns true),
+# so they never re-project; and (b) the dead-pid cleanup runs close-txn on them,
+# killing the remote sessions that should survive for re-attach. Clearing
+# them here lets the grouped restore re-project fresh while preserving the
+# server-side `present` rows. This runs only once, before the first poll.
+if [[ -f "$projections_file" ]]; then
+  typeset _cleared=0 _h _ws _sess _tty _pid _st _up _w _t
+  typeset tmp="$projections_file.tmp.$$"
+  : > "$tmp" 2>/dev/null || true
+  while IFS=$'\t' read -r _h _ws _sess _tty _pid _st _up _w _t; do
+    if [[ "$_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$_pid" 2>/dev/null; then
+      _ghostty_zmx_debug "poller startup-cleared stale host=$_h session=$_sess pid=$_pid"
+      _cleared=$((_cleared + 1))
+    else
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_h" "$_ws" "$_sess" "$_tty" "$_pid" "$_st" "$_up" "$_w" "$_t" >> "$tmp"
+    fi
+  done < "$projections_file"
+  mv "$tmp" "$projections_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  (( _cleared > 0 )) && _ghostty_zmx_debug "poller startup-cleared count=$_cleared"
+fi
 
 startup_grace=1
 sleep 1

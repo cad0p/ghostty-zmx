@@ -248,6 +248,46 @@ ghostty_zmx_projection_closing "gzmx-fixture" "gzr-test-missing" 2>/dev/null && 
 print "  ok: missing row is not closing"
 print "  PASS test 5"
 
+# ---------------------------------------------------------------------------
+# Test 6: startup stale-row cleanup logic. After Cmd-Q+reopen, the local
+# remote-projections file has rows with dead pids (from the prior session).
+# The poller clears them before the first poll so the grouped restore can
+# re-project fresh. We test the cleanup logic inline (it mirrors the poller
+# script's startup-cleanup block).
+# ---------------------------------------------------------------------------
+print ""
+print "test 6: startup stale-row cleanup clears dead pids, keeps live"
+
+# Seed rows: one with a dead pid, one with a live pid (this shell).
+_live_pid=$$
+_dead_pid=999888
+printf 'gzmx-fixture\tws1\tgzr-dead\t/dev/ttys001\t%s\tattached\t100\twin1\ttab1\n' "$_dead_pid" > "$projections_file"
+printf 'gzmx-fixture\tws1\tgzr-live\t/dev/ttys002\t%s\tattached\t100\twin1\ttab1\n' "$_live_pid" >> "$projections_file"
+
+# Run the cleanup logic (mirrors the poller script startup-cleanup block).
+typeset _cleared=0 _h _ws _sess _tty _pid _st _up _w _t
+_tmp="$projections_file.cleanup.$$"
+: > "$_tmp" 2>/dev/null || true
+while IFS=$'\t' read -r _h _ws _sess _tty _pid _st _up _w _t; do
+  if [[ "$_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$_pid" 2>/dev/null; then
+    _cleared=$((_cleared + 1))
+  else
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_h" "$_ws" "$_sess" "$_tty" "$_pid" "$_st" "$_up" "$_w" "_t" >> "$_tmp"
+  fi
+done < "$projections_file"
+mv "$_tmp" "$projections_file" 2>/dev/null || rm -f "$_tmp" 2>/dev/null
+
+[[ "$_cleared" == "1" ]] || { print -u2 "FAIL: expected 1 cleared, got $_cleared"; exit 1 }
+print "  ok: cleared 1 dead-pid row"
+
+# The live row must survive.
+_rows="$(wc -l < "$projections_file" | tr -d ' ')"
+[[ "$_rows" == "1" ]] || { print -u2 "FAIL: expected 1 surviving row, got $_rows"; exit 1 }
+ Surviving_session="$(awk -F '\t' '{print $3}' "$projections_file")"
+[[ "$Surviving_session" == "gzr-live" ]] || { print -u2 "FAIL: expected gzr-live to survive, got $Surviving_session"; exit 1 }
+print "  ok: live row survived (gzr-live)"
+print "  PASS test 6"
+
 print ""
 print "all remote-lifecycle tests passed"
 exit 0
