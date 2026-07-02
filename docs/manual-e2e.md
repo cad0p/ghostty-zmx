@@ -393,6 +393,43 @@ This verifies that a native Ghostty split from a remote projection window inheri
 
 4. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
 
+### Remote split via `ghostty-zmx split` CLI (Prototype B)
+
+This verifies the Prototype B split path: a user-triggered `ghostty-zmx split <right|down>` creates the split via AppleScript `split ... with configuration`, so the split pane starts directly as the projection wrapper (no local shell, no OSC 11/CSI 6n leak) and the real split axis is recorded in the server layout.
+
+1. Set up a projected remote session via the widget handoff (wait for `attached`, `clients=1`).
+2. From inside the projection pane, run the CLI:
+
+   ```sh
+   ~/.config/ghostty-zmx/ghostty-zmx split right
+   # or via the zle widget (bound to a DCS sequence by the manager):
+   # the widget calls: ghostty-zmx split right --tty $TTY
+   ```
+
+3. Verify the new split pane:
+   - attaches to a **new** remote zmx session (distinct pane id, same workspace/window/tab).
+   - starts directly as the wrapper (no local shell sourcing `.zshrc`): `ps` shows the split pane's process as `ghostty-zmx projection ... --session gzr-...`, not a local `zsh`.
+   - the split is in the requested direction (right = horizontal).
+4. Verify the server layout recorded the real axis:
+
+   ```sh
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read' | tail
+   # expect the new row with horizontal (not the default-from-native-split)
+   ```
+5. Test `split down` similarly and verify the layout row records `vertical`.
+6. Verify no OSC 11 / CSI 6n query responses leak into the split pane's scrollback (the Prototype B motivation). Compare with the native-split path's known limitation (below).
+
+### Ghostty keybind binding for Prototype B (optional)
+
+Because Ghostty keybinds cannot run shell commands, the user binds a `text:` sequence that the manager's zle widget catches. Add to the Ghostty config:
+
+```
+keybind = cmd+d=text:\x1bP1z|gzmx-split-right\x1b\\
+keybind = cmd+shift+d=text:\x1bP1z|gzmx-split-down\x1b\\
+```
+
+The manager binds these DCS sequences to `ghostty_zmx_split_right_widget` / `ghostty_zmx_split_down_widget`, which call `ghostty-zmx split <dir> --tty $TTY`. Outside a projection pane the widgets are no-ops (the CLI prints a message).
+
 ### Known limitations
 
 **Simultaneous multi-client E2E** — True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.

@@ -33,27 +33,33 @@ _gzmx_wdebug() {
 mode="${1:-}"
 case "$mode" in
   projection) shift ;;
+  split) _gzmx_mode=split; shift ;;
   -h|--help|help)
-    print "Usage: ghostty-zmx projection --host <host> --workspace <ws> --session <gzr> -- <transport...> 'zmx attach <gzr>'"
+    print "Usage:"
+    print "  ghostty-zmx projection --host <host> --workspace <ws> --session <gzr> -- <transport...> 'zmx attach <gzr>'"
+    print "  ghostty-zmx split <right|down>   # split the current projection pane (Prototype B)"
     exit 0 ;;
-  *) print -u2 "ghostty-zmx: unknown mode '$mode' (expected 'projection')"; exit 2 ;;
+  *) print -u2 "ghostty-zmx: unknown mode '$mode' (expected 'projection' or 'split')"; exit 2 ;;
 esac
 
 host="" workspace="" session=""
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --host) host="$2"; shift 2 ;;
-    --workspace) workspace="$2"; shift 2 ;;
-    --session) session="$2"; shift 2 ;;
-    --) shift; break ;;
-    --*) print -u2 "ghostty-zmx: unknown option $1"; exit 2 ;;
-    *) break ;;
-  esac
-done
+if [[ "${_gzmx_mode:-}" != "split" ]]; then
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --host) host="$2"; shift 2 ;;
+      --workspace) workspace="$2"; shift 2 ;;
+      --session) session="$2"; shift 2 ;;
+      --) shift; break ;;
+      --*) print -u2 "ghostty-zmx: unknown option $1"; exit 2 ;;
+      *) break ;;
+    esac
+  done
 
-[[ -n "$host" && -n "$session" ]] || { print -u2 "ghostty-zmx: --host and --session are required"; exit 2; }
-[[ $# -gt 0 ]] || { print -u2 "ghostty-zmx: transport command missing after --"; exit 2; }
+  [[ -n "$host" && -n "$session" ]] || { print -u2 "ghostty-zmx: --host and --session are required"; exit 2; }
+  [[ $# -gt 0 ]] || { print -u2 "ghostty-zmx: transport command missing after --"; exit 2; }
+fi
 
+if [[ "${_gzmx_mode:-}" != "split" ]]; then
 export GHOSTTY_ZMX_PROJECTION=1
 export GHOSTTY_ZMX_PROJECTION_HOST="$host"
 export GHOSTTY_ZMX_PROJECTION_SESSION="$session"
@@ -148,6 +154,248 @@ if [[ "$session" == gzr-* ]]; then
     fi
   fi
 fi
+fi # end projection-only body
+
+# --- Prototype B: `ghostty-zmx split <right|down>` -----------------------------
+# Creates a split of the CURRENT projection pane by calling AppleScript
+# `split t direction <dir> with configuration cfg` where cfg.command is the
+# projection wrapper. Because we create the split ourselves (with a surface
+# configuration that has `command` set), Ghostty tracks the wrapper process as
+# the surface's command — the split pane NEVER starts a local shell, so no
+# ~/.zshrc / .zprofile sources, so no OSC 11 / CSI 6n terminal-query leak.
+#
+# Bonus: because WE create the split, we KNOW the direction, so the remote-layout
+# row records the real axis (`right` -> horizontal, `down` -> vertical) instead
+# of defaulting to `horizontal` (the known limitation of the native-split inherit
+# path, which cannot observe direction post-hoc).
+#
+# The subcommand is invoked from inside a projection pane (via a shell widget or
+# alias — see docs). It:
+#   1. Finds the current surface's window/tab/tty via AppleScript by matching
+#      $TTY (same identity path the manager uses).
+#   2. Reads remote-projections for the parent gzr-* session of that tty.
+#   3. Generates a new pane id + gzr- session name (same workspace/window/tab;
+#      new pane id; parent-pane = parent pane id).
+#   4. Writes the remote-layout row with state=present and the real axis, via
+#      the server helper over ssh -T (bare-word argv).
+#   5. Writes a local opening projection row so the poller does not duplicate.
+#   6. AppleScript-splits the focused terminal with cfg.command = projection
+#      wrapper, direction = right|down.
+#
+# The AppleScript runs against the hosting Ghostty app (derived from
+# GHOSTTY_RESOURCES_DIR) so co-running stable + tip both work.
+_gzmx_split_err() { print -u2 -- "$@"; }
+
+_gzmx_split_debug() {
+  [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
+  local _d="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}"
+  mkdir -p "$_d" 2>/dev/null
+  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') split $*" >> "$_d/debug.log"
+}
+
+_gzmx_split_app_name() {
+  local app="Ghostty" bundle
+  if [[ -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then
+    bundle="${GHOSTTY_RESOURCES_DIR%/Contents/Resources/ghostty}"
+    app="${bundle##*/}"
+    app="${app%.app}"
+  fi
+  print -r -- "$app"
+}
+
+# Return the current surface's window/tab/terminal ids + parent session by
+# matching $TTY against every Ghostty terminal. Output (space-separated,
+# hex-suffix-normalized): <win> <tab> <term> <tty>. Sets _GZMX_SPLIT_PARENT_*
+# globals on success. Returns 1 if no match (not inside a Ghostty pane) or
+# no parent gzr-* projection row is found for this tty.
+_gzmx_split_find_current() {
+  local shell_tty="${GHOSTTY_ZMX_SPLIT_TTY:-${explicit_tty:-${TTY:-}}}"
+  [[ -n "$shell_tty" ]] || shell_tty="$(tty 2>/dev/null)" || return 1
+  [[ "$shell_tty" == /dev/* ]] || return 1
+  local app="$( _gzmx_split_app_name )"
+  local raw
+  raw="$(osascript <<EOF 2>/dev/null
+tell application "$app"
+  repeat with w in windows
+    set winStr to id of w as string
+    repeat with tb in tabs of w
+      set tabStr to id of tb as string
+      repeat with tm in terminals of tb
+        try
+          if (tty of tm as string) is "$shell_tty" then
+            return winStr & " " & tabStr & " " & (id of tm as string) & " " & "$shell_tty"
+          end if
+        end try
+      end repeat
+    end repeat
+  end repeat
+  return ""
+end tell
+EOF
+)" || return 1
+  [[ -n "$raw" ]] || return 1
+  _GZMX_SPLIT_WIN="$(print -r -- "$raw" | awk '{print $1}')"
+  _GZMX_SPLIT_TAB="$(print -r -- "$raw" | awk '{print $2}')"
+  _GZMX_SPLIT_TERM="$(print -r -- "$raw" | awk '{print $3}')"
+  _GZMX_SPLIT_TTY="$(print -r -- "$raw" | awk '{print $4}')"
+  [[ -n "$_GZMX_SPLIT_WIN" && -n "$_GZMX_SPLIT_TAB" && -n "$_GZMX_SPLIT_TTY" ]] || return 1
+  # Find the parent gzr-* projection row for this tty.
+  local pf="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}/remote-projections"
+  [[ -r "$pf" ]] || return 1
+  local host workspace session row_tty state
+  while IFS=$'\t' read -r host workspace session row_tty _pid state _ _; do
+    [[ "$state" == "attached" || "$state" == "opening" ]] || continue
+    [[ "$row_tty" == "$shell_tty" ]] || continue
+    [[ "$session" == gzr-* ]] || continue
+    _GZMX_SPLIT_HOST="$host"
+    _GZMX_SPLIT_WORKSPACE="$workspace"
+    _GZMX_SPLIT_PARENT_SESSION="$session"
+    return 0
+  done < "$pf"
+  return 1
+}
+
+_gzmx_split_main() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+  local dir="" explicit_tty=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      right|down) dir="$1"; shift ;;
+      --tty) explicit_tty="$2"; shift 2 ;;
+      -h|--help|help)
+        dir="__help__"; shift ;;
+      *) _gzmx_split_err "ghostty-zmx split: unknown argument '$1' (use 'right' or 'down')"; exit 2 ;;
+    esac
+  done
+  case "$dir" in
+    right|down) ;;
+    __help__|"")
+      print "Usage: ghostty-zmx split <right|down> [--tty /dev/ttysXXX]"
+      print "Splits the current projection pane in the given direction."
+      print "The new pane inherits the remote context (same host/workspace/tab)"
+      print "as a fresh gzr-* session, with the real split axis recorded."
+      print "--tty overrides the controlling tty (used by the zle widget caller)."
+      exit 0 ;;
+    *) _gzmx_split_err "ghostty-zmx split: unknown direction '$dir' (use 'right' or 'down')"; exit 2 ;;
+  esac
+  local axis="horizontal"
+  [[ "$dir" == "down" ]] && axis="vertical"
+
+  _GZMX_SPLIT_HOST="" _GZMX_SPLIT_WORKSPACE="" _GZMX_SPLIT_PARENT_SESSION=""
+  _GZMX_SPLIT_WIN="" _GZMX_SPLIT_TAB="" _GZMX_SPLIT_TERM="" _GZMX_SPLIT_TTY=""
+  if ! _gzmx_split_find_current; then
+    _gzmx_split_err "ghostty-zmx split: not inside a managed projection pane (no parent gzr-* session for tty $TTY)"
+    exit 1
+  fi
+  _gzmx_split_debug "found host=$_GZMX_SPLIT_HOST parent=$_GZMX_SPLIT_PARENT_SESSION win=$_GZMX_SPLIT_WIN tab=$_GZMX_SPLIT_TAB dir=$dir axis=$axis"
+
+  # Parse the parent session gzr-<ws>-<win>-<tab>-<pane> for the new row.
+  local _rest="${_GZMX_SPLIT_PARENT_SESSION#gzr-}"
+  local _ws="${_rest%%-*}"; _rest="${_rest#*-}"
+  local _win="${_rest%%-*}"; _rest="${_rest#*-}"
+  local _tab="${_rest%%-*}"; _rest="${_rest#*-}"
+  local _parent_pane="${_rest}"
+  local _pane="${$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')[1,6]}"
+  local _session="gzr-${_ws}-${_win}-${_tab}-${_pane}"
+
+  # Read the transport prefix for this host from remote-hosts.
+  local rh="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}/remote-hosts"
+  [[ -r "$rh" ]] || { _gzmx_split_err "ghostty-zmx split: remote-hosts not found (is the poller running?)"; exit 1; }
+  local prefix_string=""
+  local h t v m p
+  while IFS=$'\t' read -r h t v m p; do
+    [[ "$h" == "$_GZMX_SPLIT_HOST" ]] || continue
+    prefix_string="$p"
+    break
+  done < "$rh"
+  [[ -n "$prefix_string" ]] || { _gzmx_split_err "ghostty-zmx split: no transport prefix for host $_GZMX_SPLIT_HOST"; exit 1; }
+
+  # Build a no-pty ssh argv (drop -t/-tt/--tty, ensure -T) for the server write.
+  local -a notty=()
+  local _is_tsh=0 _have_t=0 _w
+  if [[ "${prefix_string[(w)1]}" == "tsh" && "${prefix_string[(w)2]:-}" == "ssh" ]]; then
+    _is_tsh=1
+  fi
+  for _w in ${(z)prefix_string}; do
+    case "$_w" in
+      -t|-tt|--tty) ;;
+      -T) [[ "$_is_tsh" -eq 0 ]] && { notty+=(-T); _have_t=1 } ;;
+      *) notty+=("$_w") ;;
+    esac
+  done
+  [[ "$_is_tsh" -eq 1 || "$_have_t" -eq 1 ]] || notty+=(-T)
+
+  # Write the remote-layout row (state=present) with the REAL axis.
+  local helper="\$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout"
+  _gzmx_split_debug "layout-add session=$_session parent_pane=$_parent_pane axis=$axis ratio=0.5"
+  "${notty[@]}" "$helper" add "$_ws" "$_win" "$_tab" "$_pane" "$_session" "$_parent_pane" "$axis" 0.5 present >/dev/null 2>&1 || true
+
+  # Write a local opening projection row so the poller does not duplicate.
+  # Format matches ghostty_zmx_write_projection_row:
+  #   host\tws\tsession\ttty\tpid\tstate\tupdated\twin\ttab
+  local pf="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}/remote-projections"
+  local pf_lock="${GHOSTTY_ZMX_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/tmp}}/ghostty-zmx-${UID}/projection-locks"
+  mkdir -p "$pf_lock" 2>/dev/null
+  local hash="$(print -r -- "${_GZMX_SPLIT_HOST}\t${_session}" | cksum | tr -d ' ' | cut -c1-12)"
+  local lock="$pf_lock/${hash}.lock" i acquired=0
+  for (( i=1; i<=50; i++ )); do mkdir "$lock" 2>/dev/null && { acquired=1; break; }; sleep 0.02; done
+  if [[ "$acquired" -eq 1 ]]; then
+    local now="$(date +%s)"
+    local tmp="${pf}.tmp.$$"
+    { awk -F '\t' -v h="$_GZMX_SPLIT_HOST" -v s="$_session" '$1 != h || $3 != s { print }' "$pf" 2>/dev/null || true
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$_GZMX_SPLIT_HOST" "$_GZMX_SPLIT_WORKSPACE" "$_session" "$_GZMX_SPLIT_TTY" "$$" opening "$now" "-" "-"
+    } > "$tmp" 2>/dev/null && mv "$tmp" "$pf" 2>/dev/null
+    rmdir "$lock" 2>/dev/null || true
+  fi
+
+  # Build the projection command string for the new pane.
+  local wrapper="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/ghostty-zmx"
+  local cmd="$wrapper projection --host $_GZMX_SPLIT_HOST --workspace $_GZMX_SPLIT_WORKSPACE --session $_session -- $prefix_string 'source ~/.zshrc 2>/dev/null; zmx attach $_session'"
+  local as_cmd="${cmd//\\\\/\\\\\\\\}"
+  as_cmd="${as_cmd//\"/\\\"}"
+
+  # AppleScript: split the CURRENT (focused) terminal of the matching tab.
+  local app="$( _gzmx_split_app_name )"
+  _gzmx_split_debug "applescript-split win=$_GZMX_SPLIT_WIN tab=$_GZMX_SPLIT_TAB dir=$dir"
+  osascript <<OSA 2>/dev/null || { _gzmx_split_err "ghostty-zmx split: AppleScript split failed"; exit 1; }
+tell application "$app"
+  set targetWindow to missing value
+  repeat with w in windows
+    set winStr to id of w as string
+    if winStr ends with "$_GZMX_SPLIT_WIN" then
+      set targetWindow to w
+      exit repeat
+    end if
+  end repeat
+  if targetWindow is missing value then error "window not found"
+  set targetTab to missing value
+  repeat with tb in tabs of targetWindow
+    set tabStr to id of tb as string
+    if tabStr ends with "$_GZMX_SPLIT_TAB" then
+      set targetTab to tb
+      exit repeat
+    end if
+  end repeat
+  if targetTab is missing value then error "tab not found"
+  select tab targetTab
+  set cfg to new surface configuration
+  set command of cfg to "$as_cmd"
+  set t to focused terminal of targetTab
+  split t direction $dir with configuration cfg
+end tell
+OSA
+  _gzmx_split_debug "split-ok session=$_session dir=$dir axis=$axis"
+  print "ghostty-zmx: split $dir -> $_session (axis=$axis)"
+}
+
+# Prototype B dispatch: run split AFTER the split functions above are
+# defined (zsh parses-and-executes as it reads, so the top-of-file case can't
+# call _gzmx_split_main before its definition is reached). The split path
+# always exits inside _gzmx_split_main; the projection path falls through to
+# the `exec "$@"` below.
+[[ "${_gzmx_mode:-}" == "split" ]] && { _gzmx_split_main "$@"; exit $?; }
 
 # Run the transport in the FOREGROUND via exec so it keeps the controlling TTY.
 # The layout row was already written state=present above; the transport's

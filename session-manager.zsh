@@ -2686,6 +2686,41 @@ _ghostty_zmx_install_accept_line_widget() {
   bindkey '^J' ghostty_zmx_accept_line 2>/dev/null || true
 }
 
+# Prototype B: `ghostty-zmx split` zle widgets. Bound to private DCS escape
+# sequences that the user maps via Ghostty `keybind = ... = text:<seq>`. The
+# widget runs the `ghostty-zmx split` CLI (which does the AppleScript
+# split-with-configuration, bypassing the local shell and recording the real
+# axis). Only installed inside a managed Ghostty pane with a projection
+# wrapper on PATH. The widgets are no-ops (return) outside a projection pane;
+# the CLI itself prints the "not inside a projection pane" message.
+#
+# The bound sequences are Ghostty-app-private DCS-1 2 sequences (unlikely to
+# collide with application output). Users bind them in their ghostty config:
+#   keybind = cmd+d=text:\x1bP1z|gzmx-split-right\x1b\\
+#   keybind = cmd+shift+d=text:\x1bP1z|gzmx-split-down\x1b\\
+ghostty_zmx_split_right_widget() {
+  emulate -L zsh
+  local wrapper="$(ghostty_zmx_wrapper_path 2>/dev/null)"
+  [[ -n "$wrapper" && -x "$wrapper" ]] || { print -u2 "ghostty-zmx: wrapper not found"; zle reset-prompt 2>/dev/null; return 0; }
+  "$wrapper" split right --tty "${TTY:-}"
+  zle reset-prompt 2>/dev/null || true
+}
+ghostty_zmx_split_down_widget() {
+  emulate -L zsh
+  local wrapper="$(ghostty_zmx_wrapper_path 2>/dev/null)"
+  [[ -n "$wrapper" && -x "$wrapper" ]] || { print -u2 "ghostty-zmx: wrapper not found"; zle reset-prompt 2>/dev/null; return 0; }
+  "$wrapper" split down --tty "${TTY:-}"
+  zle reset-prompt 2>/dev/null || true
+}
+_ghostty_zmx_install_split_widgets() {
+  [[ -o interactive ]] || return 0
+  [[ "${TERM_PROGRAM:-}" == "ghostty" ]] || return 0
+  zle -N ghostty_zmx_split_right_widget 2>/dev/null || return 0
+  zle -N ghostty_zmx_split_down_widget 2>/dev/null || return 0
+  bindkey '\eP1z|gzmx-split-right\e\\' ghostty_zmx_split_right_widget 2>/dev/null || true
+  bindkey '\eP1z|gzmx-split-down\e\\' ghostty_zmx_split_down_widget 2>/dev/null || true
+}
+
 _ghostty_zmx_auto_attach() {
   if [[ ! -o interactive ]]; then
     _ghostty_zmx_debug "auto-attach skipped reason=non-interactive"
@@ -2841,6 +2876,7 @@ if [[ "${GHOSTTY_ZMX_INTERNAL_POLLER:-0}" == "1" ]]; then
 fi
 
 _ghostty_zmx_install_accept_line_widget
+_ghostty_zmx_install_split_widgets
 # Always self-heal orphaned pollers on shell init, even when no remote-hosts
 # file exists yet. Leftover poller scripts from crashed/killed Ghostty
 # instances survive `pkill -f Ghostty-tip` (reparented to launchd) and
