@@ -1760,19 +1760,24 @@ OSA
 )" || return 1
   while read -r pid tty_path win_id tab_id; do
     [[ "$pid" =~ ^[0-9]+$ && "$tty_path" == /dev/* ]] || continue
-    # Walk descendants (BFS, depth-limited) for the session marker.
-    local queue="$pid" depth=0
-    while [[ -n "$queue" && $depth -lt 6 ]]; do
-      local next="" p
-      for p in $queue; do
+    # Walk descendants (BFS, depth-limited) for the session marker. Use an
+    # array (not string concatenation) so child pids don't acquire a leading
+    # space — a space-prefixed found_match fails the ^[0-9]+$ guard in the
+    # dead-pid cleanup, leaving stale projection rows that block re-projection.
+    local -a queue=() next=()
+    queue+=("$pid")
+    local depth=0 p
+    while (( ${#queue[@]} > 0 )) && (( depth < 6 )); do
+      next=()
+      for p in "${queue[@]}"; do
         args="$(ps -o args= -p "$p" 2>/dev/null)" || continue
         if [[ "$args" == *"--session ${session}"* || "$args" == *"zmx attach ${session}"* ]]; then
           found_pid="$pid" found_tty="$tty_path" found_win="$win_id" found_tab="$tab_id" found_match="$p"
           return 0
         fi
-        next="$next $(pgrep -P "$p" 2>/dev/null)"
+        next+=($(pgrep -P "$p" 2>/dev/null))
       done
-      queue="$(print -r -- $next)"
+      queue=("${next[@]}")
       depth=$(( depth + 1 ))
     done
   done <<< "$raw"
