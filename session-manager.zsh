@@ -2172,6 +2172,41 @@ os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$gho
   fi
 }
 
+# Pure decision function for the remote zmx probe. Takes (host, probe_out,
+# probe_rc) and either:
+#   - returns 0 and prints the parsed version on stdout (probe ok), or
+#   - returns 1 and prints a user-facing error message on stdout (with leading
+#     and trailing newlines so it renders on its own line in the pane).
+#
+# Extracted from the accept-line widget so the decision logic is unit-testable
+# without a Ghostty/zle context. The widget calls this and, on failure, prints
+# the message, clears BUFFER, and resets the prompt.
+#
+# probe_out encoding (from the remote `exit 0` probe command):
+#   "zmx:<version line>"  — zmx present; version line is e.g. "zmx\t\t0.6.0"
+#   "no-zmx"               — zmx not on the remote PATH
+#   "" (empty) + probe_rc!=0 — ssh connection itself failed (host down/refused/auth)
+ghostty_zmx_probe_result() {
+  emulate -L zsh
+  local host="$1" probe_out="$2" probe_rc="$3" version_value
+  if [[ "$probe_rc" -ne 0 ]]; then
+    print -P "\nghostty-zmx: could not reach $host (ssh exit $probe_rc). Is the host online and your ssh config/certs valid?\n"
+    return 1
+  fi
+  if [[ "$probe_out" == "no-zmx" ]]; then
+    print -P "\nghostty-zmx: remote host $host needs zmx 0.6.x on PATH; install zmx on $host and retry.\n"
+    return 1
+  fi
+  # probe_out is "zmx:<version line>"; the version line is e.g. "zmx\t\t0.6.0".
+  version_value="$(print -r -- "${probe_out#zmx:}" | awk '{print $2}')"
+  if [[ "$version_value" != 0.6.* ]]; then
+    print -P "\nghostty-zmx: remote host $host has zmx $version_value; ghostty-zmx needs zmx 0.6.x. Update zmx on $host and retry.\n"
+    return 1
+  fi
+  print -r -- "$version_value"
+  return 0
+}
+
 ghostty_zmx_accept_line() {
   emulate -L zsh
   setopt local_options no_sh_word_split
@@ -2297,20 +2332,30 @@ ghostty_zmx_accept_line() {
   done
   [[ "$_is_tsh" -eq 1 || "$_have_t" -eq 1 ]] || probe_argv+=(-T)
   _gzmx_widget_debug "widget probe host=$host_key session=$session argv=${probe_argv[*]}"
-  local version_output version_line version_value
+  local probe_out probe_rc probe_msg version_value
   # Source .zshrc so zmx is found even when it's only on the interactive PATH
   # (some users add ~/.local/bin to PATH in .zshrc, which is not sourced for
   # non-interactive `ssh -T host 'cmd'`). The projection itself runs with -t
   # (interactive) so .zshrc is sourced and zmx is on PATH there.
-  version_output="$("${probe_argv[@]}" 'source ~/.zshrc 2>/dev/null; command -v zmx >/dev/null 2>&1 && zmx version | head -1' 2>/dev/null)"
-  version_line="${version_output%%$'\n'*}"
-  version_value="$(print -r -- "$version_line" | awk '{print $2}')"
-  if [[ "$version_value" != 0.6.* ]]; then
-    print -r -- "ghostty-zmx: remote host needs zmx 0.6.x on PATH; install zmx on $host_key and retry."
+  #
+  # The remote probe always `exit 0`s when the ssh connection itself succeeds,
+  # so a non-zero rc unambiguously means the connection failed (host down,
+  # refused, auth/cert failure) — not a zmx problem. zmx availability is
+  # encoded in the stdout line ("zmx:<version>" or "no-zmx"), so we can tell
+  # "host reachable but zmx missing" apart from "host unreachable".
+  #
+  # `ssh -T` writes its diagnostics to stderr; suppress it so it does not
+  # clutter the pane.
+  probe_out="$("${probe_argv[@]}" 'source ~/.zshrc 2>/dev/null; if command -v zmx >/dev/null 2>&1; then printf "zmx:%s\n" "$(zmx version | head -1)"; else echo no-zmx; fi; exit 0' 2>/dev/null)"
+  probe_rc=$?
+  probe_msg="$(ghostty_zmx_probe_result "$host_key" "$probe_out" "$probe_rc")"
+  if [[ $? -ne 0 ]]; then
+    print -r -- "$probe_msg"
     BUFFER=""
     zle reset-prompt
     return
   fi
+  version_value="$probe_msg"
   _gzmx_widget_debug "widget probe-ok host=$host_key version=$version_value"
 
   # Open the projection window from THIS surface-shell (zle) context. The
