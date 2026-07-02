@@ -2293,8 +2293,7 @@ EOS
 if os.fork() != 0:
     os._exit(0)
 os.setsid()
-os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" "${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}" "$manager_src" </dev/null >"$poller_log" 2>&1 &
-    disown
+os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" "${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}" "$manager_src" </dev/null >"$poller_log" 2>&1 &!
   else
     nohup /bin/zsh -c 'nohup "/bin/zsh" "$0" "$@" </dev/null >"'$poller_log'" 2>&1 & disown; exit' "$script" "$ghostty_pid" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$interval" "${GHOSTTY_ZMX_DEBUG:-0}" "$_ghostty_app_name" "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}" "$ghostty_elapsed" "${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}" "$manager_src" </dev/null >/dev/null 2>&1 &!
   fi
@@ -2540,7 +2539,7 @@ OSA
   # and is PID-reuse-safe (elapsed-seconds token). See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   [[ "${GHOSTTY_ZMX_DISABLE_POLLER:-0}" != "1" ]] && ghostty_zmx_start_remote_poller force
-  print -r -- "ghostty-zmx: opened remote $host_key ($session)"
+  print -P "\nghostty-zmx: opened remote $host_key ($session)\n"
   BUFFER=""
   zle reset-prompt
 }
