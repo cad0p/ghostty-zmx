@@ -13,6 +13,10 @@ All notable changes to this project will be documented in this file.
 - *(v0.2)* Remote SSH/tsh session inheritance ([#18](https://github.com/cad0p/ghostty-zmx/pull/18))
 - *(v0.2)* Ship frozen v0.1 fallback manager for 1.3.x surfaces ([#20](https://github.com/cad0p/ghostty-zmx/pull/20))
 
+### 🐛 Bug Fixes
+
+- *(v0.2)* Correct widget error on unreachable host + newline formatting ([#21](https://github.com/cad0p/ghostty-zmx/pull/21))
+
 ### 📚 Documentation
 
 - Document Homebrew install paths ([#17](https://github.com/cad0p/ghostty-zmx/pull/17))
