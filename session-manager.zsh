@@ -2652,6 +2652,18 @@ ghostty_zmx_inherit_remote_context_if_any() {
     # `zmx attach` to exit without creating the session.
     # Source ~/.zshrc on the remote so zmx is found when it's only on the
     # interactive PATH (see ghostty_zmx_projection_command_string rationale).
+    #
+    # Known limitation: because the split's local shell sources .zshrc before
+    # this exec, plugins or Ghostty itself may issue terminal queries (OSC 11
+    # foreground color, CSI 6n cursor position, DA1/DA2) whose responses land
+    # in the tty's input buffer (or arrive shortly after exec). ssh then
+    # forwards those bytes to the remote pty, where the remote shell echoes
+    # them into the prompt (`11;rgb:...1R`). The correct fix is to bypass the
+    # local shell entirely by AppleScript-splitting with the wrapper as the
+    # surface command (like the widget path for new windows), so no .zshrc
+    # runs in the split pane. That's tracked as a follow-up; the shell-exec
+    # path here preserves inherit's simplicity at the cost of this cosmetic
+    # leak. See docs/manual-e2e.md "known limitations".
     exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "source ~/.zshrc 2>/dev/null; zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
   return 1

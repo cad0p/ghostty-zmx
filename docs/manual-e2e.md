@@ -393,9 +393,11 @@ This verifies that a native Ghostty split from a remote projection window inheri
 
 4. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
 
-### Known limitation
+### Known limitations
 
-True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
+**Simultaneous multi-client E2E** — True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
+
+**Terminal-query response leak on native splits** — When a user creates a native Ghostty split inside a remote-projection window (Cmd-D), the split pane briefly runs the user's local login shell (which sources `.zshrc`) before the inherit path `exec`s the wrapper. Plugins loaded by `.zshrc` (or Ghostty itself) can issue terminal queries such as OSC 11 (foreground color) and CSI 6n (cursor position). Ghostty's responses arrive on the tty as input; they may reach the pty AFTER the wrapper drains (before `exec ssh`) and are then forwarded to the remote zmx session, appearing in the prompt as literal text like `11;rgb:f7f7/f7f7/f7f71R`. The correct fix is to bypass the local shell for splits by AppleScript-splitting with the wrapper as the surface `command` (like the widget path does for new windows), so no `.zshrc` runs in the split pane. Tracked as a v0.2 follow-up; a shell-exec drain is not sufficient because Ghostty may deliver responses after `exec ssh` starts.
 
 ### Remote reboot scrollback restore
 
