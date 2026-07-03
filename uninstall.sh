@@ -20,6 +20,8 @@ for arg in "$@"; do
   esac
 done
 
+[[ -n "${HOME:-}" ]] || { print -u2 "HOME is not set"; exit 1; }
+
 install_dir="$HOME/.config/ghostty-zmx"
 zshrc="$HOME/.zshrc"
 zprofile="$HOME/.zprofile"

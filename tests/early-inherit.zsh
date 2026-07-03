@@ -79,6 +79,25 @@ EOS
   [[ -z "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" ]] || fail "early marker set even though identity was unavailable"
 ) || exit 1
 
+# If the wrapper is missing/non-executable, inherit must fail before mutating
+# remote layout state or setting the early marker. This makes partial installs
+# fail open to the later ~/.zshrc path rather than leaving orphaned server rows.
+(
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  export GHOSTTY_ZMX_DATA_HOME="$tmp/data"
+  export GHOSTTY_ZMX_INSTALL_DIR="$tmp/install-missing"
+  mkdir -p "$GHOSTTY_ZMX_DATA_HOME"
+  print -r -- $'h\ttsh\tzmx 0.6.0\tactive\t/tmp/should-not-run' > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts"
+  print -r -- $'h\tdeadbeef\tgzr-deadbeef-cafebabe-abc123-def456\t/dev/ttys999\t123\tattached\t1\taaaa\tbbbb' > "$GHOSTTY_ZMX_DATA_HOME/remote-projections"
+  unset GHOSTTY_ZMX_EARLY_INHERIT_RAN || true
+  source ./session-manager-lib.zsh
+  if ghostty_zmx_inherit_remote_context_if_any 'aaaa bbbb cccc 123 /dev/ttys999'; then
+    fail "inherit unexpectedly succeeded with missing wrapper"
+  fi
+  [[ -z "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" ]] || fail "early marker set despite missing wrapper"
+) || exit 1
+
 # The marker must never be exported by ghostty-zmx. Exporting it would leak into
 # nested shells and make later Ghostty surfaces skip their own early-inherit
 # checks incorrectly.

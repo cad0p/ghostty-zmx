@@ -14,6 +14,8 @@ for arg in "$@"; do
   esac
 done
 
+[[ -n "${HOME:-}" ]] || { print -u2 "HOME is not set"; exit 1; }
+
 repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
 source_lib="$repo_dir/session-manager-lib.zsh"
@@ -71,9 +73,13 @@ require_command() {
   fi
 }
 
-refuse_symlinked_install_dir() {
+validate_install_dir() {
   if [[ -L "$install_dir" ]]; then
     print -u2 "Refusing to install into symlinked install directory: $install_dir"
+    exit 1
+  fi
+  if [[ -e "$install_dir" && ! -d "$install_dir" ]]; then
+    print -u2 "Refusing to install into non-directory install path: $install_dir"
     exit 1
   fi
 }
@@ -238,7 +244,7 @@ print_plan() {
 require_command zmx
 require_command osascript
 require_command zsh
-refuse_symlinked_install_dir
+validate_install_dir
 
 # Best-effort capability probe. Warn (do not refuse) if the running Ghostty
 # lacks the 1.4.0 tty/pid AppleScript capability — remote features and
@@ -253,23 +259,21 @@ ensure_source_line "$zshrc" || exit 1
 backup_file "$zprofile"
 ensure_source_line "$zprofile" "$early_source_line" || exit 1
 
-mkdir -p "$install_dir"
-if [[ -L "$install_dir" ]]; then
-  print -u2 "Refusing to install into symlinked install directory: $install_dir"
-  exit 1
-fi
-install -m 0644 "$source_manager" "$manager_dest"
-install -m 0644 "$source_lib" "$lib_dest"
-install -m 0644 "$source_early_manager" "$early_manager_dest"
-install -m 0644 "$source_v01_manager" "$v01_manager_dest"
-install -m 0755 "$source_wrapper" "$wrapper_dest"
-install -m 0755 "$source_uninstall" "$uninstall_dest"
-install -m 0755 "$source_server_install" "$server_install_dest"
+validate_install_dir
+mkdir -p "$install_dir" || exit 1
+validate_install_dir
+install -m 0644 "$source_manager" "$manager_dest" || exit 1
+install -m 0644 "$source_lib" "$lib_dest" || exit 1
+install -m 0644 "$source_early_manager" "$early_manager_dest" || exit 1
+install -m 0644 "$source_v01_manager" "$v01_manager_dest" || exit 1
+install -m 0755 "$source_wrapper" "$wrapper_dest" || exit 1
+install -m 0755 "$source_uninstall" "$uninstall_dest" || exit 1
+install -m 0755 "$source_server_install" "$server_install_dest" || exit 1
 # Refresh the vendored Ghostty terminfo from the installed Ghostty at install
 # time so the copy always matches the laptop's Ghostty version (per the v0.2
 # design, "Vendored terminfo staleness"). If infocmp against the installed
 # Ghostty fails, fall back to the repo's committed copy.
-refresh_vendored_terminfo "$terminfo_dest"
+refresh_vendored_terminfo "$terminfo_dest" || exit 1
 print "Installed $manager_dest"
 print "Installed $lib_dest"
 print "Installed $early_manager_dest"

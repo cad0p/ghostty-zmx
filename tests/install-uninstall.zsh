@@ -16,6 +16,17 @@ STUB
 done
 export PATH="$stubbin:$PATH"
 
+if HOME='' "$repo_dir/install.sh" --yes > "$workdir/install-no-home.out" 2>&1; then
+  print -u2 "install succeeded with empty HOME"
+  exit 1
+fi
+grep -q 'HOME is not set' "$workdir/install-no-home.out" || { print -u2 "install missing HOME error not clear"; exit 1; }
+if HOME='' "$repo_dir/uninstall.sh" --yes > "$workdir/uninstall-no-home.out" 2>&1; then
+  print -u2 "uninstall succeeded with empty HOME"
+  exit 1
+fi
+grep -q 'HOME is not set' "$workdir/uninstall-no-home.out" || { print -u2 "uninstall missing HOME error not clear"; exit 1; }
+
 run_install() {
   HOME="$1" GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG="$2" GHOSTTY_ZMX_DATA_HOME="$3" "$repo_dir/install.sh" "${@:4}"
 }
@@ -61,6 +72,18 @@ if run_install "$home_symlink_install" "$config_symlink_install" "$data_symlink_
 fi
 grep -q 'Refusing to install into symlinked install directory' "$workdir/symlink-install.out" || { print -u2 "symlinked install directory refusal missing"; exit 1; }
 [[ ! -e "$install_target/session-manager.zsh" ]] || { print -u2 "symlinked install target was written"; exit 1; }
+
+home_file_install="$workdir/home-file-install"
+config_file_install="$workdir/config-file-install/config.ghostty"
+data_file_install="$workdir/share-file-install/ghostty-zmx"
+mkdir -p "$home_file_install/.config" "${config_file_install:h}" "$data_file_install"
+touch "$home_file_install/.config/ghostty-zmx"
+if run_install "$home_file_install" "$config_file_install" "$data_file_install" --yes > "$workdir/file-install.out" 2>&1; then
+  print -u2 "regular-file install path was accepted"
+  exit 1
+fi
+grep -q 'Refusing to install into non-directory install path' "$workdir/file-install.out" || { print -u2 "regular-file install path refusal missing"; exit 1; }
+[[ ! -e "$home_file_install/.zshrc" && ! -e "$home_file_install/.zprofile" ]] || { print -u2 "regular-file install path modified shell startup files"; exit 1; }
 
 home="$workdir/home"
 config="$workdir/config/config.ghostty"
