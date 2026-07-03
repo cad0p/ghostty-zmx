@@ -291,7 +291,7 @@ fi
 if [[ "$session" == gzr-* ]]; then
   local _hist_file="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/history/$host/${session}.txt"
   if [[ -s "$_hist_file" ]]; then
-    _gzmx_wdebug "reboot-restore host=$host session=$session snapshot=$_hist_file add_argv=${_add_argv[*]} remote_zmx=$_remote_zmx"
+    _gzmx_wdebug "reboot-restore host=$host session=$session snapshot=$_hist_file"
     # Check whether the remote session already exists (reattach, not reboot).
     # Use _add_argv (transport argv without the 'zmx attach ...' remote command
     # arg) so the injection ssh calls don't carry the attach command. ssh joins

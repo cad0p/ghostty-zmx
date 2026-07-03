@@ -2030,7 +2030,6 @@ while :; do
     _ghostty_zmx_debug "poller stopped ghostty_pid=$ghostty_pid reason=pid-reuse saved=$ghostty_elapsed cur=$cur_elapsed"
     break
   fi
-  _ghostty_zmx_debug "poller cycle start ghostty_pid=$ghostty_pid startup_grace=$startup_grace elapsed=$ghostty_elapsed"
   ghostty_zmx_poll_once "$startup_grace" "$ghostty_pid"
   startup_grace=0
   sleep "$interval"
@@ -2323,7 +2322,6 @@ OSA
   # command tree). The widget only records host metadata here and starts the
   # poller. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
-  _gzmx_widget_debug "widget write-hosts host=$host_key transport=$transport version=$version_value zmx_path=${zmx_path:-empty}"
   { awk -F '\t' -v h="$host_key" '$1 != h { print }' "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null || true
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$host_key" "$transport" "$version_value" active "$prefix_string" "$zmx_path"
   } > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" 2>/dev/null && mv "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null
