@@ -141,6 +141,18 @@ run_install "$home" "$config" "$data" --yes > /dev/null
 [[ "$(grep -cF 'session-manager-early.zsh' "$home/.zprofile")" == 1 ]] || { print -u2 "early source line not idempotent"; exit 1; }
 [[ "$(grep -c '^# BEGIN ghostty-zmx$' "$config")" == 1 ]] || { print -u2 "managed block not idempotent"; exit 1; }
 
+home_blank_cycle="$workdir/home-blank-cycle"
+config_blank_cycle="$workdir/config-blank-cycle/config.ghostty"
+data_blank_cycle="$workdir/share-blank-cycle/ghostty-zmx"
+state_blank_cycle="$workdir/state-blank-cycle/ghostty-zmx"
+mkdir -p "$home_blank_cycle" "${config_blank_cycle:h}" "$data_blank_cycle" "$state_blank_cycle"
+print -r -- 'export USER_PROFILE=1' > "$home_blank_cycle/.zprofile"
+run_install "$home_blank_cycle" "$config_blank_cycle" "$data_blank_cycle" --yes > /dev/null
+run_uninstall "$home_blank_cycle" "$config_blank_cycle" "$data_blank_cycle" "$state_blank_cycle" --yes > /dev/null
+run_install "$home_blank_cycle" "$config_blank_cycle" "$data_blank_cycle" --yes > /dev/null
+run_uninstall "$home_blank_cycle" "$config_blank_cycle" "$data_blank_cycle" "$state_blank_cycle" --yes > /dev/null
+[[ "$(grep -c '^$' "$home_blank_cycle/.zprofile" 2>/dev/null || echo 0)" -le 1 ]] || { print -u2 "install/uninstall cycles accumulated blank lines in .zprofile"; exit 1; }
+
 home_existing="$workdir/home-existing"
 config_existing="$workdir/config-existing/config.ghostty"
 data_existing="$workdir/share-existing/ghostty-zmx"

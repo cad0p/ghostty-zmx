@@ -79,6 +79,16 @@ EOS
   [[ -z "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" ]] || fail "early marker set even though identity was unavailable"
 ) || exit 1
 
+# `ssh -T` must be inserted before the destination, not appended after it
+# where OpenSSH treats it as the remote command (`ssh host -T`).
+(
+  source ./session-manager-lib.zsh
+  [[ "$(ghostty_zmx_notty_prefix 'ssh myhost')" == "ssh -T myhost" ]] || fail "ssh -T inserted after destination"
+  [[ "$(ghostty_zmx_notty_prefix 'ssh -F /tmp/cfg myhost')" == "ssh -F /tmp/cfg -T myhost" ]] || fail "ssh -F option arg confused destination detection"
+  [[ "$(ghostty_zmx_notty_prefix 'ssh -t -p 2222 myhost')" == "ssh -p 2222 -T myhost" ]] || fail "ssh -t removal/-T insertion failed with port option"
+  [[ "$(ghostty_zmx_notty_prefix 'tsh ssh -t myhost')" == "tsh ssh myhost" ]] || fail "tsh notty prefix unexpectedly inserted -T"
+) || exit 1
+
 # If the wrapper is missing/non-executable, inherit must fail before mutating
 # remote layout state or setting the early marker. This makes partial installs
 # fail open to the later ~/.zshrc path rather than leaving orphaned server rows.
@@ -96,6 +106,26 @@ EOS
     fail "inherit unexpectedly succeeded with missing wrapper"
   fi
   [[ -z "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" ]] || fail "early marker set despite missing wrapper"
+) || exit 1
+
+# If the target tty vanished before exec, inherit must fail before remote layout
+# mutation / marker set so ~/.zshrc can retry the legacy path.
+(
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  export GHOSTTY_ZMX_DATA_HOME="$tmp/data"
+  export GHOSTTY_ZMX_INSTALL_DIR="$tmp/install"
+  mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_INSTALL_DIR"
+  : > "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
+  chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
+  print -r -- $'h\ttsh\tzmx 0.6.0\tactive\t/tmp/should-not-run' > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts"
+  print -r -- $'h\tdeadbeef\tgzr-deadbeef-cafebabe-abc123-def456\t/dev/ghostty-zmx-missing-tty\t123\tattached\t1\taaaa\tbbbb' > "$GHOSTTY_ZMX_DATA_HOME/remote-projections"
+  unset GHOSTTY_ZMX_EARLY_INHERIT_RAN || true
+  source ./session-manager-lib.zsh
+  if ghostty_zmx_inherit_remote_context_if_any 'aaaa bbbb cccc 123 /dev/ghostty-zmx-missing-tty'; then
+    fail "inherit unexpectedly succeeded with vanished tty"
+  fi
+  [[ -z "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" ]] || fail "early marker set despite vanished tty"
 ) || exit 1
 
 # The marker must never be exported by ghostty-zmx. Exporting it would leak into

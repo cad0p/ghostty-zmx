@@ -280,7 +280,7 @@ ghostty_zmx_remote_prefix_for_host() {
 
 ghostty_zmx_notty_prefix() {
   emulate -L zsh
-  local prefix_string="$1" _w
+  local prefix_string="$1" _w expect_arg=0
   local -a probe=(${(z)prefix_string}) notty=()
   local inserted_t=0
   local i=1
@@ -295,13 +295,42 @@ ghostty_zmx_notty_prefix() {
   fi
   for (( ; i <= ${#probe}; i++ )); do
     _w="${probe[$i]}"
+    if [[ "$expect_arg" -eq 1 ]]; then
+      notty+=("$_w")
+      expect_arg=0
+      continue
+    fi
     case "$_w" in
-      -t|-tt|--tty) ;;  # drop forced pty
-      -T) [[ "$is_tsh" -eq 0 ]] && { notty+=(-T); inserted_t=1 } ;;
-      *) notty+=("$_w") ;;
+      -t|-tt|--tty)
+        ;;  # drop forced pty
+      -T)
+        [[ "$is_tsh" -eq 0 ]] && { notty+=(-T); inserted_t=1; }
+        ;;
+      -l|-p|-J|-o|-i|-F|-S|-b|-c|-m|-W|-L|-R|-D|--login|--proxy|--user|--port|--identity)
+        notty+=("$_w")
+        expect_arg=1
+        ;;
+      --login=*|--proxy=*|--user=*|--port=*|--identity=*)
+        notty+=("$_w")
+        ;;
+      --)
+        [[ "$is_tsh" -eq 0 && "$inserted_t" -eq 0 ]] && { notty+=(-T); inserted_t=1; }
+        notty+=(--)
+        ;;
+      -*)
+        notty+=("$_w")
+        ;;
+      *)
+        # For OpenSSH, -T must appear before the destination. Appending it at
+        # the end turns it into the remote command (`ssh host -T ...`). Insert
+        # it immediately before the first non-option word (the destination),
+        # preserving option arguments such as `ssh -F config host`.
+        [[ "$is_tsh" -eq 0 && "$inserted_t" -eq 0 ]] && { notty+=(-T); inserted_t=1; }
+        notty+=("$_w")
+        ;;
     esac
   done
-  [[ "$is_tsh" -eq 1 || "$inserted_t" -eq 1 ]] || notty+=(-T)
+  [[ "$is_tsh" -eq 0 && "$inserted_t" -eq 0 ]] && notty+=(-T)
   print -r -- "${(j: :)notty}"
 }
 
@@ -329,6 +358,10 @@ ghostty_zmx_inherit_remote_context_if_any() {
   cur_tab="$(print -r -- "$identity" | awk '{print $2}')"
   cur_tty="$(print -r -- "$identity" | awk '{print $5}')"
   [[ -n "$cur_win" && -n "$cur_tab" && "$cur_tty" == /dev/* ]] || return 1
+  # Avoid mutating remote layout/projection state if the tty has disappeared or
+  # is not usable for the final exec redirections. In that case the early hook
+  # must fail open so the later ~/.zshrc manager can retry the legacy path.
+  [[ -r "$cur_tty" && -w "$cur_tty" ]] || return 1
   local host workspace parent_session tty_path pid state updated local_win local_tab norm_win norm_tab prefix session workspace_id remote_win remote_tab parent_pane pane parent axis ratio helper
   while IFS=$'\t' read -r host workspace parent_session tty_path pid state updated local_win local_tab; do
     [[ "$state" == "attached" || "$state" == "opening" ]] || continue

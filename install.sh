@@ -92,7 +92,11 @@ ensure_source_line() {
     return 0
   fi
   {
-    print ""
+    # Add a separator only when needed. This preserves readability without
+    # accumulating one blank line per install/uninstall cycle.
+    if [[ -s "$file" ]] && [[ -n "$(tail -n 1 "$file" 2>/dev/null)" ]]; then
+      print ""
+    fi
     print "# ghostty-zmx"
     print -r -- "$line"
   } >> "$file"
