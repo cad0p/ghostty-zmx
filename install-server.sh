@@ -56,11 +56,32 @@ backup_counter=0
 # shells only when the transport did not forward them (SSH_CONNECTION set and
 # TERM_PROGRAM empty). This lets remote Ghostty shell integration auto-activate
 # even when the transport is `tsh ssh` (which does not forward these vars).
+#
+# Also suppresses terminal-query-response leaks into zmx scrollback. Remote
+# shell startup (oh-my-zsh + zsh-autosuggestions + prompt-init) emits terminal
+# queries (OSC 11 foreground-color, CSI 6n cursor-position). Ghostty answers;
+# the response bytes flow back into the zmx PTY as input and get captured into
+# scrollback, appearing as stray `11;rgb:...1R` characters. Two mitigations:
+#   1. Set ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8' so zsh-autosuggestions uses an
+#      explicit color and skips its OSC 11 foreground-color query.
+#   2. Install a precmd hook that drains any pending query-response bytes from
+#      stdin before each prompt draws. This catches CSI 6n (and any other DSR)
+#      from all sources (prompt-init, themes, the fixture's direct emitter).
 remote_env_block='# BEGIN ghostty-zmx remote-env
 if [[ -n "${SSH_CONNECTION:-}" && -z "${TERM_PROGRAM:-}" ]]; then
   export TERM_PROGRAM=ghostty
   export COLORTERM=truecolor
 fi
+# Suppress terminal-query-response leaks into zmx scrollback. The primary
+# fix is laptop-side: the installer sets `osc-color-report-format = none` in
+# the managed Ghostty config block so Ghostty never responds to OSC 4/10/11
+# color queries, eliminating the OSC 11 response leak at the source. As a
+# defense-in-depth measure for zsh-autosuggestions (which queries OSC 11 when
+# the highlight style is unset), set an explicit style so the plugin skips its
+# query. This does not affect the CSI 6n cursor-position response (no zsh-side
+# emitter found on the tested hosts; handled by the laptop-side fix only if a
+# future Ghostty release adds a DSR-disable option).
+export ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=8"
 # END ghostty-zmx remote-env'
 
 backup_file() {

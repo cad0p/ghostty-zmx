@@ -42,6 +42,22 @@ RUN case "$TARGETARCH" in \
 # non-interactive PATH lacks zmx — matching pcad-dev and exercising the probe.
 RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/gzmx/.zshrc
 
+# Emit a terminal query at interactive startup to mirror pcad-dev's remote
+# shell (oh-my-zsh + zsh-autosuggestions), which sends an OSC 11
+# (foreground-color) query during init. Ghostty answers; the response flows
+# back into the zmx PTY and leaks into scrollback if no mitigation is in place.
+# This makes the control-sequence-leak E2E scenario deterministic without
+# installing full oh-my-zsh. The fix is laptop-side: the installer sets
+# `osc-color-report-format = none` in the managed Ghostty config block so
+# Ghostty never responds to OSC 11 queries, eliminating the leak at the source.
+# Only emit for interactive shells (zsh startup file ordering: .zshrc runs
+# for interactive shells).
+RUN printf '%s\n' \
+      'if [[ -o interactive ]]; then' \
+      '  # OSC 11 ? (query foreground color) — Ghostty answers with rgb:...' \
+      "  printf '\\e]11;?\\a'" \
+      'fi' >> /home/gzmx/.zshrc
+
 USER root
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]

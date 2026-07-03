@@ -178,6 +178,7 @@ gzmx_e2e_ghostty_launch() {
     --env=GHOSTTY_ZMX_STATE_HOME="$GZMX_E2E_STATE_HOME" \
     --window-save-state=never \
     --confirm-close-surface=false \
+    --osc-color-report-format=none \
     >/dev/null 2>&1 &
   GZMX_E2E_GHOSTTY_PID=$!
   GZMX_E2E_STARTED_GHOSTTY=1
@@ -412,15 +413,18 @@ gzmx_e2e_assert_remote_history_contains() {
   gzmx_e2e_pass "marker '$marker' found in $session history"
 }
 
-# Assert NO control-sequence leak (OSC 11 / CSI 6n response bytes) in a remote
-# session's zmx history. The leak manifests as `11;rgb:...1R` or `;rgb:...` in
-# the scrollback.
+# Assert NO control-sequence leak (OSC 11 response bytes) in a remote session's
+# zmx history. The leak manifests as `11;rgb:...` or `;rgb:...` in the
+# scrollback. The fix is laptop-side: `osc-color-report-format = none` makes
+# Ghostty not respond to OSC 4/10/11 color queries, so no response bytes are
+# generated to leak. CSI 6n (cursor-position) responses are a separate,
+# lower-severity known limitation (no Ghostty config disables DSR) and are not
+# asserted here.
 gzmx_e2e_assert_no_query_leak() {
   emulate -L zsh
   local session="$1" hist zmx_bin
   zmx_bin="$(gzmx_e2e_fixture_zmx)"
   hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin history $session 2>/dev/null" 2>/dev/null)"
-  # OSC 11 response: "11;rgb:rrrr/gggg/bbbb" ; CSI 6n response: "<n>;<m>R" tail "1R"
   if [[ "$hist" == *"11;rgb:"* || "$hist" == *";rgb:"* ]]; then
     print -r -- "$hist" | grep -E "11;rgb:|;rgb:" | head -3 >&2
     gzmx_e2e_fail "query-response leak detected in $session history"
