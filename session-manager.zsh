@@ -1841,13 +1841,13 @@ ghostty_zmx_kill_orphaned_pollers() {
     # Is that Ghostty PID still alive? If not, the poller is orphaned.
     if ! kill -0 "$ppid_from_name" 2>/dev/null; then
       # Find the actual zsh process running this script and kill it.
-      local _zpid
+      local _zpid=""
       for _zpid in $(pgrep -f "remote-poller-${ppid_from_name}\.zsh" 2>/dev/null); do
         kill -9 "$_zpid" 2>/dev/null || true
       done
       # Clean up its lock dir too. Use nullglob (N) so a non-matching glob is
       # empty instead of erroring with "no matches found" under nomatch.
-      local _oldlock
+      local _oldlock=""
       for _oldlock in "$runtime"/remote-poller-*-${ppid_from_name}.lock(N); do
         rm -rf "$_oldlock" 2>/dev/null || true
       done
@@ -1863,7 +1863,7 @@ ghostty_zmx_kill_orphaned_pollers() {
     # only treat as orphan if the lock dir has NO elapsed file (pre-fix style).
     local _lock="$runtime/remote-poller-${_ghostty_app_name}-${ppid_from_name}.lock"
     if [[ -d "$_lock" && ! -f "$_lock/elapsed" ]]; then
-      local _zpid
+      local _zpid=""
       for _zpid in $(pgrep -f "remote-poller-${ppid_from_name}\.zsh" 2>/dev/null); do
         kill -9 "$_zpid" 2>/dev/null || true
       done
