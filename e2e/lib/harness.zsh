@@ -45,6 +45,10 @@ gzmx_e2e_log() { print -P -- "%F{blue}e2e%f $*" >&2 }
 gzmx_e2e_pass() { print -P -- "%F{green}✓ PASS%f $*" >&2 }
 gzmx_e2e_fail() {
   print -P -- "%F{red}✗ FAIL%f $*" >&2
+  # Preserve the tmpdir on failure for post-mortem inspection.
+  GZMX_E2E_KEEP_TMPDIR=1
+  # Print debug log tail before cleanup.
+  gzmx_e2e_debug_tail 50
   gzmx_e2e_cleanup
   exit 1
 }
@@ -76,12 +80,11 @@ gzmx_e2e_fixture_sshd_up() {
     ( cd "$GZMX_E2E_FIXTURE_DIR" && ./up.sh ) || gzmx_e2e_fail "sshd fixture up failed"
     GZMX_E2E_STARTED_DOCKER=1
   fi
-  # Write a disposable sshconfig pointing at the fixture.
-  local key="$GZMX_E2E_FIXTURE_DIR/id_ed25519"
-  [[ -r "$key" ]] || key="$GZMX_E2E_FIXTURE_DIR/id_ed25519.pub"
-  # up.sh generates id_ed25519 (private) + .pub; use the private key.
-  key="$GZMX_E2E_FIXTURE_DIR/id_ed25519"
-  [[ -r "$key" ]] || gzmx_e2e_fail "fixture ssh key missing: $key"
+  # up.sh generates the fixture key at /tmp/ghostty-zmx-docker-fixture/id_ed25519
+  # (shared across runs). Use that canonical location so the harness and the
+  # fixture's own sshconfig agree.
+  local key="/tmp/ghostty-zmx-docker-fixture/id_ed25519"
+  [[ -r "$key" ]] || gzmx_e2e_fail "fixture ssh key missing: $key (run up.sh first)"
   cat > "$GZMX_E2E_SSHCONFIG" <<EOF
 Host $GZMX_E2E_FIXTURE_HOST
   HostName 127.0.0.1
@@ -134,9 +137,28 @@ gzmx_e2e_fixture_install_server() {
   gzmx_e2e_log "server files installed on fixture"
 }
 
-# Launch Ghostty-tip with disposable env. Does NOT use -e /bin/zsh (triggers
-# macOS execute prompt). Returns as soon as Ghostty reports a version via
-# AppleScript (surface registration stable). Records the PID for cleanup.
+# Reset the fixture's ghostty-zmx server-side state so prior runs don't leak
+# `present` rows into the next scenario. Wipes remote-layout, remote-layout.rev,
+# the lock dir, and kills any lingering zmx sessions. Must be called after
+# install_server (so the helper is present) and before any scenario logic.
+gzmx_e2e_fixture_reset_server_state() {
+  emulate -L zsh
+  ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" '
+    rm -rf ~/.local/share/ghostty-zmx/remote-layout ~/.local/share/ghostty-zmx/remote-layout.rev ~/.local/share/ghostty-zmx/remote-layout.lock
+    # Kill any lingering zmx sessions (gzr-* and zmx-*).
+    for s in $(zmx list 2>/dev/null | awk "{print \$1}"); do
+      zmx kill "$s" >/dev/null 2>&1 || true
+    done
+    mkdir -p ~/.local/share/ghostty-zmx
+  ' 2>/dev/null || true
+  gzmx_e2e_log "fixture server state reset"
+}
+
+# Launch Ghostty-tip directly (NOT via `open -na`, which attaches to an
+# already-running instance and breaks isolation). Launching the binary as a
+# child process gives us an exact PID to track and kill, plus a clean
+# AppleScript surface (one process = one app = unambiguous window counts).
+# Does NOT use -e /bin/zsh (triggers the macOS execute prompt).
 gzmx_e2e_ghostty_launch() {
   emulate -L zsh
   [[ -x "$GZMX_E2E_GHOSTTY_BIN" ]] || gzmx_e2e_fail "Ghostty binary not found: $GZMX_E2E_GHOSTTY_BIN"
@@ -144,24 +166,28 @@ gzmx_e2e_ghostty_launch() {
   printf '%s\tssh\t0.6.0\tactive\tssh -t -F %s %s\n' \
     "$GZMX_E2E_FIXTURE_HOST" "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
     > "$GZMX_E2E_DATA_HOME/remote-hosts"
-  open -na "/Applications/${GZMX_E2E_GHOSTTY_APP}.app" --args \
+  # Launch as a child process; disown so the harness's own exit doesn't kill it
+  # prematurely (we kill it explicitly in gzmx_e2e_ghostty_quit).
+  "$GZMX_E2E_GHOSTTY_BIN" \
     --env=GHOSTTY_ZMX_AUTO_ATTACH=1 \
     --env=GHOSTTY_ZMX_DEBUG=1 \
     --env=GHOSTTY_ZMX_DATA_HOME="$GZMX_E2E_DATA_HOME" \
     --env=GHOSTTY_ZMX_STATE_HOME="$GZMX_E2E_STATE_HOME" \
     --window-save-state=never \
-    --confirm-close-surface=false
+    --confirm-close-surface=false \
+    >/dev/null 2>&1 &
+  GZMX_E2E_GHOSTTY_PID=$!
   GZMX_E2E_STARTED_GHOSTTY=1
+  disown "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || true
   # Wait for Ghostty to be AppleScript-addressable and report a surface.
   local i
   for (( i=1; i<=40; i++ )); do
+    kill -0 "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || gzmx_e2e_fail "Ghostty exited during launch"
     if osascript -e "tell application \"$GZMX_E2E_GHOSTTY_APP\" to get version" >/dev/null 2>&1; then
-      GZMX_E2E_GHOSTTY_PID="$(pgrep -f "/Applications/${GZMX_E2E_GHOSTTY_APP}.app/Contents/MacOS" | head -1)"
-      [[ -n "$GZMX_E2E_GHOSTTY_PID" ]] && break
+      break
     fi
     sleep 0.5
   done
-  [[ -n "$GZMX_E2E_GHOSTTY_PID" ]] || gzmx_e2e_fail "Ghostty did not launch"
   # Wait for at least one window + a focused terminal.
   for (( i=1; i<=40; i++ )); do
     local wc="$(osascript -e "tell application \"$GZMX_E2E_GHOSTTY_APP\" to count of windows" 2>/dev/null)"
@@ -172,19 +198,25 @@ gzmx_e2e_ghostty_launch() {
 }
 
 # Quit the disposable Ghostty we launched (do NOT touch a user's real session).
+# Kills the whole process group so the reaper/poller children die too.
 gzmx_e2e_ghostty_quit() {
   emulate -L zsh
+  setopt local_options no_err_return
   [[ "$GZMX_E2E_STARTED_GHOSTTY" == "1" ]] || return 0
   [[ -n "$GZMX_E2E_GHOSTTY_PID" ]] || return 0
-  # Kill only the PID we launched, by exact match.
+  # Kill the main Ghostty process; this also tears down its surfaces, which
+  # causes the manager's reaper/poller children to exit on their next cycle.
   kill "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || true
-  # Wait for it to exit.
   local i
   for (( i=1; i<=20; i++ )); do
     kill -0 "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || break
     sleep 0.25
   done
   kill -9 "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || true
+  # Sweep any orphaned reaper/poller children the manager spawned under the
+  # disposable runtime dir. These are identified by the runtime path pattern,
+  # which is unique to this harness run (GZMX_E2E_GHOSTTY_PID).
+  pkill -9 -f "ghostty-zmx-501/(reaper|remote-poller)-${GZMX_E2E_GHOSTTY_PID}" 2>/dev/null || true
   GZMX_E2E_STARTED_GHOSTTY=0
 }
 
@@ -257,12 +289,26 @@ gzmx_e2e_wait_for() {
   return 1
 }
 
+# The absolute zmx path on the fixture (zmx is NOT on the non-interactive PATH —
+# it's only added in .zshrc, mirroring pcad-dev). All fixture zmx calls must use
+# this absolute path. Probed once and cached.
+GZMX_E2E_FIXTURE_ZMX=""
+
+gzmx_e2e_fixture_zmx() {
+  emulate -L zsh
+  [[ -n "$GZMX_E2E_FIXTURE_ZMX" ]] && { print -r -- "$GZMX_E2E_FIXTURE_ZMX"; return 0 }
+  GZMX_E2E_FIXTURE_ZMX="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+    'command -v zmx 2>/dev/null || ls /home/gzmx/.local/bin/zmx 2>/dev/null || echo zmx' 2>/dev/null)"
+  print -r -- "$GZMX_E2E_FIXTURE_ZMX"
+}
+
 # Assert the fixture has N attached clients on gzr-* sessions.
 gzmx_e2e_assert_remote_clients() {
   emulate -L zsh
-  local expected="$1" actual
+  local expected="$1" actual zmx_bin
+  zmx_bin="$(gzmx_e2e_fixture_zmx)"
   actual="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
-    'zmx list 2>/dev/null | grep "^gzr-" | grep -c "clients=[1-9]"' 2>/dev/null)"
+    "$zmx_bin list 2>/dev/null | grep 'name=gzr-' | grep -c 'clients=[1-9]'" 2>/dev/null)"
   [[ "$actual" == "$expected" ]] \
     || gzmx_e2e_fail "remote clients: expected $expected, got $actual"
   gzmx_e2e_pass "remote clients == $expected"
@@ -271,11 +317,11 @@ gzmx_e2e_assert_remote_clients() {
 # Wait for N attached remote clients (polls, since attach is async over ssh).
 gzmx_e2e_wait_remote_clients() {
   emulate -L zsh
-  local expected="$1" seconds="${2:-30}" actual
-  local i
+  local expected="$1" seconds="${2:-30}" actual i zmx_bin
+  zmx_bin="$(gzmx_e2e_fixture_zmx)"
   for (( i=1; i<=seconds*4; i++ )); do
     actual="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
-      'zmx list 2>/dev/null | grep "^gzr-" | grep -c "clients=[1-9]"' 2>/dev/null)"
+      "$zmx_bin list 2>/dev/null | grep 'name=gzr-' | grep -c 'clients=[1-9]'" 2>/dev/null)"
     [[ "$actual" == "$expected" ]] && { gzmx_e2e_pass "remote clients == $expected (after ${i} polls)"; return 0; }
     sleep 0.25
   done
@@ -285,8 +331,9 @@ gzmx_e2e_wait_remote_clients() {
 # Assert a marker string is present in a remote session's zmx history (scrollback).
 gzmx_e2e_assert_remote_history_contains() {
   emulate -L zsh
-  local session="$1" marker="$2" hist
-  hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "zmx history $session 2>/dev/null")"
+  local session="$1" marker="$2" hist zmx_bin
+  zmx_bin="$(gzmx_e2e_fixture_zmx)"
+  hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin history $session 2>/dev/null" 2>/dev/null)"
   [[ "$hist" == *"$marker"* ]] \
     || gzmx_e2e_fail "marker '$marker' not in $session history"
   gzmx_e2e_pass "marker '$marker' found in $session history"
@@ -297,8 +344,9 @@ gzmx_e2e_assert_remote_history_contains() {
 # the scrollback.
 gzmx_e2e_assert_no_query_leak() {
   emulate -L zsh
-  local session="$1" hist
-  hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "zmx history $session 2>/dev/null")"
+  local session="$1" hist zmx_bin
+  zmx_bin="$(gzmx_e2e_fixture_zmx)"
+  hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin history $session 2>/dev/null" 2>/dev/null)"
   # OSC 11 response: "11;rgb:rrrr/gggg/bbbb" ; CSI 6n response: "<n>;<m>R" tail "1R"
   if [[ "$hist" == *"11;rgb:"* || "$hist" == *";rgb:"* ]]; then
     print -r -- "$hist" | grep -E "11;rgb:|;rgb:" | head -3 >&2
@@ -307,15 +355,23 @@ gzmx_e2e_assert_no_query_leak() {
   gzmx_e2e_pass "no query-response leak in $session history"
 }
 
-# Assert the remote shell's cwd (via OSC 7 in zmx history, or `zmx run` pwd) for a session.
+# Assert the remote shell's cwd for a session (via zmx run pwd).
 gzmx_e2e_assert_remote_cwd() {
   emulate -L zsh
-  local session="$1" expected="$2" actual
-  # Use zmx run to print pwd in the session's shell (non-interactive).
-  actual="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "zmx run $session pwd 2>/dev/null" 2>/dev/null)"
+  local session="$1" expected="$2" actual zmx_bin
+  zmx_bin="$(gzmx_e2e_fixture_zmx)"
+  actual="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin run $session pwd 2>/dev/null" 2>/dev/null)"
   [[ "$actual" == "$expected" ]] \
     || gzmx_e2e_fail "remote cwd: expected $expected, got $actual"
   gzmx_e2e_pass "remote cwd == $expected"
+}
+
+# Return the remote-layout row (TSV) for a session, or empty if not present.
+gzmx_e2e_remote_layout_row() {
+  emulate -L zsh
+  local session="$1" helper=/home/gzmx/.config/ghostty-zmx/ghostty-zmx-remote-layout
+  ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+    "$helper read 2>/dev/null" 2>/dev/null | awk -F '\t' -v s="$session" '$5 == s { print }'
 }
 
 # --- debug -------------------------------------------------------------------
@@ -334,7 +390,11 @@ gzmx_e2e_cleanup() {
   setopt local_options no_err_return
   gzmx_e2e_ghostty_quit
   gzmx_e2e_fixture_sshd_down
-  [[ -n "$GZMX_E2E_TMPDIR" ]] && rm -rf "$GZMX_E2E_TMPDIR" 2>/dev/null
+  if [[ "${GZMX_E2E_KEEP_TMPDIR:-0}" != "1" && -n "$GZMX_E2E_TMPDIR" ]]; then
+    rm -rf "$GZMX_E2E_TMPDIR" 2>/dev/null
+  else
+    [[ -n "$GZMX_E2E_TMPDIR" ]] && gzmx_e2e_warn "tmpdir preserved: $GZMX_E2E_TMPDIR"
+  fi
 }
 
 # Install cleanup on exit (normal or signal).
