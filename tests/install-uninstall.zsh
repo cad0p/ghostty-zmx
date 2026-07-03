@@ -136,6 +136,9 @@ zsh -n "$server_home/.config/ghostty-zmx/session-manager.zsh" || { print -u2 "se
 zsh -n "$server_home/.config/ghostty-zmx/session-manager-lib.zsh" || { print -u2 "server shared lib fails syntax check"; exit 1; }
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$server_home/.zshrc" || { print -u2 "server install source line missing"; exit 1; }
 grep -q 'session-manager-lib.zsh' "$workdir/server-install.out" || { print -u2 "server install did not report shared lib"; exit 1; }
+# Regression (round 15): managed remote-env block must be safe under `set -u`
+# when TERM_PROGRAM is unset (common on ssh/tsh sessions).
+env -u TERM_PROGRAM HOME="$server_home" SSH_CONNECTION=1 zsh -fc 'set -u; source "$HOME/.zshrc"; [[ "${TERM_PROGRAM:-}" == ghostty && "${COLORTERM:-}" == truecolor ]]' || { print -u2 "server remote-env block is not nounset-safe"; exit 1; }
 
 # Regression (round 14): install-server.sh must refuse a regular-file install
 # path before mutating shell startup files, mirroring the round-3 install.sh

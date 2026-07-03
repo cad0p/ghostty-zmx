@@ -55,7 +55,7 @@ backup_counter=0
 # TERM_PROGRAM empty). This lets remote Ghostty shell integration auto-activate
 # even when the transport is `tsh ssh` (which does not forward these vars).
 remote_env_block='# BEGIN ghostty-zmx remote-env
-if [[ -n "$SSH_CONNECTION" && -z "$TERM_PROGRAM" ]]; then
+if [[ -n "${SSH_CONNECTION:-}" && -z "${TERM_PROGRAM:-}" ]]; then
   export TERM_PROGRAM=ghostty
   export COLORTERM=truecolor
 fi
