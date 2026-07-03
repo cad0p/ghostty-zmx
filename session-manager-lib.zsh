@@ -388,6 +388,9 @@ ghostty_zmx_inherit_remote_context_if_any() {
     prefix="$(ghostty_zmx_remote_prefix_for_host "$host")"
     [[ -n "$prefix" ]] || continue
     local wrapper_path="$(ghostty_zmx_wrapper_path)"
+    # Wrapper existence is pre-checked here so we can fail-open before any
+    # remote/local state mutation. It is re-checked immediately before exec
+    # to shrink the TOCTOU window (see below).
     [[ -x "$wrapper_path" ]] || { _ghostty_zmx_debug "inherit skipped reason=wrapper-missing path=$wrapper_path"; return 1 }
     local -a parts
     parts=(${(@s:-:)parent_session})
@@ -415,12 +418,22 @@ ghostty_zmx_inherit_remote_context_if_any() {
     pane="${$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')[1,6]}"
     session="gzr-${workspace_id}-${remote_win}-${remote_tab}-${pane}"
     helper="$(ghostty_zmx_remote_layout_helper_cmd)"
-    # The helper generates updated-at and a monotonic rev server-side under the
-    # remote lock; the ssh argv is bare words only (no awk/printf/tabs).
-    # Use no-pty ssh (-T) for the non-interactive layout write.
-    ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$helper" add "$workspace_id" "$remote_win" "$remote_tab" "$pane" "$session" "$parent_pane" "$axis" "$ratio" present >/dev/null 2>&1 || return 1
-    # Write the local projection row via the helper (under the file lock) so the
-    # poller sees an opening row and skips; reuse the per-host+session lock.
+    # Transactional ordering (see e2e round 6 report): acquire the local
+    # per-host+session lock BEFORE mutating remote layout. If any pre-exec
+    # step fails after the remote `add` succeeds, best-effort roll the
+    # remote row back with `transition <session> deleted` so a later poller
+    # cannot resurrect an orphan projection.
+    local -a notty_prefix
+    notty_prefix=(${(z)prefix})
+    local -a rollback_argv
+    rollback_argv=(${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$helper" transition "$session" deleted)
+    _gzmx_inherit_rollback() {
+      # Fire and forget: server helper transitions the row to `deleted`.
+      # Failure to reach the server is logged but not surfaced — the poller/
+      # reaper close-txn path will eventually converge; the important part
+      # is that we do NOT leave a `present` row that another client may open.
+      "${rollback_argv[@]}" >/dev/null 2>&1 || _ghostty_zmx_debug "inherit rollback failed host=$host session=$session"
+    }
     local inh_lock inh_acquired=0 inh_i
     inh_lock="$(ghostty_zmx_projection_lock_path "$host" "$session")" || return 1
     mkdir -p "${inh_lock:h}" 2>/dev/null
@@ -432,10 +445,35 @@ ghostty_zmx_inherit_remote_context_if_any() {
       _ghostty_zmx_debug "inherit lock-busy host=$host session=$session"
       return 1
     fi
-    ghostty_zmx_write_projection_row "$host" "$workspace_id" "$session" "$cur_tty" "$$" opening "$cur_win" "$cur_tab"
+    # The helper generates updated-at and a monotonic rev server-side under the
+    # remote lock; the ssh argv is bare words only (no awk/printf/tabs).
+    # Use no-pty ssh (-T) for the non-interactive layout write.
+    if ! ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$helper" add "$workspace_id" "$remote_win" "$remote_tab" "$pane" "$session" "$parent_pane" "$axis" "$ratio" present >/dev/null 2>&1; then
+      rmdir "$inh_lock" 2>/dev/null || true
+      _ghostty_zmx_debug "inherit remote-add-failed host=$host session=$session"
+      return 1
+    fi
+    # Write the local projection row (under the same per-session lock) so the
+    # poller sees an opening row and skips.
+    if ! ghostty_zmx_write_projection_row "$host" "$workspace_id" "$session" "$cur_tty" "$$" opening "$cur_win" "$cur_tab"; then
+      _ghostty_zmx_debug "inherit local-write-failed host=$host session=$session"
+      _gzmx_inherit_rollback
+      rmdir "$inh_lock" 2>/dev/null || true
+      return 1
+    fi
     rmdir "$inh_lock" 2>/dev/null || true
-    local -a notty_prefix
-    notty_prefix=(${(z)prefix})
+    # Re-check wrapper executability immediately before exec to shrink the
+    # TOCTOU window between the earlier check and the exec. A short window
+    # remains (exec itself may fail e.g. ENOEXEC/permission race), for which
+    # the reaper's close-txn path is the final line of defense.
+    if [[ ! -x "$wrapper_path" ]]; then
+      _ghostty_zmx_debug "inherit wrapper-vanished host=$host session=$session path=$wrapper_path"
+      _gzmx_inherit_rollback
+      # Best-effort local cleanup so the poller does not adopt a stale row.
+      local _proj_file="$(ghostty_zmx_remote_projections_file)" _tmp="${projections_file}.tmp.$$"
+      awk -F '\t' -v h="$host" -v s="$session" '!(($1 == h) && ($3 == s)) { print }' "$_proj_file" > "$_tmp" 2>/dev/null && mv "$_tmp" "$_proj_file" 2>/dev/null
+      return 1
+    fi
     _ghostty_zmx_debug "inherit exec host=$host session=$session cur_win=$cur_win cur_tab=$cur_tab tty=$cur_tty"
     # If this function was reached from the ~/.zprofile early hook, mark the
     # current shell as handled immediately before exec. Do not set this marker

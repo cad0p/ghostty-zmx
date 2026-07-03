@@ -162,4 +162,79 @@ if grep -n '^[[:space:]]*rand()' session-manager.zsh >/dev/null 2>&1; then
   fail "session-manager defines global rand() helper"
 fi
 
+# Transactional ordering (e2e round 6): the remote `add` must be under the
+# per-session lock, and any failure between remote `add` and exec must roll
+# the remote row back with `transition <session> deleted` so a later poller
+# cannot resurrect an orphan projection.
+#
+# Static assertion: the source order in the lib is (lock acquire) -> (remote
+# add) -> (local write) -> (exec re-check) -> (exec).
+(
+  file=session-manager-lib.zsh
+  add_line=$(grep -n '"$helper" add "$workspace_id"' "$file" | head -1 | cut -d: -f1)
+  lock_line=$(grep -n 'mkdir "$inh_lock"' "$file" | head -1 | cut -d: -f1)
+  write_line=$(grep -n 'ghostty_zmx_write_projection_row "$host" "$workspace_id"' "$file" | head -1 | cut -d: -f1)
+  rollback_line=$(grep -n '_gzmx_inherit_rollback' "$file" | head -1 | cut -d: -f1)
+  transition_line=$(grep -n '"$helper" transition "$session" deleted' "$file" | head -1 | cut -d: -f1)
+  [[ -n "$lock_line" && -n "$add_line" && -n "$write_line" ]] || fail "expected inherit steps not found in $file"
+  (( lock_line < add_line )) || fail "remote add ($add_line) is not under the per-session lock ($lock_line)"
+  (( add_line < write_line )) || fail "remote add ($add_line) does not precede local write ($write_line)"
+  [[ -n "$rollback_line" && -n "$transition_line" ]] || fail "rollback path missing (rollback_line=$rollback_line transition_line=$transition_line)"
+) || exit 1
+
+# Behavior test: if the local projections-file lock cannot be acquired after the
+# remote `add` succeeds, inherit must (1) return failure, (2) fire the remote
+# rollback (`transition <session> deleted`), and (3) NOT set the early marker.
+(
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  export GHOSTTY_ZMX_DATA_HOME="$tmp/data"
+  export GHOSTTY_ZMX_STATE_HOME="$tmp/state"
+  export GHOSTTY_ZMX_INSTALL_DIR="$tmp/install"
+  mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$GHOSTTY_ZMX_INSTALL_DIR" "$tmp/bin"
+  : > "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"; chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
+
+  # Fake `ssh` on PATH that records every call and reports success for add.
+  # The lib's notty_prefix expands to `ssh -T host` so `ssh` is argv[0].
+  cat > "$tmp/bin/ssh" <<EOS
+#!/bin/sh
+printf '%s\n' "\$*" >> "$tmp/ssh-calls"
+exit 0
+EOS
+  chmod +x "$tmp/bin/ssh"
+  export PATH="$tmp/bin:$PATH"
+
+  # Point the projection prefix at our fake `ssh host`. The lib will insert -T.
+  print -r -- $'h\tssh\tzmx 0.6.0\tactive\tssh h' > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts"
+  # Parent projection row: attached, on the current shell's window/tab.
+  print -r -- $'h\tdeadbeef\tgzr-deadbeef-cafebabe-abc123-def456\t/dev/ttys000\t123\tattached\t1\taaaa\tbbbb' > "$GHOSTTY_ZMX_DATA_HOME/remote-projections"
+
+  # Point cur_tty at a real, readable+writable device so the tty guard passes.
+  real_tty="$(tty 2>/dev/null || echo /dev/null)"
+  [[ -r "$real_tty" && -w "$real_tty" ]] || real_tty=/dev/null
+
+  # Wedge the projections-file lock so ghostty_zmx_write_projection_row cannot
+  # acquire it and returns failure (rc=1). This is the branch that must trigger
+  # the remote rollback.
+  proj_file="$GHOSTTY_ZMX_DATA_HOME/remote-projections"
+  mkdir -p "$proj_file.lock"
+
+  unset GHOSTTY_ZMX_EARLY_INHERIT_RAN || true
+  source ./session-manager-lib.zsh
+
+  identity="aaaa bbbb cccc 123 $real_tty"
+  if ghostty_zmx_inherit_remote_context_if_any "$identity"; then
+    fail "inherit unexpectedly succeeded despite wedged local write lock"
+  fi
+  [[ -z "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" ]] || fail "early marker set even though local write failed"
+  # The fake ssh must have been called twice: once for `add`, once for the
+  # rollback `transition <session> deleted`.
+  [[ -f "$tmp/ssh-calls" ]] || fail "fake ssh never invoked; add call missing"
+  grep -q ' add deadbeef ' "$tmp/ssh-calls" || fail "remote add was not called"
+  grep -q 'transition gzr-deadbeef-.* deleted' "$tmp/ssh-calls" || fail "remote rollback (transition deleted) was not called"
+
+  # Cleanup wedged lock so the trap can rm -rf cleanly.
+  rmdir "$proj_file.lock" 2>/dev/null || true
+) || exit 1
+
 print "early-inherit tests passed"
