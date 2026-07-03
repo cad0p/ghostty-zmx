@@ -103,6 +103,26 @@ ensure_source_line() {
   print "Added ghostty-zmx source line to $file"
 }
 
+remove_source_line() {
+  local file="$1" line="${2:-$source_line}"
+  [[ -f "$file" ]] || return 0
+  if ! grep -qxF "$line" "$file" 2>/dev/null; then
+    return 0
+  fi
+  awk -v source_line="$line" '
+    $0 == source_line { next }
+    { print }
+  ' "$file" > "${file}.tmp"
+  local rc=$?
+  if [[ $rc -ne 0 ]]; then
+    rm -f "${file}.tmp"
+    print -u2 "Failed to remove stale ghostty-zmx source line from $file"
+    return 1
+  fi
+  mv "${file}.tmp" "$file" || return 1
+  print "Removed stale ghostty-zmx source line from $file"
+}
+
 strip_managed_block() {
   local file="$1"
   awk '
@@ -261,6 +281,11 @@ confirm "Apply this installation plan?" || { print "Installation declined; no fi
 backup_file "$zshrc"
 ensure_source_line "$zshrc" || exit 1
 backup_file "$zprofile"
+# v0.2.0-rc migrated the early inherit hook from the full manager to a
+# dedicated .zprofile entry. Older development/prerelease installs may have
+# sourced session-manager.zsh from .zprofile; remove that stale line so the
+# full manager is not loaded before the early hook.
+remove_source_line "$zprofile" "$source_line" || exit 1
 ensure_source_line "$zprofile" "$early_source_line" || exit 1
 
 validate_install_dir

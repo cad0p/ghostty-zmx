@@ -154,6 +154,7 @@ backup_file "$zshrc"
 remove_source_line "$zshrc"
 backup_file "$zprofile"
 remove_source_line "$zprofile" "$early_source_line"
+remove_source_line "$zprofile" "$source_line"
 
 if confirm "Remove the managed ghostty-zmx block from Ghostty config?"; then
   backup_file "$ghostty_config"
