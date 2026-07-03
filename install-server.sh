@@ -7,7 +7,7 @@
 #
 # The server installer:
 #   1. verifies zsh and zmx exist (zmx is a prerequisite, not managed here),
-#   2. installs session-manager.zsh + the vendored Ghostty terminfo,
+#   2. installs session-manager.zsh + session-manager-lib.zsh + the vendored Ghostty terminfo,
 #   3. appends the same guarded source line to ~/.zshrc (dormant on a headless
 #      host, but keeps the install symmetric),
 #   4. adds a managed remote-env block to ~/.zshrc that sets TERM_PROGRAM and
@@ -36,12 +36,16 @@ for arg in "$@"; do
   esac
 done
 
+[[ -n "${HOME:-}" ]] || { print -u2 "HOME is not set"; exit 1; }
+
 repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
+source_lib="$repo_dir/session-manager-lib.zsh"
 source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
 source_remote_layout="$repo_dir/ghostty-zmx-remote-layout"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
+lib_dest="$install_dir/session-manager-lib.zsh"
 terminfo_dest="$install_dir/terminfo/xterm-ghostty.terminfo"
 remote_layout_dest="$install_dir/ghostty-zmx-remote-layout"
 zshrc="$HOME/.zshrc"
@@ -53,7 +57,7 @@ backup_counter=0
 # TERM_PROGRAM empty). This lets remote Ghostty shell integration auto-activate
 # even when the transport is `tsh ssh` (which does not forward these vars).
 remote_env_block='# BEGIN ghostty-zmx remote-env
-if [[ -n "$SSH_CONNECTION" && -z "$TERM_PROGRAM" ]]; then
+if [[ -n "${SSH_CONNECTION:-}" && -z "${TERM_PROGRAM:-}" ]]; then
   export TERM_PROGRAM=ghostty
   export COLORTERM=truecolor
 fi
@@ -88,6 +92,19 @@ require_command() {
 refuse_symlinked_install_dir() {
   if [[ -L "$install_dir" ]]; then
     print -u2 "Refusing to install into symlinked install directory: $install_dir"
+    exit 1
+  fi
+}
+
+# Refuse a non-directory install path (e.g. a stray regular file at
+# ~/.config/ghostty-zmx). Otherwise `mkdir -p $install_dir/terminfo` silently
+# fails and later `install -m` calls exit — but the shell startup source line
+# and remote-env block have already been written to ~/.zshrc, leaving a
+# guarded-but-dangling reference forever. Mirrors validate_install_dir in
+# install.sh (round 3 fix).
+refuse_non_directory_install_dir() {
+  if [[ -e "$install_dir" && ! -d "$install_dir" ]]; then
+    print -u2 "Refusing to install into non-directory install path: $install_dir"
     exit 1
   fi
 }
@@ -172,7 +189,7 @@ install_terminfo() {
 print_plan() {
   print "ghostty-zmx SERVER installer will:"
   print "  - verify zsh and zmx are installed (zmx is a prerequisite)"
-  print "  - install files under $install_dir (session-manager.zsh, terminfo, ghostty-zmx-remote-layout)"
+  print "  - install files under $install_dir (session-manager.zsh, session-manager-lib.zsh, terminfo, ghostty-zmx-remote-layout)"
   print "  - install the vendored Ghostty terminfo (xterm-ghostty) via tic (skipped if already present)"
   print "  - update $zshrc with one guarded source line (dormant on a headless host)"
   print "  - add a managed remote-env block to $zshrc (TERM_PROGRAM/COLORTERM for remote shells)"
@@ -197,10 +214,12 @@ if ! command -v zmx >/dev/null 2>&1; then
 fi
 
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }
+[[ -f "$source_lib" ]] || { print -u2 "Missing $source_lib"; exit 1; }
 [[ -f "$source_terminfo" ]] || { print -u2 "Missing $source_terminfo"; exit 1; }
 [[ -f "$source_remote_layout" ]] || { print -u2 "Missing $source_remote_layout"; exit 1; }
 
 refuse_symlinked_install_dir
+refuse_non_directory_install_dir
 
 print_plan
 confirm "Apply this server installation plan?" || { print "Installation declined; no files changed."; exit 0; }
@@ -209,15 +228,21 @@ backup_file "$zshrc"
 ensure_source_line "$zshrc" || exit 1
 ensure_remote_env_block "$zshrc" || exit 1
 
-mkdir -p "$install_dir/terminfo"
+mkdir -p "$install_dir/terminfo" || exit 1
 if [[ -L "$install_dir" ]]; then
   print -u2 "Refusing to install into symlinked install directory: $install_dir"
   exit 1
 fi
-install -m 0644 "$source_manager" "$manager_dest"
-install -m 0644 "$source_terminfo" "$terminfo_dest"
-install -m 0755 "$source_remote_layout" "$remote_layout_dest"
+if [[ ! -d "$install_dir" ]]; then
+  print -u2 "Failed to create install directory: $install_dir"
+  exit 1
+fi
+install -m 0644 "$source_manager" "$manager_dest" || exit 1
+install -m 0644 "$source_lib" "$lib_dest" || exit 1
+install -m 0644 "$source_terminfo" "$terminfo_dest" || exit 1
+install -m 0755 "$source_remote_layout" "$remote_layout_dest" || exit 1
 print "Installed $manager_dest"
+print "Installed $lib_dest"
 print "Installed $terminfo_dest"
 print "Installed $remote_layout_dest"
 

@@ -366,7 +366,7 @@ Verify the same as the multi-client scenario: `delta=1`, one ssh, `clients=1`, o
 
 ### Remote split/tab inheritance (native split)
 
-This verifies that a native Ghostty split from a remote projection window inherits the remote context: the new split pane execs a projection wrapper and attaches to a **new** remote zmx session.
+This verifies that a native Ghostty split from a remote projection window inherits the remote context: the new split pane runs the `.zprofile` early hook, execs a projection wrapper **before `.zshrc`**, and attaches to a **new** remote zmx session.
 
 1. Set up a projected remote session via the widget handoff above (wait for `attached`, `clients=1`).
 2. Trigger a native split on the projection window:
@@ -388,16 +388,18 @@ This verifies that a native Ghostty split from a remote projection window inheri
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list | grep gzr | grep clients'  # expect two clients=1
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'  # expect 2 present rows
    cat "$TMPDATA/remote-projections"   # expect 2 attached rows
-   grep inherit "$TMPSTATE/debug.log" | tail  # expect inherit match + inherit exec
+   grep inherit "$TMPSTATE/debug.log" | tail  # expect early-inherit match + inherit exec
    ```
 
-4. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
+4. Verify the split did **not** source the local `.zshrc`: temporarily add a harmless marker near the top of local `.zshrc` (for example `print -r -- LOCAL_ZSHRC_MARKER >> /tmp/gzmx-zshrc-marker`) before the test, then confirm the marker count does not increase when the remote split is created. Ordinary local panes should still source `.zshrc` normally.
+
+5. The split pane must stay open (not close after ~1s). The new session shares the same workspace/window id but has a distinct pane id.
 
 ### Known limitations
 
 **Simultaneous multi-client E2E** — True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
 
-**Terminal-query response leak on native splits** — When a user creates a native Ghostty split inside a remote-projection window (Cmd-D), the split pane briefly runs the user's local login shell (which sources `.zshrc`) before the inherit path `exec`s the wrapper. Plugins loaded by `.zshrc` (or Ghostty itself) can issue terminal queries such as OSC 11 (foreground color) and CSI 6n (cursor position). Ghostty's responses arrive on the tty as input; they may reach the pty AFTER the wrapper drains (before `exec ssh`) and are then forwarded to the remote zmx session, appearing in the prompt as literal text like `11;rgb:f7f7/f7f7/f7f71R`. The correct fix is to bypass the local shell for splits by AppleScript-splitting with the wrapper as the surface `command` (like the widget path does for new windows), so no `.zshrc` runs in the split pane. Tracked as a v0.2 follow-up; a shell-exec drain is not sufficient because Ghostty may deliver responses after `exec ssh` starts.
+**Split axis fidelity** — Ghostty 1.4 AppleScript exposes terminal `pid`/`tty` but not per-terminal frame, parent, or split direction. Native remote-split inheritance therefore still records `axis=horizontal` for same-tab splits. The `.zprofile` early inherit hook fixes the local `.zshrc` terminal-query leak by execing before `.zshrc`, but exact horizontal-vs-vertical restore requires an upstream Ghostty action that can create `new_split` with a per-surface `command` argument.
 
 ### Remote reboot scrollback restore
 
@@ -496,7 +498,7 @@ Copy the installer and its dependencies to the fixture:
 ```sh
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -rf ~/.config/ghostty-zmx; echo "" > ~/.zshrc; rm -rf ~/.terminfo/x/xterm-ghostty 2>/dev/null; mkdir -p /tmp/gzmx-itest/terminfo'
 scp -F /tmp/ghostty-zmx-fixture-sshconfig \
-  install-server.sh session-manager.zsh ghostty-zmx-remote-layout \
+  install-server.sh session-manager.zsh session-manager-lib.zsh ghostty-zmx-remote-layout \
   gzmx-fixture:/tmp/gzmx-itest/
 scp -F /tmp/ghostty-zmx-fixture-sshconfig \
   terminfo/xterm-ghostty.terminfo \
@@ -515,7 +517,7 @@ Verify:
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'ls ~/.config/ghostty-zmx/; cat ~/.zshrc; infocmp -x xterm-ghostty >/dev/null 2>&1 && echo "terminfo installed"'
 ```
 
-Expected: `session-manager.zsh`, `ghostty-zmx-remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
+Expected: `session-manager.zsh`, `session-manager-lib.zsh`, `ghostty-zmx-remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
 
 #### Idempotent re-run
 

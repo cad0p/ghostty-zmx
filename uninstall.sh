@@ -20,12 +20,16 @@ for arg in "$@"; do
   esac
 done
 
+[[ -n "${HOME:-}" ]] || { print -u2 "HOME is not set"; exit 1; }
+
 install_dir="$HOME/.config/ghostty-zmx"
 zshrc="$HOME/.zshrc"
+zprofile="$HOME/.zprofile"
 ghostty_config="${GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
 data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
 state_home="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
+early_source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"'
 backup_counter=0
 
 backup_file() {
@@ -96,9 +100,9 @@ safe_remove_runtime_dir() {
 }
 
 remove_source_line() {
-  local file="$1"
+  local file="$1" line="${2:-$source_line}"
   [[ -f "$file" ]] || return 0
-  awk -v source_line="$source_line" '
+  awk -v source_line="$line" '
     $0 == "# ghostty-zmx" { next }
     $0 == source_line { next }
     { print }
@@ -148,6 +152,8 @@ confirm "Continue?" || { print "Uninstall declined; no files changed."; exit 0; 
 
 backup_file "$zshrc"
 remove_source_line "$zshrc"
+backup_file "$zprofile"
+remove_source_line "$zprofile" "$early_source_line"
 
 if confirm "Remove the managed ghostty-zmx block from Ghostty config?"; then
   backup_file "$ghostty_config"
@@ -159,10 +165,25 @@ fi
 safe_remove_runtime_dir || exit 1
 print "Removed generated ghostty-zmx runtime files under the current per-user runtime directory."
 
+if [[ -L "$install_dir" ]]; then
+  print "Skipped installed-file removal because install path is a symlink: $install_dir"
+else
+  rm -f "$install_dir/session-manager.zsh" \
+        "$install_dir/session-manager-lib.zsh" \
+        "$install_dir/session-manager-early.zsh" \
+        "$install_dir/session-manager-v0.1.zsh" \
+        "$install_dir/ghostty-zmx" \
+        "$install_dir/uninstall.sh" \
+        "$install_dir/install-server.sh" \
+        "$install_dir/terminfo/xterm-ghostty.terminfo" 2>/dev/null || true
+  rmdir "$install_dir/terminfo" "$install_dir" 2>/dev/null || true
+  print "Removed installed ghostty-zmx files under $install_dir where present."
+fi
+
 if [[ "$REMOVE_INSTALL_DIR" -eq 1 ]]; then
   safe_remove_tree "$install_dir" "install" || exit 1
 else
-  print "Left $install_dir in place. Pass --remove-install-dir to delete it."
+  print "Left $install_dir in place if non-empty. Pass --remove-install-dir to delete it."
 fi
 
 if [[ "$REMOVE_DATA" -eq 1 ]]; then

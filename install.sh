@@ -14,8 +14,12 @@ for arg in "$@"; do
   esac
 done
 
+[[ -n "${HOME:-}" ]] || { print -u2 "HOME is not set"; exit 1; }
+
 repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
+source_lib="$repo_dir/session-manager-lib.zsh"
+source_early_manager="$repo_dir/session-manager-early.zsh"
 source_v01_manager="$repo_dir/session-manager-v0.1.zsh"
 source_wrapper="$repo_dir/ghostty-zmx"
 source_uninstall="$repo_dir/uninstall.sh"
@@ -23,14 +27,18 @@ source_server_install="$repo_dir/install-server.sh"
 source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
+lib_dest="$install_dir/session-manager-lib.zsh"
+early_manager_dest="$install_dir/session-manager-early.zsh"
 v01_manager_dest="$install_dir/session-manager-v0.1.zsh"
 wrapper_dest="$install_dir/ghostty-zmx"
 uninstall_dest="$install_dir/uninstall.sh"
 server_install_dest="$install_dir/install-server.sh"
 terminfo_dest="$install_dir/terminfo/xterm-ghostty.terminfo"
 zshrc="$HOME/.zshrc"
+zprofile="$HOME/.zprofile"
 ghostty_config="${GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
+early_source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"'
 backup_counter=0
 managed_block='# BEGIN ghostty-zmx
 # Managed by ghostty-zmx. Re-run the installer to update this block.
@@ -65,24 +73,32 @@ require_command() {
   fi
 }
 
-refuse_symlinked_install_dir() {
+validate_install_dir() {
   if [[ -L "$install_dir" ]]; then
     print -u2 "Refusing to install into symlinked install directory: $install_dir"
+    exit 1
+  fi
+  if [[ -e "$install_dir" && ! -d "$install_dir" ]]; then
+    print -u2 "Refusing to install into non-directory install path: $install_dir"
     exit 1
   fi
 }
 
 ensure_source_line() {
-  local file="$1"
+  local file="$1" line="${2:-$source_line}"
   touch "$file" || return 1
-  if grep -qxF "$source_line" "$file" 2>/dev/null; then
+  if grep -qxF "$line" "$file" 2>/dev/null; then
     print "Source line already present in $file"
     return 0
   fi
   {
-    print ""
+    # Add a separator only when needed. This preserves readability without
+    # accumulating one blank line per install/uninstall cycle.
+    if [[ -s "$file" ]] && [[ -n "$(tail -n 1 "$file" 2>/dev/null)" ]]; then
+      print ""
+    fi
     print "# ghostty-zmx"
-    print -r -- "$source_line"
+    print -r -- "$line"
   } >> "$file"
   print "Added ghostty-zmx source line to $file"
 }
@@ -210,6 +226,7 @@ print_plan() {
   print "  - install files under $install_dir"
   print "  - refresh the vendored Ghostty terminfo from the installed Ghostty"
   print "  - update $zshrc with one guarded source line"
+  print "  - update $zprofile with an early-inherit guarded source line"
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
   print "  - warn about unsupported or conflicting Ghostty settings outside the managed section"
   print ""
@@ -220,6 +237,8 @@ print_plan() {
 }
 
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }
+[[ -f "$source_lib" ]] || { print -u2 "Missing $source_lib"; exit 1; }
+[[ -f "$source_early_manager" ]] || { print -u2 "Missing $source_early_manager"; exit 1; }
 [[ -f "$source_v01_manager" ]] || { print -u2 "Missing $source_v01_manager"; exit 1; }
 [[ -f "$source_wrapper" ]] || { print -u2 "Missing $source_wrapper"; exit 1; }
 [[ -f "$source_uninstall" ]] || { print -u2 "Missing $source_uninstall"; exit 1; }
@@ -229,7 +248,7 @@ print_plan() {
 require_command zmx
 require_command osascript
 require_command zsh
-refuse_symlinked_install_dir
+validate_install_dir
 
 # Best-effort capability probe. Warn (do not refuse) if the running Ghostty
 # lacks the 1.4.0 tty/pid AppleScript capability — remote features and
@@ -241,23 +260,27 @@ confirm "Apply this installation plan?" || { print "Installation declined; no fi
 
 backup_file "$zshrc"
 ensure_source_line "$zshrc" || exit 1
+backup_file "$zprofile"
+ensure_source_line "$zprofile" "$early_source_line" || exit 1
 
-mkdir -p "$install_dir"
-if [[ -L "$install_dir" ]]; then
-  print -u2 "Refusing to install into symlinked install directory: $install_dir"
-  exit 1
-fi
-install -m 0644 "$source_manager" "$manager_dest"
-install -m 0644 "$source_v01_manager" "$v01_manager_dest"
-install -m 0755 "$source_wrapper" "$wrapper_dest"
-install -m 0755 "$source_uninstall" "$uninstall_dest"
-install -m 0755 "$source_server_install" "$server_install_dest"
+validate_install_dir
+mkdir -p "$install_dir" || exit 1
+validate_install_dir
+install -m 0644 "$source_manager" "$manager_dest" || exit 1
+install -m 0644 "$source_lib" "$lib_dest" || exit 1
+install -m 0644 "$source_early_manager" "$early_manager_dest" || exit 1
+install -m 0644 "$source_v01_manager" "$v01_manager_dest" || exit 1
+install -m 0755 "$source_wrapper" "$wrapper_dest" || exit 1
+install -m 0755 "$source_uninstall" "$uninstall_dest" || exit 1
+install -m 0755 "$source_server_install" "$server_install_dest" || exit 1
 # Refresh the vendored Ghostty terminfo from the installed Ghostty at install
 # time so the copy always matches the laptop's Ghostty version (per the v0.2
 # design, "Vendored terminfo staleness"). If infocmp against the installed
 # Ghostty fails, fall back to the repo's committed copy.
-refresh_vendored_terminfo "$terminfo_dest"
+refresh_vendored_terminfo "$terminfo_dest" || exit 1
 print "Installed $manager_dest"
+print "Installed $lib_dest"
+print "Installed $early_manager_dest"
 print "Installed $v01_manager_dest"
 print "Installed $wrapper_dest"
 print "Installed $uninstall_dest"
