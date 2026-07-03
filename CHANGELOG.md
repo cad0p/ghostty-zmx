@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - *(v0.2)* Remote SSH/tsh session inheritance ([#18](https://github.com/cad0p/ghostty-zmx/pull/18))
 - *(v0.2)* Ship frozen v0.1 fallback manager for 1.3.x surfaces ([#20](https://github.com/cad0p/ghostty-zmx/pull/20))
 - *(v0.2)* Early remote split inherit before zshrc ([#31](https://github.com/cad0p/ghostty-zmx/pull/31))
+- *(v0.2)* Ghostty-zmx install-server subcommand ([#34](https://github.com/cad0p/ghostty-zmx/pull/34))
 
 ### 🐛 Bug Fixes
 
