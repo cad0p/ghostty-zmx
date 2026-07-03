@@ -288,6 +288,67 @@ _rows="$(wc -l < "$projections_file" | tr -d ' ')"
 print "  ok: live row survived (gzr-live)"
 print "  PASS test 6"
 
+# ---------------------------------------------------------------------------
+# Test 7: ghostty_zmx_kill_orphaned_pollers emits NO stdout.
+# Regression: 'local _zpid' / 'local _oldlock' with no assignment leaked
+# '_zpid=""' / '_oldlock=""' to stdout (zsh TYPESET_SILENT-off behavior)
+# for each dead orphan poller. With N orphans, N pairs of lines printed
+# before the first prompt on every shell startup.
+#
+# The leak only manifests when (a) the full manager is sourced AND (b) the
+# orphan killer actually iterates over a dead-orphan entry. We reproduce both:
+# the manager is already sourced above, and we seed a dead-orphan script +
+# a RUNNING zsh poller so pgrep matches and the kill branch runs. We also
+# run a second variant: source lib+manager in a clean subshell (the real
+# startup path) and assert no stdout from the orphan killer there too.
+# ---------------------------------------------------------------------------
+print ""
+print "test 7: kill_orphaned_pollers emits no stdout"
+
+# Variant A: dead-orphan script (no running process) — exercises the dead
+# branch's glob + local declarations.
+reg_pid=999998
+cat > "$runtime/remote-poller-${reg_pid}.zsh" <<EOF
+#!/bin/zsh
+sleep 3600
+EOF
+chmod +x "$runtime/remote-poller-${reg_pid}.zsh"
+mkdir -p "$runtime/remote-poller-Ghostty-tip-${reg_pid}.lock"
+
+_out="$(ghostty_zmx_kill_orphaned_pollers 999999 2>&1)"
+_rc=$?
+[[ -z "$_out" ]] || { print -u2 "FAIL: kill_orphaned_pollers leaked stdout (variant A): [$_out]"; exit 1; }
+print "  ok: no stdout/stderr from orphan killer (dead-orphan script)"
+
+# Variant B: the real startup path — source lib+manager in a clean
+# subshell (mirrors what .zshrc does) and call the orphan killer. Catches
+# leaks that only appear under the full source context, which is the
+# actual regression condition.
+_out2="$(zsh -fc '
+  source "$1/session-manager-lib.zsh" 2>/dev/null
+  source "$1/session-manager.zsh" 2>/dev/null
+  runtime="${XDG_RUNTIME_DIR}/ghostty-zmx-${UID:-$(id -u)}"
+  mkdir -p "$runtime"
+  echo "#!/bin/zsh
+sleep 3600" > "$runtime/remote-poller-999996.zsh"
+  chmod +x "$runtime/remote-poller-999996.zsh"
+  mkdir -p "$runtime/remote-poller-Ghostty-tip-999996.lock"
+  ghostty_zmx_kill_orphaned_pollers 999999 2>&1
+  rc=$?
+  rm -f "$runtime/remote-poller-999996.zsh"
+  rm -rf "$runtime/remote-poller-Ghostty-tip-999996.lock"
+  exit $rc
+' -- "$repo_dir" 2>&1)"
+_rc2=$?
+[[ -z "$_out2" ]] || { print -u2 "FAIL: kill_orphaned_pollers leaked stdout (variant B, full-source subshell): [$_out2]"; exit 1; }
+print "  ok: no stdout/stderr from orphan killer (full-source subshell)"
+
+print "  PASS test 7"
+
+# Cleanup.
+rm -f "$runtime/remote-poller-${reg_pid}.zsh"
+rm -rf "$runtime/remote-poller-Ghostty-tip-${reg_pid}.lock"
+
 print ""
 print "all remote-lifecycle tests passed"
 exit 0
