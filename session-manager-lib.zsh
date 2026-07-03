@@ -250,13 +250,13 @@ ghostty_zmx_find_live_projection() {
 ghostty_zmx_write_projection_row() {
   emulate -L zsh
   local host="$1" workspace="$2" session="$3" tty_path="$4" match_pid="$5" state="$6" win="$7" tab="$8"
-  local projection_file="$(ghostty_zmx_remote_projections_file)" tmp now lock acquired=0 i
+  local projection_file="$(ghostty_zmx_remote_projections_file)" tmp now lock acquired=0 i rc=0
   [[ -n "$host" && -n "$session" && -n "$state" ]] || return 1
   [[ -n "$tty_path" ]] || tty_path="-"
   [[ -n "$match_pid" ]] || match_pid="-"
   [[ -n "$win" ]] || win="-"
   [[ -n "$tab" ]] || tab="-"
-  mkdir -p "${projection_file:h}" 2>/dev/null
+  mkdir -p "${projection_file:h}" 2>/dev/null || return 1
   lock="${projection_file}.lock"
   for (( i=1; i<=50; i++ )); do
     if mkdir "$lock" 2>/dev/null; then acquired=1; break; fi
@@ -265,10 +265,14 @@ ghostty_zmx_write_projection_row() {
   [[ "$acquired" -eq 1 ]] || return 1
   now="$(date +%s)"
   tmp="${projection_file}.tmp.$$"
-  { awk -F '\t' -v host="$host" -v session="$session" '!(($1 == host) && ($3 == session)) { print }' "$projection_file" 2>/dev/null || true
-    print -r -- "${host}	${workspace}	${session}	${tty_path}	${match_pid}	${state}	${now}	${win}	${tab}"
-  } > "$tmp" && mv "$tmp" "$projection_file" 2>/dev/null
+  if ! { awk -F '\t' -v host="$host" -v session="$session" '!(($1 == host) && ($3 == session)) { print }' "$projection_file" 2>/dev/null || true
+         print -r -- "${host}	${workspace}	${session}	${tty_path}	${match_pid}	${state}	${now}	${win}	${tab}"
+       } > "$tmp" || ! mv "$tmp" "$projection_file" 2>/dev/null; then
+    rc=1
+    rm -f "$tmp" 2>/dev/null || true
+  fi
   rmdir "$lock" 2>/dev/null || true
+  return "$rc"
 }
 
 ghostty_zmx_remote_prefix_for_host() {

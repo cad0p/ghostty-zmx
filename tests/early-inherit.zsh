@@ -237,4 +237,17 @@ EOS
   rmdir "$proj_file.lock" 2>/dev/null || true
 ) || exit 1
 
+# Projection-row writes must propagate fs/mv failures. A false success here
+# would make inherit skip its remote rollback path and leave orphaned server rows.
+(
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  export GHOSTTY_ZMX_DATA_HOME="$tmp/data"
+  source ./session-manager-lib.zsh
+  mv() { return 99 }
+  if ghostty_zmx_write_projection_row h w s /dev/ttys1 123 opening win tab; then
+    fail "projection row write succeeded despite mv failure"
+  fi
+) || exit 1
+
 print "early-inherit tests passed"
