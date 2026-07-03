@@ -1,18 +1,19 @@
 #!/bin/zsh
-# Unit tests for `ghostty-zmx install-server` — the one-shot server bootstrap
-# subcommand added to the ghostty-zmx wrapper.
+# Unit tests for the ghostty-zmx CLI subcommands.
 #
 # Covers:
-#   1. --help lists both modes (projection + install-server)
+#   1. --help lists all modes (projection, install, uninstall, install-server)
 #   2. install-server with no host → error exit 2
 #   3. install-server with missing local bundle files → error exit 1
 #   4. install-server <known-host> resolves transport from remote-hosts
 #   5. install-server <unknown-host> falls back to ssh <host>
 #   6. install-server -- <transport...> uses the explicit transport
+#   7. install delegates to sibling install.sh
+#   8. uninstall delegates to sibling uninstall.sh
 #
 # Does NOT contact a real remote. The tar|ssh pipe is not exercised here;
 # that is covered by the manual e2e doc. These tests verify argument parsing,
-# transport resolution, and the missing-file guard.
+# transport resolution, the missing-file guard, and install/uninstall delegation.
 
 repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
@@ -28,13 +29,15 @@ mkdir -p "$HOME" "$GHOSTTY_ZMX_INSTALL_DIR/terminfo" "$GHOSTTY_ZMX_DATA_HOME" "$
 install -m 0755 "$repo_dir/ghostty-zmx" "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
 wrapper="$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
 
-# --- Case 1: --help lists both modes ---
+# --- Case 1: --help lists all modes ---
 out="$("$wrapper" --help 2>&1)"
 rc=$?
 [[ $rc -eq 0 ]] || { print -u2 "help: expected exit 0, got $rc"; exit 1 }
 [[ "$out" == *"projection"* ]] || { print -u2 "help: missing projection mode"; exit 1 }
 [[ "$out" == *"install-server"* ]] || { print -u2 "help: missing install-server mode"; exit 1 }
-print "ok: --help lists both modes"
+[[ "$out" == *"install "* ]] || { print -u2 "help: missing install mode"; exit 1 }
+[[ "$out" == *"uninstall"* ]] || { print -u2 "help: missing uninstall mode"; exit 1 }
+print "ok: --help lists all modes"
 
 # --- Case 2: install-server with no host → error exit 2 ---
 out="$("$wrapper" install-server 2>&1)"
@@ -113,6 +116,33 @@ rc=$?
 [[ $rc -eq 0 ]] || { print -u2 "explicit: expected exit 0, got $rc ($out)"; exit 1 }
 [[ "$out" == *"TSH_ARGV:ssh -i /tmp/key pier@explicit-host"* ]] || { print -u2 "explicit: wrong transport argv: $out"; exit 1 }
 print "ok: explicit -- transport"
+
+# --- Case 7: install delegates to sibling install.sh ---
+# Stage install.sh + uninstall.sh as siblings of the wrapper so delegation finds them.
+cat > "$GHOSTTY_ZMX_INSTALL_DIR/install.sh" <<'EOF'
+#!/bin/zsh
+echo "INSTALL_SH_CALLED with: $@"
+exit 0
+EOF
+chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/install.sh"
+out="$("$wrapper" install --yes 2>&1)"
+rc=$?
+[[ $rc -eq 0 ]] || { print -u2 "install: expected exit 0, got $rc ($out)"; exit 1 }
+[[ "$out" == *"INSTALL_SH_CALLED with: --yes"* ]] || { print -u2 "install: wrong delegation: $out"; exit 1 }
+print "ok: install delegates to install.sh"
+
+# --- Case 8: uninstall delegates to sibling uninstall.sh ---
+cat > "$GHOSTTY_ZMX_INSTALL_DIR/uninstall.sh" <<'EOF'
+#!/bin/zsh
+echo "UNINSTALL_SH_CALLED with: $@"
+exit 0
+EOF
+chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/uninstall.sh"
+out="$("$wrapper" uninstall --yes 2>&1)"
+rc=$?
+[[ $rc -eq 0 ]] || { print -u2 "uninstall: expected exit 0, got $rc ($out)"; exit 1 }
+[[ "$out" == *"UNINSTALL_SH_CALLED with: --yes"* ]] || { print -u2 "uninstall: wrong delegation: $out"; exit 1 }
+print "ok: uninstall delegates to uninstall.sh"
 
 print ""
 print "all install-server-cli tests passed"

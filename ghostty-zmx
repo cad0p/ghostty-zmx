@@ -183,18 +183,24 @@ mode="${1:-}"
 case "$mode" in
   projection) shift ;;
   install-server) shift; _gzmx_install_server "$@"; exit $? ;;
+  install) shift; exec "${0:A:h}/install.sh" "$@" ;;
+  uninstall) shift; exec "${0:A:h}/uninstall.sh" "$@" ;;
   -h|--help|help)
     print "Usage: ghostty-zmx <mode> [options]"
     print ""
     print "Modes:"
     print "  projection     Run as a remote-zmx projection surface (used by the manager)."
+    print "  install        Configure ghostty-zmx on this laptop (refresh after upgrade)."
+    print "  uninstall      Remove ghostty-zmx from this laptop."
     print "  install-server Bootstrap ghostty-zmx server-side files on a remote host."
     print ""
     print "  ghostty-zmx projection --host <host> --workspace <ws> --session <gzr> -- <transport...> 'zmx attach <gzr>'"
+    print "  ghostty-zmx install [--yes]"
+    print "  ghostty-zmx uninstall [--yes]"
     print "  ghostty-zmx install-server <host> [-- yes]"
     print "  ghostty-zmx install-server -- <transport...> <host>   (e.g. tsh ssh -i key pier@host)"
     exit 0 ;;
-  *) print -u2 "ghostty-zmx: unknown mode '$mode' (expected 'projection' or 'install-server')"; exit 2 ;;
+  *) print -u2 "ghostty-zmx: unknown mode '$mode' (expected 'projection', 'install', 'uninstall', or 'install-server')"; exit 2 ;;
 esac
 
 host="" workspace="" session=""

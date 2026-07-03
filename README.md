@@ -33,18 +33,18 @@ brew trust --formula cad0p/tap/ghostty-zmx
 brew install cad0p/tap/ghostty-zmx
 ```
 
-The formula depends on `neurosnap/tap/zmx` and installs the `ghostty-zmx-install` and `ghostty-zmx-uninstall` commands. It does not modify your shell or Ghostty config by itself.
+The formula depends on `neurosnap/tap/zmx` and installs the `ghostty-zmx` CLI (with `install`, `uninstall`, and `install-server` subcommands). It does not modify your shell or Ghostty config by itself.
 
 After installing, run:
 
 ```sh
-ghostty-zmx-install
+ghostty-zmx install
 ```
 
 For non-interactive setup:
 
 ```sh
-ghostty-zmx-install --yes
+ghostty-zmx install --yes
 ```
 
 ### Prerelease Homebrew install
@@ -61,8 +61,9 @@ brew install cad0p/prerelease/ghostty-zmx
 The prerelease tap tracks prerelease GitHub releases, not `--HEAD` builds. The installed commands are the same as the stable formula:
 
 ```sh
-ghostty-zmx-install
-ghostty-zmx-uninstall
+ghostty-zmx install
+ghostty-zmx uninstall
+ghostty-zmx install-server <host>
 ```
 
 Use the prerelease tap only when testing prerelease `ghostty-zmx` behavior. Stable users should use:
@@ -128,7 +129,7 @@ Transport resolution:
 - Unknown host: falls back to `ssh <host>`.
 - Explicit transport: `ghostty-zmx install-server -- tsh ssh -i /key pier@host`.
 
-Run `ghostty-zmx-install --yes` on the laptop first so the local bundle files are present.
+Run `ghostty-zmx install --yes` on the laptop first so the local bundle files are present.
 
 ## Ghostty config managed by ghostty-zmx
 
@@ -227,19 +228,19 @@ This restores saved text into the new zmx history. It does not restore live proc
 ## Uninstall
 
 ```sh
-~/.config/ghostty-zmx/uninstall.sh
+ghostty-zmx uninstall
 ```
 
 or non-interactively:
 
 ```sh
-~/.config/ghostty-zmx/uninstall.sh --yes
+ghostty-zmx uninstall --yes
 ```
 
 Uninstall removes the `.zshrc` and `.zprofile` source lines, removes the managed Ghostty block when accepted interactively or when `--yes` is used, removes generated runtime files, removes installed ghostty-zmx files under `~/.config/ghostty-zmx` where present, and leaves zmx sessions/data/state alive by default. `--yes` is non-interactive but still preserves data and state unless explicit destructive flags are provided:
 
 ```sh
-~/.config/ghostty-zmx/uninstall.sh --yes --remove-install-dir --remove-data --remove-state
+ghostty-zmx uninstall --yes --remove-install-dir --remove-data --remove-state
 ```
 
 Deletion flags refuse unsafe targets such as `$HOME`, `/`, parent directories, paths not owned by the current user, or paths whose final component is not `ghostty-zmx`.
