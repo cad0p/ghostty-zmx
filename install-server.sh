@@ -36,6 +36,8 @@ for arg in "$@"; do
   esac
 done
 
+[[ -n "${HOME:-}" ]] || { print -u2 "HOME is not set"; exit 1; }
+
 repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
 source_lib="$repo_dir/session-manager-lib.zsh"

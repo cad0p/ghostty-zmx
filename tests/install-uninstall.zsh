@@ -27,6 +27,12 @@ if HOME='' "$repo_dir/uninstall.sh" --yes > "$workdir/uninstall-no-home.out" 2>&
 fi
 grep -q 'HOME is not set' "$workdir/uninstall-no-home.out" || { print -u2 "uninstall missing HOME error not clear"; exit 1; }
 
+if HOME='' "$repo_dir/install-server.sh" --yes > "$workdir/server-install-no-home.out" 2>&1; then
+  print -u2 "server install succeeded with empty HOME"
+  exit 1
+fi
+grep -q 'HOME is not set' "$workdir/server-install-no-home.out" || { print -u2 "server install missing HOME error not clear"; exit 1; }
+
 run_install() {
   HOME="$1" GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG="$2" GHOSTTY_ZMX_DATA_HOME="$3" "$repo_dir/install.sh" "${@:4}"
 }
