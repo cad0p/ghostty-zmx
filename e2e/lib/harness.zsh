@@ -143,14 +143,17 @@ gzmx_e2e_fixture_install_server() {
 # install_server (so the helper is present) and before any scenario logic.
 gzmx_e2e_fixture_reset_server_state() {
   emulate -L zsh
-  ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" '
+  local zmx_bin
+  zmx_bin="$(gzmx_e2e_fixture_zmx)"
+  ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "
     rm -rf ~/.local/share/ghostty-zmx/remote-layout ~/.local/share/ghostty-zmx/remote-layout.rev ~/.local/share/ghostty-zmx/remote-layout.lock
-    # Kill any lingering zmx sessions (gzr-* and zmx-*).
-    for s in $(zmx list 2>/dev/null | awk "{print \$1}"); do
-      zmx kill "$s" >/dev/null 2>&1 || true
+    # Kill any lingering zmx sessions (gzr-* and zmx-*). zmx list prints
+    # 'name=<session>' as the first whitespace-delimited token.
+    for s in \$($zmx_bin list 2>/dev/null | sed -n 's/.*name=\(gzr-[A-Za-z0-9-]*\).*/\1/p'); do
+      $zmx_bin kill \"\$s\" >/dev/null 2>&1 || true
     done
     mkdir -p ~/.local/share/ghostty-zmx
-  ' 2>/dev/null || true
+  " 2>/dev/null || true
   gzmx_e2e_log "fixture server state reset"
 }
 
@@ -225,10 +228,64 @@ gzmx_e2e_ghostty_quit() {
 # Type text into the focused terminal of the front window and press Enter.
 gzmx_e2e_type() {
   emulate -L zsh
+  setopt local_options no_err_return
   local text="$1"
-  osascript <<OSA 2>/dev/null
+  osascript <<OSA 2>/dev/null || true
 tell application "$GZMX_E2E_GHOSTTY_APP"
   set w to front window
+  set tb to selected tab of w
+  set tm to focused terminal of tb
+  input text "$text" to tm
+  send key "enter" to tm
+end tell
+OSA
+}
+
+# Bring window N (1-indexed) to the front and make it active.
+gzmx_e2e_activate_window() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  local idx="$1"
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set w to item $idx of windows
+  activate window w
+  set index of w to 1
+end tell
+OSA
+}
+
+# Create a native split in the front window's focused terminal via AppleScript.
+# This creates a real split surface with the default shell (no `command` set),
+# so the new surface's shell sources .zprofile/.zshrc and the inherit hook runs
+# — exactly the native-split-then-inherit code path under test. More reliable
+# than simulating Cmd+D via System Events (which needs Accessibility +
+# frontmost + timing).
+gzmx_e2e_split_focused() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  local direction="${1:-right}"
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set w to front window
+  set tb to selected tab of w
+  set tm to focused terminal of tb
+  set cfg to new surface configuration
+  set t to split tm direction $direction with configuration cfg
+end tell
+OSA
+}
+
+# Type text into window N (1-indexed), focused terminal of its selected tab.
+# Activates the window first so input lands in the right pane.
+gzmx_e2e_type_in_window() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  local idx="$1" text="$2"
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set w to item $idx of windows
+  activate window w
   set tb to selected tab of w
   set tm to focused terminal of tb
   input text "$text" to tm
@@ -252,15 +309,31 @@ OSA
 }
 
 # Send a Ghostty key (e.g. "cmd+d", "cmd+t", "cmd+shift+d") to the focused terminal.
+# Send a Ghostty keybind (e.g. "cmd+d", "cmd+t", "cmd+shift+d") to the
+# focused terminal. Ghostty's AppleScript `send key` sends the key to the
+# terminal PTY as INPUT, not as a keybind action — so it does NOT trigger
+# splits/tabs. To trigger a Ghostty keybind, we use System Events `keystroke`
+# which dispatches a real key event that Ghostty's keybind handler sees.
+# Requires Accessibility permission for the controlling process (osascript).
 gzmx_e2e_send_key() {
   emulate -L zsh
-  local key="$1"
-  osascript <<OSA 2>/dev/null
-tell application "$GZMX_E2E_GHOSTTY_APP"
-  set w to front window
-  set tb to selected tab of w
-  set tm to focused terminal of tb
-  send key "$key" to tm
+  setopt local_options no_err_return
+  local key="$1" mods="" key_char=""
+  # Parse "cmd+d", "cmd+shift+d", "ctrl+t" into a key char + modifiers.
+  # Modifiers: cmd, shift, ctrl, alt (-> option).
+  local k="$key"
+  [[ " $k " == *" cmd "* || " $k " == *" super "* ]] && mods="$mods command"
+  [[ " $k " == *" shift "* ]] && mods="$mods shift"
+  [[ " $k " == *" ctrl "* ]] && mods="$mods control"
+  [[ " $k " == *" alt "* || " $k " == *" option "* ]] && mods="$mods option"
+  # The final token after the last "+" is the key char.
+  key_char="${k##*+}"
+  [[ -n "$key_char" ]] || return 0
+  # Ensure Ghostty is frontmost, then send the keystroke via System Events.
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP" to activate
+tell application "System Events"
+  keystroke "$key_char" {$mods}
 end tell
 OSA
 }
@@ -358,12 +431,20 @@ gzmx_e2e_assert_no_query_leak() {
 # Assert the remote shell's cwd for a session (via zmx run pwd).
 gzmx_e2e_assert_remote_cwd() {
   emulate -L zsh
-  local session="$1" expected="$2" actual zmx_bin
+  local session="$1" expected="$2" raw zmx_bin
   zmx_bin="$(gzmx_e2e_fixture_zmx)"
-  actual="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin run $session pwd 2>/dev/null" 2>/dev/null)"
-  [[ "$actual" == "$expected" ]] \
-    || gzmx_e2e_fail "remote cwd: expected $expected, got $actual"
-  gzmx_e2e_pass "remote cwd == $expected"
+  # zmx run injects the command into the session PTY; the output includes the
+  # command echo, the result, and a ZMX_TASK_COMPLETED marker. The pwd result is
+  # a line that is exactly the expected absolute path; match it directly.
+  raw="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin run $session pwd 2>/dev/null" 2>/dev/null)"
+  if print -r -- "$raw" | grep -qF -- "$expected"; then
+    gzmx_e2e_pass "remote cwd == $expected"
+    return 0
+  fi
+  local hist
+  hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin history $session 2>/dev/null" 2>/dev/null)"
+  print -r -- "$hist" | tail -20 >&2
+  gzmx_e2e_fail "remote cwd: expected $expected, not found in raw: $raw"
 }
 
 # Return the remote-layout row (TSV) for a session, or empty if not present.
