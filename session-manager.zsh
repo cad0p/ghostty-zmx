@@ -2192,7 +2192,14 @@ ghostty_zmx_accept_line() {
   # Up-arrow and zsh-autosuggestions behave as if the user had executed it.
   # Unsupported/one-shot commands fall through to normal accept-line and are
   # recorded by zsh itself, so only do this for confirmed interactive handoffs.
+  #
+  # print -s appends to the history FILE, but the in-memory history list that
+  # zle Up-arrow traverses is only refreshed on accept-line (which we skip) or
+  # when SHARE_HISTORY re-reads on the next prompt cycle. Without fc -R, the
+  # command is in the file but Up-arrow at the SAME prompt does not recall it.
+  # fc -R forces an immediate re-read so Up-arrow works right after the handoff.
   print -s -- "$original_buffer" 2>/dev/null || true
+  fc -R 2>/dev/null || true
 
   local -a probe
   projection=(${words[@]})
@@ -2200,11 +2207,26 @@ ghostty_zmx_accept_line() {
   for (( i=${#probe}; i>=1; i-- )); do
     [[ "${probe[$i]}" == "-t" || "${probe[$i]}" == "-tt" || "${probe[$i]}" == "--tty" ]] && probe[$i]=()
   done
+  # Resolve the transport binary (tsh/ssh) to an absolute path. The
+  # projection wrapper runs under `#!/bin/zsh -f` as a Ghostty surface
+  # command, inheriting Ghostty's launchd PATH — which does NOT include
+  # /usr/local/bin on macOS (where tsh lives). A bare `tsh` would fail with
+  # `command not found: tsh` inside the projection pane.
+  local _tsh_bin _ssh_bin
+  _tsh_bin="$(ghostty_zmx_resolve_transport_path tsh 2>/dev/null)"
+  _ssh_bin="$(ghostty_zmx_resolve_transport_path ssh 2>/dev/null)"
   if (( ! saw_tty )); then
     if [[ "$transport" == "ssh" ]]; then
-      projection=(ssh -t ${words[@]:1})
+      projection=("$_ssh_bin" -t ${words[@]:1})
     else
-      projection=(tsh ssh -t ${words[@]:2})
+      projection=("$_tsh_bin" ssh -t ${words[@]:2})
+    fi
+  else
+    # saw_tty: the user already passed -t/-tt; still resolve the binary.
+    if [[ "$transport" == "ssh" ]]; then
+      projection=("$_ssh_bin" ${words[@]:1})
+    else
+      projection=("$_tsh_bin" ssh ${words[@]:2})
     fi
   fi
 

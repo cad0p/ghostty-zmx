@@ -294,6 +294,26 @@ ghostty_zmx_remote_zmx_for_host() {
   fi
 }
 
+# Resolve a transport binary (tsh/ssh) to an absolute path. The projection
+# wrapper runs under `#!/bin/zsh -f` as a Ghostty surface command, inheriting
+# Ghostty's launchd PATH — which does NOT include /usr/local/bin on macOS
+# (where tsh lives). A bare `tsh` in the projection prefix thus fails with
+# `command not found: tsh`. Resolve to an absolute path up front (same pattern
+# as ghostty_zmx_remote_zmx_for_host for the remote zmx binary). Falls back to
+# the bare name (not empty) when the binary is not on PATH, so the error is
+# honest ("command not found: tsh") rather than a silent empty exec.
+ghostty_zmx_resolve_transport_path() {
+  emulate -L zsh
+  local bin="$1" resolved
+  [[ -n "$bin" ]] || { print -r -- "$bin"; return 0; }
+  resolved="$(command -v "$bin" 2>/dev/null)" || { print -r -- "$bin"; return 0; }
+  if [[ "$resolved" == /* ]]; then
+    print -r -- "$resolved"
+  else
+    print -r -- "$bin"
+  fi
+}
+
 ghostty_zmx_notty_prefix() {
   emulate -L zsh
   local prefix_string="$1" _w expect_arg=0
