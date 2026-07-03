@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 - *(v0.2)* Stray poller self-heal, close-no-reopen, split-inherits-remote ([#25](https://github.com/cad0p/ghostty-zmx/pull/25))
 - *(v0.2)* Record intercepted ssh handoffs in zsh history ([#26](https://github.com/cad0p/ghostty-zmx/pull/26))
 - *(v0.2)* Migrate stale zprofile manager source ([#32](https://github.com/cad0p/ghostty-zmx/pull/32))
+- *(v0.2)* Use probed remote zmx path for attach ([#33](https://github.com/cad0p/ghostty-zmx/pull/33))
 
 ### 🚜 Refactor
 
