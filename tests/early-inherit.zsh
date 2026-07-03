@@ -250,4 +250,16 @@ EOS
   fi
 ) || exit 1
 
+# Partial/corrupt install: if session-manager.zsh is present but the shared lib
+# is missing, the full manager must fail open to v0.1 (or return silently), not
+# continue into v0.2 with unbound defaults / missing helper functions.
+(
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  cp session-manager.zsh "$tmp/session-manager.zsh"
+  print -r -- 'GZMX_V01_FALLBACK=1' > "$tmp/session-manager-v0.1.zsh"
+  out="$(cd "$tmp" && env -u TERM_PROGRAM -u GHOSTTY_RESOURCES_DIR zsh -fc 'set -u; source ./session-manager.zsh; print ${GZMX_V01_FALLBACK:-0}' 2>&1)" || fail "manager with missing lib failed under set -u: $out"
+  [[ "$out" == "1" ]] || fail "manager with missing lib did not source v0.1 fallback (out=$out)"
+) || exit 1
+
 print "early-inherit tests passed"

@@ -7,6 +7,14 @@ typeset _gzmx_manager_self="${(%):-%N}"
 typeset _gzmx_manager_dir="${_gzmx_manager_self:A:h}"
 if [[ -r "$_gzmx_manager_dir/session-manager-lib.zsh" ]]; then
   source "$_gzmx_manager_dir/session-manager-lib.zsh"
+else
+  # Partial/corrupt install safety: the v0.2 manager depends on the shared lib
+  # for defaults and helper functions. If the lib is missing, fail open to the
+  # frozen v0.1 fallback when present (or silently return) rather than breaking
+  # the user's shell with unbound variables / missing functions.
+  [[ -r "$_gzmx_manager_dir/session-manager-v0.1.zsh" ]] &&
+    source "$_gzmx_manager_dir/session-manager-v0.1.zsh"
+  return 0
 fi
 
 # Version self-gating: on Ghostty without the 1.4.0 AppleScript terminal pid/tty
