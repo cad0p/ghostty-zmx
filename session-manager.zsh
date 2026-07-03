@@ -1686,7 +1686,7 @@ ghostty_zmx_poll_once() {
   local projection_file="$(ghostty_zmx_remote_projections_file)"
   local host transport version mode prefix
   [[ -f "$hosts_file" ]] || return 0
-  while IFS=$'\t' read -r host transport version mode prefix; do
+  while IFS=$'\t' read -r host transport version mode prefix _zmx_path_extra; do
     [[ -n "$host" && "$mode" == "active" && -n "$prefix" ]] || continue
 
     # 1. Read the server-authoritative remote-layout for this host.
@@ -1777,18 +1777,13 @@ ghostty_zmx_poll_once() {
             [[ -n "$_gzmx_found_win" ]] && win="$(ghostty_zmx_hex_suffix "$_gzmx_found_win" 2>/dev/null || print -r -- "$_gzmx_found_win")"
             [[ -n "$_gzmx_found_tab" ]] && tab="$(ghostty_zmx_hex_suffix "$_gzmx_found_tab" 2>/dev/null || print -r -- "$_gzmx_found_tab")"
             ghostty_zmx_write_projection_row "$host" "$s_ws" "$s_session" "$_gzmx_found_tty" "$_gzmx_found_match_pid" attached "$win" "$tab"
+            _ghostty_zmx_debug "poller reconcile adopted host=$host session=$s_session"
           elif ghostty_zmx_projection_opening_fresh "$host" "$s_session" 2>/dev/null; then
             _ghostty_zmx_debug "poller skip-fresh-opening host=$host session=$s_session"
           elif ghostty_zmx_projection_closing "$host" "$s_session" 2>/dev/null; then
-            :  # close-txn in progress — do NOT re-open; the dead-pid cleanup
-               # will retry the close next cycle. Re-opening here would undo
-               # the close (the "window recreated after close" bug).
+            _ghostty_zmx_debug "poller skip-closing host=$host session=$s_session"
           elif ghostty_zmx_projection_known "$host" "$s_session" 2>/dev/null; then
-            :  # A local row exists (attached/opening/closing). The dead-pid
-               # cleanup path owns removing stale rows; the grouped restore
-               # skips known rows to avoid racing the cleanup. Do NOT set
-               # _need_grouped_restore here — that would re-open a session
-               # whose local row is being cleaned up.
+            _ghostty_zmx_debug "poller skip-known host=$host session=$s_session"
           else
             _need_grouped_restore=1
           fi
@@ -1885,7 +1880,23 @@ ghostty_zmx_start_remote_poller() {
     force=1
     ghostty_pid=""
   fi
-  [[ "$force" -eq 1 || ( -z "${ZMX_SESSION:-}" && -z "${TMUX:-}" ) ]] || return 0
+  # Start the poller when forced, or when not nested inside an external
+  # zmx/tmux session. Being inside our OWN managed zmx session (local
+  # auto-attach sets ZMX_SESSION) is NOT a reason to skip: a Cmd-Q+reopen
+  # surface auto-attaches locally (ZMX_SESSION set) but still needs the
+  # remote poller to re-project surviving server `present` rows. Only skip
+  # when inside a FOREIGN multiplexer (ZMX_SESSION/TMUX set AND not inside
+  # a Ghostty surface we manage).
+  if [[ "$force" -eq 1 ]]; then
+    :
+  elif [[ "${TERM_PROGRAM:-}" == "ghostty" && "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" ]]; then
+    :  # Inside a managed Ghostty surface — start the poller even if locally
+       # zmx-attached (the reopen case).
+  elif [[ -z "${ZMX_SESSION:-}" && -z "${TMUX:-}" ]]; then
+    :
+  else
+    return 0
+  fi
   [[ -n "$ghostty_pid" ]] || ghostty_pid="$(ghostty_zmx_detect_ghostty_pid)" || return 0
   [[ "$ghostty_pid" =~ ^[0-9]+$ ]] || return 0
   # Self-heal orphaned pollers before starting a new one. This kills leftover
@@ -2019,6 +2030,7 @@ while :; do
     _ghostty_zmx_debug "poller stopped ghostty_pid=$ghostty_pid reason=pid-reuse saved=$ghostty_elapsed cur=$cur_elapsed"
     break
   fi
+  _ghostty_zmx_debug "poller cycle start ghostty_pid=$ghostty_pid startup_grace=$startup_grace elapsed=$ghostty_elapsed"
   ghostty_zmx_poll_once "$startup_grace" "$ghostty_pid"
   startup_grace=0
   sleep "$interval"
@@ -2311,6 +2323,7 @@ OSA
   # command tree). The widget only records host metadata here and starts the
   # poller. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
+  _gzmx_widget_debug "widget write-hosts host=$host_key transport=$transport version=$version_value zmx_path=${zmx_path:-empty}"
   { awk -F '\t' -v h="$host_key" '$1 != h { print }' "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null || true
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$host_key" "$transport" "$version_value" active "$prefix_string" "$zmx_path"
   } > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" 2>/dev/null && mv "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null

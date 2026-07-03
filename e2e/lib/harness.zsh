@@ -187,14 +187,21 @@ gzmx_e2e_fixture_reset_server_state() {
 gzmx_e2e_ghostty_launch() {
   emulate -L zsh
   [[ -x "$GZMX_E2E_GHOSTTY_BIN" ]] || gzmx_e2e_fail "Ghostty binary not found: $GZMX_E2E_GHOSTTY_BIN"
-  # Pre-seed remote-hosts so the poller knows the fixture transport.
-  if [[ "$GZMX_E2E_USE_MOCK_TSH" == "1" ]]; then
-    printf '%s\ttsh\t0.6.0\tactive\ttsh ssh\t/home/gzmx/.local/bin/zmx\n' \
-      "$GZMX_E2E_FIXTURE_HOST" > "$GZMX_E2E_DATA_HOME/remote-hosts"
-  else
-    printf '%s\tssh\t0.6.0\tactive\tssh -t -F %s %s\n' \
-      "$GZMX_E2E_FIXTURE_HOST" "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
-      > "$GZMX_E2E_DATA_HOME/remote-hosts"
+  # Pre-seed remote-hosts so the poller knows the fixture transport. Only
+  # pre-seed if the file does not already exist: a reopen (Cmd-Q preservation
+  # scenario) must preserve the widget-discovered zmx path (6th field), which
+  # the restore reads to build the projection command. Clobbering it on
+  # relaunch would drop the absolute zmx path, causing the reopened projection
+  # to use bare `zmx` (not on the non-interactive remote PATH) and fail.
+  if [[ ! -f "$GZMX_E2E_DATA_HOME/remote-hosts" ]]; then
+    if [[ "$GZMX_E2E_USE_MOCK_TSH" == "1" ]]; then
+      printf '%s\ttsh\t0.6.0\tactive\ttsh ssh\t/home/gzmx/.local/bin/zmx\n' \
+        "$GZMX_E2E_FIXTURE_HOST" > "$GZMX_E2E_DATA_HOME/remote-hosts"
+    else
+      printf '%s\tssh\t0.6.0\tactive\tssh -t -F %s %s\n' \
+        "$GZMX_E2E_FIXTURE_HOST" "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+        > "$GZMX_E2E_DATA_HOME/remote-hosts"
+    fi
   fi
   # Launch as a child process; disown so the harness's own exit doesn't kill it
   # prematurely (we kill it explicitly in gzmx_e2e_ghostty_quit).
