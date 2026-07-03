@@ -70,6 +70,15 @@ run_probe "gzmx-fixture" "zmx:zmx		0.6.1" 0
 [[ "$_probe_out" == "0.6.1" ]] || { print -u2 "ok-patch: expected version 0.6.1, got: $_probe_out"; exit 1 }
 print "ok: zmx 0.6.1 → success"
 
+# --- Case 6: new probe payload includes absolute remote zmx path ---
+_new_probe=$'zmx-path:/home/gzmx/.local/bin/zmx\nzmx:zmx		0.6.1'
+run_probe "gzmx-fixture" "$_new_probe" 0
+[[ "$_probe_rc" -eq 0 ]] || { print -u2 "ok-path: expected zero exit, got $_probe_rc"; exit 1 }
+[[ "$_probe_out" == "0.6.1" ]] || { print -u2 "ok-path: expected version 0.6.1, got: $_probe_out"; exit 1 }
+[[ "$(ghostty_zmx_probe_zmx_path "$_new_probe")" == "/home/gzmx/.local/bin/zmx" ]] || { print -u2 "ok-path: failed to parse zmx path"; exit 1 }
+[[ -z "$(ghostty_zmx_probe_zmx_path $'zmx-path:../../bad\nzmx:zmx		0.6.1')" ]] || { print -u2 "ok-path: accepted unsafe zmx path"; exit 1 }
+print "ok: zmx path payload → success"
+
 # --- Trailing-newline check (direct pipe; $(...) strips them) ---
 # All three error messages must end with \n\n so a blank line separates them
 # from the next prompt. Command substitution strips trailing newlines, so
@@ -82,9 +91,15 @@ _tail="$(ghostty_zmx_probe_result "gzmx-fixture" "zmx:zmx		0.5.0" 0 2>/dev/null 
 [[ "$_tail" == *"\\n\\n"* ]] || { print -u2 "trailing: wrong-ver expected \\n\\n, got: $_tail"; exit 1 }
 print "ok: all error messages end with blank line (trailing \\n\\n)"
 
-# --- Case 6: host name with user@ (normalized) — message uses the host key ---
+# --- Case 7: host name with user@ (normalized) — message uses the host key ---
 run_probe "pcad-dev" "" 255
 [[ "$_probe_out" == *"could not reach pcad-dev"* ]] || { print -u2 "host-key: wrong message: $_probe_out"; exit 1 }
 print "ok: host key in message"
+
+print -r -- $'gzmx-fixture\tssh\t0.6.1\tactive\tssh gzmx-fixture\t/home/gzmx/.local/bin/zmx' > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts"
+_cmd="$(ghostty_zmx_projection_command_string gzmx-fixture ws sess 'ssh gzmx-fixture')"
+[[ "$_cmd" == *"/home/gzmx/.local/bin/zmx attach sess"* ]] || { print -u2 "projection command did not use remote zmx path: $_cmd"; exit 1 }
+[[ "$_cmd" != *"source ~/.zshrc"* ]] || { print -u2 "projection command still sources remote zshrc: $_cmd"; exit 1 }
+print "ok: projection command uses remote zmx path"
 
 print "all probe-result tests passed"

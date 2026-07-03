@@ -282,6 +282,18 @@ ghostty_zmx_remote_prefix_for_host() {
   awk -F '\t' -v host="$host" '$1 == host { print $5; exit }' "$hosts_file" 2>/dev/null
 }
 
+ghostty_zmx_remote_zmx_for_host() {
+  emulate -L zsh
+  local host="$1" hosts_file="$(ghostty_zmx_remote_hosts_file)" zmx_path
+  [[ -f "$hosts_file" ]] || { print -r -- "zmx"; return 0; }
+  zmx_path="$(awk -F '\t' -v host="$host" '$1 == host { print $6; exit }' "$hosts_file" 2>/dev/null)"
+  if [[ "$zmx_path" =~ '^/[A-Za-z0-9._~+@%/=-]+$' ]]; then
+    print -r -- "$zmx_path"
+  else
+    print -r -- "zmx"
+  fi
+}
+
 ghostty_zmx_notty_prefix() {
   emulate -L zsh
   local prefix_string="$1" _w expect_arg=0
@@ -497,15 +509,17 @@ ghostty_zmx_inherit_remote_context_if_any() {
     # string with single quotes preserves the quotes as literal characters,
     # which ssh passes through and the remote shell mis-parses, causing
     # `zmx attach` to exit without creating the session.
-    # Source ~/.zshrc on the remote so zmx is found when it's only on the
-    # interactive PATH (see ghostty_zmx_projection_command_string rationale).
+    # Use the probed absolute remote zmx path when available so attach does not
+    # source the remote ~/.zshrc (remote prompt/plugins can emit terminal queries
+    # whose responses leak into zmx scrollback).
     #
     # When called from the ~/.zprofile early hook, this exec happens before the
     # split shell sources ~/.zshrc, preventing local prompt/plugin terminal
     # queries from being emitted. If the early hook cannot decide and the later
     # ~/.zshrc manager reaches this path instead, it preserves the legacy
     # behavior (and therefore the older query-response leak limitation).
-    exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "source ~/.zshrc 2>/dev/null; zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
+    local _remote_zmx="$(ghostty_zmx_remote_zmx_for_host "$host")"
+    exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "$_remote_zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
   return 1
 }

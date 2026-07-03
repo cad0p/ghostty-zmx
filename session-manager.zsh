@@ -1280,17 +1280,21 @@ ghostty_zmx_cleanup_closed_remote_projections() {
 # (`--session <gzr>` marker) and signal handling is deterministic.
 ghostty_zmx_projection_command_string() {
   emulate -L zsh
-  local host="$1" workspace="$2" session="$3" prefix="$4" wrapper
+  local host="$1" workspace="$2" session="$3" prefix="$4" zmx_path="${5:-}" wrapper remote_zmx
   wrapper="$(ghostty_zmx_wrapper_path)"
-  # The remote command sources ~/.zshrc before `zmx attach` so zmx is found on
-  # hosts where it's only on the interactive PATH (e.g. ~/.local/bin added in
-  # .zshrc). `tsh ssh -t host 'zmx attach'` runs non-interactively (the command
-  # arg suppresses .zshrc sourcing), so zmx would be "command not found" and
-  # the wrapper exits immediately — making it look like `set command` was
-  # ignored. The 2>/dev/null keeps Docker fixtures (zmx on /usr/local/bin)
-  # quiet. The `zmx attach <session>` substring is preserved for process-arg
-  # scanning (find_live_projection).
-  print -r -- "$wrapper projection --host $host --workspace $workspace --session $session -- $prefix 'source ~/.zshrc 2>/dev/null; zmx attach $session'"
+  # Use the absolute remote zmx path discovered by the prerequisite probe when
+  # available. This preserves hosts where zmx is in ~/.local/bin without
+  # sourcing remote ~/.zshrc during attach; remote prompt/plugins can emit
+  # terminal queries whose responses leak into zmx scrollback.
+  if [[ "$zmx_path" =~ '^/[A-Za-z0-9._~+@%/=-]+$' ]]; then
+    remote_zmx="$zmx_path"
+  else
+    remote_zmx="$(ghostty_zmx_remote_zmx_for_host "$host")"
+  fi
+  # The `zmx attach <session>` substring is preserved for process-arg scanning
+  # (find_live_projection), including when remote_zmx is an absolute path such
+  # as /home/user/.local/bin/zmx.
+  print -r -- "$wrapper projection --host $host --workspace $workspace --session $session -- $prefix '$remote_zmx attach $session'"
 }
 
 # Recreate the remote window/tab/split layout from the server remote-layout's
@@ -1627,7 +1631,7 @@ ghostty_zmx_detect_ghostty_pid() {
 # non-fatal: an unreachable host leaves the prior snapshot (if any).
 ghostty_zmx_snapshot_remote_session() {
   emulate -L zsh
-  local host="$1" session="$2" prefix notty dir hist_file tmp scrollback="${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}"
+  local host="$1" session="$2" prefix notty dir hist_file tmp remote_zmx scrollback="${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}"
   prefix="$(ghostty_zmx_remote_prefix_for_host "$host")"
   [[ -n "$prefix" ]] || return 1
   prefix="$(ghostty_zmx_notty_prefix "$prefix")"
@@ -1637,9 +1641,11 @@ ghostty_zmx_snapshot_remote_session() {
   tmp="${hist_file}.tmp.$$"
   # Fetch remote scrollback (no pty) and truncate to the configured line count.
   # ssh concatenates trailing args into the remote command string, so inline the
-  # session name (hex+dashes — shell-safe) rather than using $0. A failure
-  # (host down, session gone) leaves the prior snapshot in place.
-  if ${(z)prefix} 'source ~/.zshrc 2>/dev/null; zmx history '"$session"' 2>/dev/null' | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
+  # session name (hex+dashes — shell-safe) rather than using $0. Use the probed
+  # absolute zmx path when available; do not source remote ~/.zshrc here.
+  # A failure (host down, session gone) leaves the prior snapshot in place.
+  remote_zmx="$(ghostty_zmx_remote_zmx_for_host "$host")"
+  if ${(z)prefix} "$remote_zmx history $session 2>/dev/null" | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
     [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     _ghostty_zmx_debug "remote snapshot host=$host session=$session file=$hist_file"
   else
@@ -2055,9 +2061,10 @@ os.execvp("/bin/zsh", ["/bin/zsh", sys.argv[1]] + sys.argv[2:])' "$script" "$gho
 # the message, clears BUFFER, and resets the prompt.
 #
 # probe_out encoding (from the remote `exit 0` probe command):
-#   "zmx:<version line>"  — zmx present; version line is e.g. "zmx\t\t0.6.0"
-#   "no-zmx"               — zmx not on the remote PATH
-#   "" (empty) + probe_rc!=0 — ssh connection itself failed (host down/refused/auth)
+#   "zmx:<version line>"                         — legacy zmx present encoding
+#   "zmx-path:<absolute path>\nzmx:<version line>" — zmx present + probed path
+#   "no-zmx"                                      — zmx not on the remote PATH
+#   "" (empty) + probe_rc!=0                      — ssh connection itself failed (host down/refused/auth)
 ghostty_zmx_probe_result() {
   emulate -L zsh
   local host="$1" probe_out="$2" probe_rc="$3" version_value
@@ -2069,14 +2076,26 @@ ghostty_zmx_probe_result() {
     print -P "\nghostty-zmx: remote host $host needs zmx 0.6.x on PATH; install zmx on $host and retry.\n"
     return 1
   fi
-  # probe_out is "zmx:<version line>"; the version line is e.g. "zmx\t\t0.6.0".
-  version_value="$(print -r -- "${probe_out#zmx:}" | awk '{print $2}')"
+  # probe_out is either legacy "zmx:<version line>" or a multi-line payload
+  # with "zmx-path:<absolute path>" plus "zmx:<version line>".
+  version_value="$(print -r -- "$probe_out" | awk -F ':' '$1 == "zmx" { sub(/^zmx:/, ""); print; exit }' | awk '{print $2}')"
   if [[ "$version_value" != 0.6.* ]]; then
     print -P "\nghostty-zmx: remote host $host has zmx $version_value; ghostty-zmx needs zmx 0.6.x. Update zmx on $host and retry.\n"
     return 1
   fi
   print -r -- "$version_value"
   return 0
+}
+
+ghostty_zmx_probe_zmx_path() {
+  emulate -L zsh
+  local probe_out="$1" zmx_path
+  zmx_path="$(print -r -- "$probe_out" | awk -F ':' '$1 == "zmx-path" { sub(/^zmx-path:/, ""); print; exit }')"
+  if [[ "$zmx_path" =~ '^/[A-Za-z0-9._~+@%/=-]+$' ]]; then
+    print -r -- "$zmx_path"
+  else
+    print -r -- ""
+  fi
 }
 
 ghostty_zmx_accept_line() {
@@ -2222,7 +2241,7 @@ ghostty_zmx_accept_line() {
   done
   [[ "$_is_tsh" -eq 1 || "$_have_t" -eq 1 ]] || probe_argv+=(-T)
   _gzmx_widget_debug "widget probe host=$host_key session=$session argv=${probe_argv[*]}"
-  local probe_out probe_rc probe_msg version_value
+  local probe_out probe_rc probe_msg version_value zmx_path
   # Source .zshrc so zmx is found even when it's only on the interactive PATH
   # (some users add ~/.local/bin to PATH in .zshrc, which is not sourced for
   # non-interactive `ssh -T host 'cmd'`). The projection itself runs with -t
@@ -2236,7 +2255,7 @@ ghostty_zmx_accept_line() {
   #
   # `ssh -T` writes its diagnostics to stderr; suppress it so it does not
   # clutter the pane.
-  probe_out="$("${probe_argv[@]}" 'source ~/.zshrc 2>/dev/null; if command -v zmx >/dev/null 2>&1; then printf "zmx:%s\n" "$(zmx version | head -1)"; else echo no-zmx; fi; exit 0' 2>/dev/null)"
+  probe_out="$("${probe_argv[@]}" 'source ~/.zshrc 2>/dev/null; if zmx_path=$(command -v zmx 2>/dev/null); then printf "zmx-path:%s\nzmx:%s\n" "$zmx_path" "$($zmx_path version | head -1)"; else echo no-zmx; fi; exit 0' 2>/dev/null)"
   probe_rc=$?
   probe_msg="$(ghostty_zmx_probe_result "$host_key" "$probe_out" "$probe_rc")"
   if [[ $? -ne 0 ]]; then
@@ -2246,7 +2265,8 @@ ghostty_zmx_accept_line() {
     return
   fi
   version_value="$probe_msg"
-  _gzmx_widget_debug "widget probe-ok host=$host_key version=$version_value"
+  zmx_path="$(ghostty_zmx_probe_zmx_path "$probe_out")"
+  _gzmx_widget_debug "widget probe-ok host=$host_key version=$version_value zmx_path=${zmx_path:-zmx}"
 
   # Open the projection window from THIS surface-shell (zle) context. The
   # ghostty-zmx wrapper (the surface's own command) writes the remote-layout
@@ -2254,7 +2274,7 @@ ghostty_zmx_accept_line() {
   # row. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   local command_string applescript_command
-  command_string="$(ghostty_zmx_projection_command_string "$host_key" "$workspace" "$session" "$prefix_string")"
+  command_string="$(ghostty_zmx_projection_command_string "$host_key" "$workspace" "$session" "$prefix_string" "$zmx_path")"
   applescript_command="${command_string//\\\\/\\\\\\\\}"
   applescript_command="${applescript_command//\"/\\\"}"
   _gzmx_widget_debug "widget opening host=$host_key session=$session cmd=$command_string"
@@ -2292,7 +2312,7 @@ OSA
   # poller. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.
   { awk -F '\t' -v h="$host_key" '$1 != h { print }' "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null || true
-    printf '%s\t%s\t%s\t%s\t%s\n' "$host_key" "$transport" "$version_value" active "$prefix_string"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$host_key" "$transport" "$version_value" active "$prefix_string" "$zmx_path"
   } > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" 2>/dev/null && mv "$GHOSTTY_ZMX_DATA_HOME/remote-hosts.tmp.$$" "$GHOSTTY_ZMX_DATA_HOME/remote-hosts" 2>/dev/null
 
   # Start the poller (detached) so server-side layout changes (new present
