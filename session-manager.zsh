@@ -2499,6 +2499,11 @@ if [[ "${GHOSTTY_ZMX_INTERNAL_POLLER:-0}" == "1" ]]; then
 fi
 
 _ghostty_zmx_install_accept_line_widget
+# E2E harness hook: if the harness wrote a PATH snippet into the data home,
+# source it here (after the user's .zshrc PATH manipulations) so the widget
+# finds the mock tsh. No-op in production (the file does not exist).
+[[ -r "${GHOSTTY_ZMX_DATA_HOME:-$HOME/.local/share/ghostty-zmx}/e2e-path.zsh" ]] && \
+  source "${GHOSTTY_ZMX_DATA_HOME:-$HOME/.local/share/ghostty-zmx}/e2e-path.zsh"
 # Always self-heal orphaned pollers on shell init, even when no remote-hosts
 # file exists yet. Leftover poller scripts from crashed/killed Ghostty
 # instances survive `pkill -f Ghostty-tip` (reparented to launchd) and

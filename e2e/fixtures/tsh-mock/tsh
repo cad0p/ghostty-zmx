@@ -1,0 +1,58 @@
+#!/bin/zsh
+# ghostty-zmx E2E fixture: mock `tsh` that delegates to the sshd fixture.
+#
+# The real Teleport cluster Docker fixture fights tsh client/server version
+# mismatches (laptop tsh v18 vs Teleport v14 image = ALPN/grpc handshake
+# failure) that are unrelated to ghostty-zmx. This mock exercises the widget's
+# tsh code path (parsing `tsh ssh <host>`, probe, projection command) against
+# the working sshd fixture, without a real Teleport cluster.
+#
+# It impersonates `tsh ssh` by translating to `ssh -F <config> gzmx-fixture`
+# for the E2E fixture host `gzmx-fixture` (or any host — all map to the
+# fixture). This means the widget's tsh-specific branches (no -T added,
+# `tsh ssh` prefix, projection command shape) are exercised end-to-end.
+#
+# Install: put this dir first on PATH for the E2E scenario. The scenario
+# launches Ghostty with PATH=<mock-dir>:$PATH so the widget finds `tsh` here.
+
+# Handle `tsh ssh <args>`: translate to ssh against the fixture.
+# Handle `tsh login`/`tsh status`/`tsh version`: no-op / stub.
+
+_emu_tsh_config="${GHOSTTY_ZMX_E2E_SSH_CONFIG:-/tmp/ghostty-zmx-fixture-sshconfig}"
+_emu_tsh_fixture_user="${GHOSTTY_ZMX_E2E_FIXTURE_USER:-gzmx}"
+_emu_tsh_fixture_host="${GHOSTTY_ZMX_E2E_FIXTURE_HOST:-gzmx-fixture}"
+
+if [[ "$1" == "version" ]]; then
+  print "Teleport v14.4.1 (mock — delegates to sshd fixture)"
+  exit 0
+fi
+
+if [[ "$1" == "status" ]]; then
+  print "  Profile URL:        https://localhost:3080 (mock)"
+  print "  Logged in as:       $_emu_tsh_fixture_user"
+  print "  Cluster:            fixture (mock)"
+  exit 0
+fi
+
+if [[ "$1" == "login" ]]; then
+  print "Logged in (mock) as $_emu_tsh_fixture_user"
+  exit 0
+fi
+
+if [[ "$1" == "logout" ]]; then
+  exit 0
+fi
+
+# `tsh ssh <args>` — translate to ssh.
+if [[ "$1" == "ssh" ]]; then
+  shift
+  # Pass remaining args to ssh with the fixture config. The fixture ignores
+  # the target host (always gzmx-fixture) but we preserve -t/-T and the
+  # remote command. Strip any user@host that the widget/projection added;
+  # the fixture always uses the gzmx user via its ssh config.
+  # We keep -t/-T and the remote command verbatim.
+  exec ssh -F "$_emu_tsh_config" "$@"
+fi
+
+print -u2 "mock-tsh: unknown command: $*"
+exit 2
