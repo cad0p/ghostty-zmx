@@ -128,6 +128,7 @@ zsh -n "$home/.config/ghostty-zmx/session-manager-early.zsh" || { print -u2 "ear
 # v0.2: wrapper, server installer, and vendored terminfo must be installed.
 [[ -x "$home/.config/ghostty-zmx/ghostty-zmx" ]] || { print -u2 "wrapper missing or not executable"; exit 1; }
 [[ -x "$home/.config/ghostty-zmx/install-server.sh" ]] || { print -u2 "server installer missing or not executable"; exit 1; }
+[[ -x "$home/.config/ghostty-zmx/ghostty-zmx-remote-layout" ]] || { print -u2 "remote-layout helper missing or not executable"; exit 1; }
 # v0.2: frozen v0.1 fallback manager must be installed (early-sourced on 1.3.x).
 [[ -f "$home/.config/ghostty-zmx/session-manager-v0.1.zsh" ]] || { print -u2 "v0.1 fallback manager missing"; exit 1; }
 zsh -n "$home/.config/ghostty-zmx/session-manager-v0.1.zsh" || { print -u2 "v0.1 fallback manager fails syntax check"; exit 1; }

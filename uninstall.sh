@@ -176,6 +176,7 @@ else
         "$install_dir/ghostty-zmx" \
         "$install_dir/uninstall.sh" \
         "$install_dir/install-server.sh" \
+        "$install_dir/ghostty-zmx-remote-layout" \
         "$install_dir/terminfo/xterm-ghostty.terminfo" 2>/dev/null || true
   rmdir "$install_dir/terminfo" "$install_dir" 2>/dev/null || true
   print "Removed installed ghostty-zmx files under $install_dir where present."
