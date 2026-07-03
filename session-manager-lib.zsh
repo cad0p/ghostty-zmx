@@ -519,7 +519,37 @@ ghostty_zmx_inherit_remote_context_if_any() {
     # ~/.zshrc manager reaches this path instead, it preserves the legacy
     # behavior (and therefore the older query-response leak limitation).
     local _remote_zmx="$(ghostty_zmx_remote_zmx_for_host "$host")"
-    exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "$_remote_zmx attach $session" <"$cur_tty" >"$cur_tty" 2>&1
+    # Inherit the parent remote session's cwd so the new split/tab remote
+    local _parent_cwd=""
+    # session starts in the same directory (matches Ghostty's
+    # split-inherit-working-directory / tab-inherit-working-directory for
+    # remote panes). zmx's spawned shell inherits the caller's cwd as
+    # start_dir, so we `cd` to the parent's cwd before attaching. The parent's
+    # current cwd is queried via `zmx run <parent> pwd` over a no-pty ssh. If
+    # the query fails or the cwd is not an absolute path, fall back to the
+    # remote home (zmx's default) — do not block the attach.
+    local _parent_cwd=""
+    # Query the parent remote session's current cwd via `zmx run <parent> pwd`
+    # over a no-pty ssh. zmx run injects the command into the session PTY; the
+    # output is noisy (command echo + env prefix + ZMX_TASK_COMPLETED marker
+    # with mid-token line breaks from the pty). The pwd result is an absolute
+    # path on its own line. NOTE: the redirect must be OUTSIDE the zmx command
+    # (no `2>/dev/null` inside the zmx run args).
+    _parent_cwd="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$_remote_zmx run $parent_session pwd" ; } 2>/dev/null )"
+    # zmx run output is noisy (command echo + env prefix + ZMX_TASK_COMPLETED
+    # marker) with \r\n line endings and escape codes from the pty. The pwd
+    # result is an absolute path on its own line. Strip carriage returns and
+    # match a line that is (mostly) just an absolute path.
+    _parent_cwd="$(print -r -- "$_parent_cwd" | tr -d '\r' | grep -E '^[[:space:]]*/[A-Za-z0-9._/-]+$' | tail -1 | sed 's/^[[:space:]]*//')"
+    local _remote_cmd
+    if [[ "$_parent_cwd" == /* ]]; then
+      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session cwd=$_parent_cwd"
+      _remote_cmd="cd -P '$_parent_cwd' && $_remote_zmx attach $session"
+    else
+      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session cwd=unknown (using default)"
+      _remote_cmd="$_remote_zmx attach $session"
+    fi
+    exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "$_remote_cmd" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
   return 1
 }
