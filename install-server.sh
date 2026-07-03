@@ -94,6 +94,19 @@ refuse_symlinked_install_dir() {
   fi
 }
 
+# Refuse a non-directory install path (e.g. a stray regular file at
+# ~/.config/ghostty-zmx). Otherwise `mkdir -p $install_dir/terminfo` silently
+# fails and later `install -m` calls exit — but the shell startup source line
+# and remote-env block have already been written to ~/.zshrc, leaving a
+# guarded-but-dangling reference forever. Mirrors validate_install_dir in
+# install.sh (round 3 fix).
+refuse_non_directory_install_dir() {
+  if [[ -e "$install_dir" && ! -d "$install_dir" ]]; then
+    print -u2 "Refusing to install into non-directory install path: $install_dir"
+    exit 1
+  fi
+}
+
 ensure_source_line() {
   local file="$1"
   touch "$file" || return 1
@@ -204,6 +217,7 @@ fi
 [[ -f "$source_remote_layout" ]] || { print -u2 "Missing $source_remote_layout"; exit 1; }
 
 refuse_symlinked_install_dir
+refuse_non_directory_install_dir
 
 print_plan
 confirm "Apply this server installation plan?" || { print "Installation declined; no files changed."; exit 0; }
@@ -212,9 +226,13 @@ backup_file "$zshrc"
 ensure_source_line "$zshrc" || exit 1
 ensure_remote_env_block "$zshrc" || exit 1
 
-mkdir -p "$install_dir/terminfo"
+mkdir -p "$install_dir/terminfo" || exit 1
 if [[ -L "$install_dir" ]]; then
   print -u2 "Refusing to install into symlinked install directory: $install_dir"
+  exit 1
+fi
+if [[ ! -d "$install_dir" ]]; then
+  print -u2 "Failed to create install directory: $install_dir"
   exit 1
 fi
 install -m 0644 "$source_manager" "$manager_dest" || exit 1

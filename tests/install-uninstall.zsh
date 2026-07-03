@@ -137,6 +137,28 @@ zsh -n "$server_home/.config/ghostty-zmx/session-manager-lib.zsh" || { print -u2
 grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$server_home/.zshrc" || { print -u2 "server install source line missing"; exit 1; }
 grep -q 'session-manager-lib.zsh' "$workdir/server-install.out" || { print -u2 "server install did not report shared lib"; exit 1; }
 
+# Regression (round 14): install-server.sh must refuse a regular-file install
+# path before mutating shell startup files, mirroring the round-3 install.sh
+# fix. A regular file at ~/.config/ghostty-zmx would cause `mkdir -p .../terminfo`
+# to fail silently and later `install -m` calls to exit — after ~/.zshrc had
+# already been extended with the source line + remote-env block, leaving a
+# guarded-but-dangling reference forever.
+server_home_file="$workdir/server-home-file"
+server_stubbin_file="$workdir/server-bin-file"
+mkdir -p "$server_home_file/.config" "$server_stubbin_file"
+touch "$server_home_file/.config/ghostty-zmx"
+cat > "$server_stubbin_file/infocmp" <<'STUB'
+#!/bin/zsh
+exit 0
+STUB
+chmod +x "$server_stubbin_file/infocmp"
+if HOME="$server_home_file" PATH="$server_stubbin_file:$PATH" "$repo_dir/install-server.sh" --yes > "$workdir/server-file-install.out" 2>&1; then
+  print -u2 "server installer accepted regular-file install path"
+  exit 1
+fi
+grep -q 'Refusing to install into non-directory install path' "$workdir/server-file-install.out" || { print -u2 "server installer missing non-directory refusal"; exit 1; }
+[[ ! -e "$server_home_file/.zshrc" ]] || { print -u2 "server installer wrote .zshrc despite non-directory install path"; exit 1; }
+
 home_user_conflict="$workdir/home-user-conflict"
 config_user_conflict="$workdir/config-user-conflict/config.ghostty"
 data_user_conflict="$workdir/share-user-conflict/ghostty-zmx"
