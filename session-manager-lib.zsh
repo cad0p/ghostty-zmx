@@ -520,33 +520,35 @@ ghostty_zmx_inherit_remote_context_if_any() {
     # behavior (and therefore the older query-response leak limitation).
     local _remote_zmx="$(ghostty_zmx_remote_zmx_for_host "$host")"
     # Inherit the parent remote session's cwd so the new split/tab remote
-    local _parent_cwd=""
     # session starts in the same directory (matches Ghostty's
     # split-inherit-working-directory / tab-inherit-working-directory for
     # remote panes). zmx's spawned shell inherits the caller's cwd as
-    # start_dir, so we `cd` to the parent's cwd before attaching. The parent's
-    # current cwd is queried via `zmx run <parent> pwd` over a no-pty ssh. If
-    # the query fails or the cwd is not an absolute path, fall back to the
-    # remote home (zmx's default) — do not block the attach.
-    local _parent_cwd=""
-    # Query the parent remote session's current cwd via `zmx run <parent> pwd`
-    # over a no-pty ssh. zmx run injects the command into the session PTY; the
-    # output is noisy (command echo + env prefix + ZMX_TASK_COMPLETED marker
-    # with mid-token line breaks from the pty). The pwd result is an absolute
-    # path on its own line. NOTE: the redirect must be OUTSIDE the zmx command
-    # (no `2>/dev/null` inside the zmx run args).
-    _parent_cwd="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$_remote_zmx run $parent_session pwd" ; } 2>/dev/null )"
-    # zmx run output is noisy (command echo + env prefix + ZMX_TASK_COMPLETED
-    # marker) with \r\n line endings and escape codes from the pty. The pwd
-    # result is an absolute path on its own line. Strip carriage returns and
-    # match a line that is (mostly) just an absolute path.
-    _parent_cwd="$(print -r -- "$_parent_cwd" | tr -d '\r' | grep -E '^[[:space:]]*/[A-Za-z0-9._/-]+$' | tail -1 | sed 's/^[[:space:]]*//')"
+    # start_dir, so we `cd` to the parent's cwd before attaching.
+    #
+    # The reliable way to query the LIVE cwd on Linux is to read
+    # /proc/<pid>/cwd: `zmx list` exposes the session pid, and readlink on
+    # the /proc/<pid>/cwd symlink yields the current cwd (not the initial
+    # start_dir). This avoids the unreliable `zmx run <parent> pwd` path
+    # (whose stdout over `ssh -T` is the remote-shell echo / zmx binary
+    # path, not the PTY output — see e2e scenario 10 investigation).
+    # If the pid is missing or readlink fails (non-Linux host, session
+    # gone), fall back to the remote home (zmx's default) — do not block.
+    local _parent_pid="" _parent_cwd=""
+    _parent_pid="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$_remote_zmx list" ; } 2>/dev/null )"
+    _parent_pid="$(print -r -- "$_parent_pid" | tr -d '\r' | awk -v n="$parent_session" '
+      { for (i=1; i<=NF; i++) if ($i ~ "^name=" n "$") {
+        for (j=i; j<=NF; j++) if ($j ~ /^pid=/) { sub(/^pid=/, "", $j); print $j; exit }
+      } }')"
+    if [[ "$_parent_pid" =~ ^[0-9]+$ ]]; then
+      _parent_cwd="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "readlink /proc/$_parent_pid/cwd" ; } 2>/dev/null )"
+      _parent_cwd="$(print -r -- "$_parent_cwd" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    fi
     local _remote_cmd
     if [[ "$_parent_cwd" == /* ]]; then
-      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session cwd=$_parent_cwd"
+      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session pid=$_parent_pid cwd=$_parent_cwd"
       _remote_cmd="cd -P '$_parent_cwd' && $_remote_zmx attach $session"
     else
-      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session cwd=unknown (using default)"
+      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session pid=${_parent_pid:-unknown} cwd=unknown (using default)"
       _remote_cmd="$_remote_zmx attach $session"
     fi
     exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "$_remote_cmd" <"$cur_tty" >"$cur_tty" 2>&1
