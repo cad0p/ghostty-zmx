@@ -24,6 +24,7 @@ source_v01_manager="$repo_dir/session-manager-v0.1.zsh"
 source_wrapper="$repo_dir/ghostty-zmx"
 source_uninstall="$repo_dir/uninstall.sh"
 source_server_install="$repo_dir/install-server.sh"
+source_remote_layout="$repo_dir/ghostty-zmx-remote-layout"
 source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
@@ -33,6 +34,7 @@ v01_manager_dest="$install_dir/session-manager-v0.1.zsh"
 wrapper_dest="$install_dir/ghostty-zmx"
 uninstall_dest="$install_dir/uninstall.sh"
 server_install_dest="$install_dir/install-server.sh"
+remote_layout_dest="$install_dir/ghostty-zmx-remote-layout"
 terminfo_dest="$install_dir/terminfo/xterm-ghostty.terminfo"
 zshrc="$HOME/.zshrc"
 zprofile="$HOME/.zprofile"
@@ -250,7 +252,7 @@ print_plan() {
   print "  - update only the managed ghostty-zmx section in $ghostty_config"
   print "  - warn about unsupported or conflicting Ghostty settings outside the managed section"
   print ""
-  print "To enable remote panes, copy install-server.sh to each remote host and run it."
+  print "To enable remote panes, run: ghostty-zmx install-server <host> on each remote host."
   print ""
   print "Managed Ghostty block to add:"
   print -r -- "$managed_block"
@@ -263,6 +265,7 @@ print_plan() {
 [[ -f "$source_wrapper" ]] || { print -u2 "Missing $source_wrapper"; exit 1; }
 [[ -f "$source_uninstall" ]] || { print -u2 "Missing $source_uninstall"; exit 1; }
 [[ -f "$source_server_install" ]] || { print -u2 "Missing $source_server_install"; exit 1; }
+[[ -f "$source_remote_layout" ]] || { print -u2 "Missing $source_remote_layout"; exit 1; }
 [[ -f "$source_terminfo" ]] || { print -u2 "Missing $source_terminfo"; exit 1; }
 
 require_command zmx
@@ -298,6 +301,7 @@ install -m 0644 "$source_v01_manager" "$v01_manager_dest" || exit 1
 install -m 0755 "$source_wrapper" "$wrapper_dest" || exit 1
 install -m 0755 "$source_uninstall" "$uninstall_dest" || exit 1
 install -m 0755 "$source_server_install" "$server_install_dest" || exit 1
+install -m 0755 "$source_remote_layout" "$remote_layout_dest" || exit 1
 # Refresh the vendored Ghostty terminfo from the installed Ghostty at install
 # time so the copy always matches the laptop's Ghostty version (per the v0.2
 # design, "Vendored terminfo staleness"). If infocmp against the installed
@@ -310,6 +314,7 @@ print "Installed $v01_manager_dest"
 print "Installed $wrapper_dest"
 print "Installed $uninstall_dest"
 print "Installed $server_install_dest"
+print "Installed $remote_layout_dest"
 print "Installed $terminfo_dest"
 
 backup_file "$ghostty_config"

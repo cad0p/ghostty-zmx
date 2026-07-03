@@ -112,6 +112,24 @@ That early hook runs before `.zshrc` only for Ghostty surfaces, and only to repl
 
 The installer saves timestamped backups before editing shell or Ghostty config files.
 
+## Remote server install
+
+Remote zmx panes require the ghostty-zmx server-side files on each remote host. The `ghostty-zmx install-server` subcommand bootstraps them in one shot over your existing ssh/tsh transport — no manual `scp`:
+
+```sh
+ghostty-zmx install-server pcad-dev
+```
+
+It bundles `install-server.sh` and its sibling files from your laptop, streams the tarball over ssh/tsh into a temp dir on the remote, runs `install-server.sh --yes` there, and cleans up. The remote installer verifies `zsh` and `zmx` (zmx is a prerequisite, not managed here), installs the server-side manager + vendored Ghostty terminfo, and adds a managed `TERM_PROGRAM`/`COLORTERM` remote-env block to the remote `~/.zshrc` so Ghostty shell integration auto-activates over `tsh ssh`.
+
+Transport resolution:
+
+- Known host (already used in a projection): reuses the stored transport prefix from `remote-hosts` (so `tsh ssh` vs `ssh` and any `-F`/`-i`/`-l` options are reused).
+- Unknown host: falls back to `ssh <host>`.
+- Explicit transport: `ghostty-zmx install-server -- tsh ssh -i /key pier@host`.
+
+Run `ghostty-zmx-install --yes` on the laptop first so the local bundle files are present.
+
 ## Ghostty config managed by ghostty-zmx
 
 The installer manages only this section in the Ghostty config:
