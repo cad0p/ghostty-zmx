@@ -121,6 +121,22 @@ grep -q 'Warning: .*window-save-state' "$workdir/install.out" || { print -u2 "co
 grep -q 'Warning: .*confirm-close-surface' "$workdir/install.out" || { print -u2 "confirm-close-surface warning missing"; exit 1; }
 grep -q 'quit-after-last-window-closed = true is unsupported' "$workdir/install.out" || { print -u2 "quit-after-last-window-closed warning missing"; exit 1; }
 
+server_home="$workdir/server-home"
+server_stubbin="$workdir/server-bin"
+mkdir -p "$server_home" "$server_stubbin"
+cat > "$server_stubbin/infocmp" <<'STUB'
+#!/bin/zsh
+exit 0
+STUB
+chmod +x "$server_stubbin/infocmp"
+HOME="$server_home" PATH="$server_stubbin:$PATH" "$repo_dir/install-server.sh" --yes > "$workdir/server-install.out"
+[[ -f "$server_home/.config/ghostty-zmx/session-manager.zsh" ]] || { print -u2 "server install manager missing"; exit 1; }
+[[ -f "$server_home/.config/ghostty-zmx/session-manager-lib.zsh" ]] || { print -u2 "server install shared lib missing"; exit 1; }
+zsh -n "$server_home/.config/ghostty-zmx/session-manager.zsh" || { print -u2 "server manager fails syntax check"; exit 1; }
+zsh -n "$server_home/.config/ghostty-zmx/session-manager-lib.zsh" || { print -u2 "server shared lib fails syntax check"; exit 1; }
+grep -qxF '[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"' "$server_home/.zshrc" || { print -u2 "server install source line missing"; exit 1; }
+grep -q 'session-manager-lib.zsh' "$workdir/server-install.out" || { print -u2 "server install did not report shared lib"; exit 1; }
+
 home_user_conflict="$workdir/home-user-conflict"
 config_user_conflict="$workdir/config-user-conflict/config.ghostty"
 data_user_conflict="$workdir/share-user-conflict/ghostty-zmx"

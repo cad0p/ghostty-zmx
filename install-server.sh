@@ -7,7 +7,7 @@
 #
 # The server installer:
 #   1. verifies zsh and zmx exist (zmx is a prerequisite, not managed here),
-#   2. installs session-manager.zsh + the vendored Ghostty terminfo,
+#   2. installs session-manager.zsh + session-manager-lib.zsh + the vendored Ghostty terminfo,
 #   3. appends the same guarded source line to ~/.zshrc (dormant on a headless
 #      host, but keeps the install symmetric),
 #   4. adds a managed remote-env block to ~/.zshrc that sets TERM_PROGRAM and
@@ -38,10 +38,12 @@ done
 
 repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
+source_lib="$repo_dir/session-manager-lib.zsh"
 source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
 source_remote_layout="$repo_dir/ghostty-zmx-remote-layout"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
+lib_dest="$install_dir/session-manager-lib.zsh"
 terminfo_dest="$install_dir/terminfo/xterm-ghostty.terminfo"
 remote_layout_dest="$install_dir/ghostty-zmx-remote-layout"
 zshrc="$HOME/.zshrc"
@@ -172,7 +174,7 @@ install_terminfo() {
 print_plan() {
   print "ghostty-zmx SERVER installer will:"
   print "  - verify zsh and zmx are installed (zmx is a prerequisite)"
-  print "  - install files under $install_dir (session-manager.zsh, terminfo, ghostty-zmx-remote-layout)"
+  print "  - install files under $install_dir (session-manager.zsh, session-manager-lib.zsh, terminfo, ghostty-zmx-remote-layout)"
   print "  - install the vendored Ghostty terminfo (xterm-ghostty) via tic (skipped if already present)"
   print "  - update $zshrc with one guarded source line (dormant on a headless host)"
   print "  - add a managed remote-env block to $zshrc (TERM_PROGRAM/COLORTERM for remote shells)"
@@ -197,6 +199,7 @@ if ! command -v zmx >/dev/null 2>&1; then
 fi
 
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }
+[[ -f "$source_lib" ]] || { print -u2 "Missing $source_lib"; exit 1; }
 [[ -f "$source_terminfo" ]] || { print -u2 "Missing $source_terminfo"; exit 1; }
 [[ -f "$source_remote_layout" ]] || { print -u2 "Missing $source_remote_layout"; exit 1; }
 
@@ -214,10 +217,12 @@ if [[ -L "$install_dir" ]]; then
   print -u2 "Refusing to install into symlinked install directory: $install_dir"
   exit 1
 fi
-install -m 0644 "$source_manager" "$manager_dest"
-install -m 0644 "$source_terminfo" "$terminfo_dest"
-install -m 0755 "$source_remote_layout" "$remote_layout_dest"
+install -m 0644 "$source_manager" "$manager_dest" || exit 1
+install -m 0644 "$source_lib" "$lib_dest" || exit 1
+install -m 0644 "$source_terminfo" "$terminfo_dest" || exit 1
+install -m 0755 "$source_remote_layout" "$remote_layout_dest" || exit 1
 print "Installed $manager_dest"
+print "Installed $lib_dest"
 print "Installed $terminfo_dest"
 print "Installed $remote_layout_dest"
 

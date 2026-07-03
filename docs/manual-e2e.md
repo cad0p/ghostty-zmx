@@ -498,7 +498,7 @@ Copy the installer and its dependencies to the fixture:
 ```sh
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -rf ~/.config/ghostty-zmx; echo "" > ~/.zshrc; rm -rf ~/.terminfo/x/xterm-ghostty 2>/dev/null; mkdir -p /tmp/gzmx-itest/terminfo'
 scp -F /tmp/ghostty-zmx-fixture-sshconfig \
-  install-server.sh session-manager.zsh ghostty-zmx-remote-layout \
+  install-server.sh session-manager.zsh session-manager-lib.zsh ghostty-zmx-remote-layout \
   gzmx-fixture:/tmp/gzmx-itest/
 scp -F /tmp/ghostty-zmx-fixture-sshconfig \
   terminfo/xterm-ghostty.terminfo \
@@ -517,7 +517,7 @@ Verify:
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'ls ~/.config/ghostty-zmx/; cat ~/.zshrc; infocmp -x xterm-ghostty >/dev/null 2>&1 && echo "terminfo installed"'
 ```
 
-Expected: `session-manager.zsh`, `ghostty-zmx-remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
+Expected: `session-manager.zsh`, `session-manager-lib.zsh`, `ghostty-zmx-remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
 
 #### Idempotent re-run
 
