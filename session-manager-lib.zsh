@@ -96,9 +96,15 @@ _ghostty_zmx_debug() {
 }
 
 _ghostty_zmx_shell_tty() {
+  # Return the current shell's controlling tty. The result is interpolated
+  # into an AppleScript heredoc downstream, so we tighten the shape to
+  # /dev/<safe-chars>+ to make an adversarial `TTY=..." then return "...`
+  # env var un-injectable. macOS ttys always match /dev/ttys### so this is
+  # a defensive belt-and-braces check, not a behavior change.
   typeset shell_tty="${TTY:-}"
   [[ -n "$shell_tty" ]] || shell_tty="$(tty 2>/dev/null)" || return 1
   [[ "$shell_tty" == /dev/* ]] || return 1
+  [[ "$shell_tty" =~ '^/dev/[A-Za-z0-9._/-]+$' ]] || return 1
   print -r -- "$shell_tty"
 }
 

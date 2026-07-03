@@ -115,4 +115,21 @@ fi
   [[ "${GHOSTTY_ZMX_EARLY_INHERIT_RAN:-}" == "1" ]] || fail "early marker changed during idempotent no-op"
 ) || exit 1
 
+# The tty helper's result is interpolated into AppleScript, so adversarial TTY
+# env values that start with /dev/ but contain quotes/newlines must be rejected.
+(
+  source ./session-manager-lib.zsh
+  export TTY=$'/dev/ttys999" then return "owned\n'
+  if _ghostty_zmx_shell_tty >/dev/null 2>&1; then
+    fail "malformed TTY accepted by shell_tty helper"
+  fi
+) || exit 1
+
+# zsh function definitions are global even inside functions/emulate scopes. The
+# accept-line widget must not define a generic `rand()` helper that could clobber
+# (or be clobbered by) a user/plugin function and corrupt generated gzr names.
+if grep -n '^[[:space:]]*rand()' session-manager.zsh >/dev/null 2>&1; then
+  fail "session-manager defines global rand() helper"
+fi
+
 print "early-inherit tests passed"

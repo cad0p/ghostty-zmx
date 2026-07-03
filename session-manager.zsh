@@ -2171,12 +2171,22 @@ ghostty_zmx_accept_line() {
   fi
 
   # Generate the remote logical ids + compact gzr- session name now.
-  local rand workspace window tab pane session
-  rand() { od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]'; }
-  workspace="${$(rand)[1,8]}"
-  window="${$(rand)[1,8]}"
-  tab="${$(rand)[1,6]}"
-  pane="${$(rand)[1,6]}"
+  # Inline the /dev/urandom expression instead of defining an inner `rand()`
+  # function: zsh function definitions are global (even inside `emulate -L`),
+  # so a `rand` helper here would clobber (and be clobbered by) any user
+  # plugin that also defines `rand`. If a plugin's `rand` returned non-hex,
+  # the resulting `gzr-*` session name would silently violate the server-side
+  # session-name validation and the projection open would fail with no
+  # clear error. Inlining removes the collision surface.
+  local workspace window tab pane session _gzmx_rand
+  _gzmx_rand="$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  workspace="${_gzmx_rand[1,8]}"
+  _gzmx_rand="$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  window="${_gzmx_rand[1,8]}"
+  _gzmx_rand="$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  tab="${_gzmx_rand[1,6]}"
+  _gzmx_rand="$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')"
+  pane="${_gzmx_rand[1,6]}"
   session="gzr-${workspace}-${window}-${tab}-${pane}"
 
   local prefix_string="${(j: :)projection}"
