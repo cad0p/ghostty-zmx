@@ -349,12 +349,17 @@ fi
 # terminal on every SSH connection (confirmed: `tsh ssh -T host /bin/true`
 # emits both; plain OpenSSH emits neither). Ghostty answers; in a projection
 # pane the local pty IS the zmx pty, so the response echoes into scrollback as
-# stray `11;rgb:...1R` characters. tsh gates this probe on the LOCAL TERM: with
-# TERM=dumb it emits zero queries. tsh does NOT forward local TERM to the remote
-# (the remote shell gets TERM from sshd), so setting TERM=dumb locally only
-# affects tsh's probe — it does NOT cripple the remote shell. This eliminates
-# both the OSC 11 and CSI 6n leaks at the source for tsh transports, without
-# disabling any Ghostty feature and without a drain. See Goldmine
+# stray `11;rgb:...1R` characters. tsh gates this probe on the LOCAL TERM:
+# with TERM=dumb it emits zero queries.
+#
+# tsh DOES forward the local TERM to the remote over a pty (-t), so the remote
+# interactive shell inherits TERM=dumb. That would break remote curses/tui
+# apps and oh-my-zsh's OSC 7 cwd emitter (its `case "$TERM"` gate rejects
+# `dumb`). The server installer's remote-env block (install-server.sh)
+# restores TERM=xterm-ghostty (or xterm-256color) in the remote ~/.zshrc,
+# gated on SSH_CONNECTION + TERM being dumb/empty, so the remote shell gets a
+# working TERM regardless. This keeps the local probe suppression effective
+# without crippling the remote shell. See Goldmine
 # 2026-07-04-osc-leak-live-verification-csi-6n-emitter-hunt.
 if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
   export TERM=dumb
