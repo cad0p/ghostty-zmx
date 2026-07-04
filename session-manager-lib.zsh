@@ -306,10 +306,35 @@ ghostty_zmx_resolve_transport_path() {
   emulate -L zsh
   local bin="$1" resolved
   [[ -n "$bin" ]] || { print -r -- "$bin"; return 0; }
-  resolved="$(command -v "$bin" 2>/dev/null)" || { print -r -- "$bin"; return 0; }
-  if [[ "$resolved" == /* ]]; then
+  # First try the current PATH (works when the widget shell has /usr/local/bin
+  # via .zshrc, or for binaries like ssh that live in /usr/bin).
+  resolved="$(command -v "$bin" 2>/dev/null)"
+  if [[ -z "$resolved" ]]; then
+    # The widget/projection shells may inherit macOS launchd's minimal PATH
+    # (/usr/bin:/bin:/usr/sbin:/sbin), which lacks /usr/local/bin (where tsh
+    # lives on macOS, as a symlink to /Applications/tsh.app). Search common
+    # macOS transport-binary locations so the resolver finds tsh even under
+    # a launchd PATH. GHOSTTY_ZMX_TRANSPORT_SEARCH_PATHS (colon-separated)
+    # overrides the default list for testability.
+    local -a _search
+    if [[ -n "${GHOSTTY_ZMX_TRANSPORT_SEARCH_PATHS:-}" ]]; then
+      _search=(${(s/:/)GHOSTTY_ZMX_TRANSPORT_SEARCH_PATHS})
+    else
+      _search=(/usr/local/bin /opt/homebrew/bin /opt/local/bin)
+    fi
+    local _d
+    for _d in "${_search[@]}"; do
+      if [[ -x "$_d/$bin" ]]; then
+        resolved="$_d/$bin"
+        break
+      fi
+    done
+  fi
+  if [[ -n "$resolved" && "$resolved" == /* ]]; then
     print -r -- "$resolved"
   else
+    # Fall back to the bare name so the error is honest (e.g. "command not found:
+    # tsh") rather than an empty exec.
     print -r -- "$bin"
   fi
 }

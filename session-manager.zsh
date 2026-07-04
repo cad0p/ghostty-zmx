@@ -2262,7 +2262,11 @@ ghostty_zmx_accept_line() {
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   local -a probe_argv=()
   local _have_t=0 _w _is_tsh=0
-  if [[ "${projection[1]}" == "tsh" && "${projection[2]:-}" == "ssh" ]]; then
+  # Detect tsh transport: projection[1] may be bare `tsh` or an absolute
+  # path ending in `/tsh` (resolved by ghostty_zmx_resolve_transport_path).
+  # Match on the basename so the detection works either way.
+  local _bin_base="${projection[1]:t}"
+  if [[ "$_bin_base" == "tsh" && "${projection[2]:-}" == "ssh" ]]; then
     _is_tsh=1
   fi
   for _w in "${projection[@]}"; do
