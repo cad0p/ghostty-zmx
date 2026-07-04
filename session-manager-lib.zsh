@@ -320,6 +320,15 @@ ghostty_zmx_select_parent_by_recency() {
   local best_tty="" best_pid=0 first_tty=""
   while IFS=$'\t' read -r host workspace parent_session tty_path pid state updated local_win local_tab; do
     [[ "$state" == "attached" || "$state" == "opening" ]] || continue
+    # An `opening` row may have tty_path="-" (poller hasn't upgraded it with
+    # the real tty yet). Recover via the live terminal scan so the sibling
+    # match below can succeed during the split-inherit race window.
+    if [[ "$tty_path" == "-" ]]; then
+      if ghostty_zmx_find_live_projection "$host" "$parent_session" 2>/dev/null; then
+        [[ -n "$_gzmx_found_tty" && "$_gzmx_found_tty" == /dev/* ]] && tty_path="$_gzmx_found_tty"
+        [[ "$local_win" == "-" && -n "$_gzmx_found_win" ]] && local_win="$_gzmx_found_win"
+      fi
+    fi
     norm_win="$(ghostty_zmx_hex_suffix "$local_win" 2>/dev/null || print -r -- "$local_win")"
     [[ "$norm_win" == "$cur_win" ]] || continue
     [[ -n "$tty_path" && "$tty_path" == /dev/* ]] || continue
@@ -566,6 +575,23 @@ ghostty_zmx_inherit_remote_context_if_any() {
       if ghostty_zmx_find_live_projection "$host" "$parent_session" 2>/dev/null; then
         local_win="$_gzmx_found_win"
         local_tab="$_gzmx_found_tab"
+      fi
+    fi
+    # An `opening` row may also have tty_path="-" (the poller hasn't upgraded
+    # it to `attached` with the real tty yet). This is the split-inherit race:
+    # the user hits Cmd+D before the poller upgrades the parent pane's row.
+    # Recover the real tty from the live terminal scan (same pattern used
+    # above for local_win), so the best-parent-tty comparison below can match
+    # the true parent instead of skipping its row (which previously caused
+    # inherit to fall through to a local zmx session).
+    if [[ "$tty_path" == "-" ]]; then
+      if ghostty_zmx_find_live_projection "$host" "$parent_session" 2>/dev/null; then
+        [[ -n "$_gzmx_found_tty" && "$_gzmx_found_tty" == /dev/* ]] && tty_path="$_gzmx_found_tty"
+        # If local_win was also "-", the block above already recovered it; if
+        # that block did not run (local_win was set but tty was not), reuse the
+        # found win/tab here too so norm_win comparison still passes.
+        [[ "$local_win" == "-" && -n "$_gzmx_found_win" ]] && local_win="$_gzmx_found_win"
+        [[ "$local_tab" == "-" && -n "$_gzmx_found_tab" ]] && local_tab="$_gzmx_found_tab"
       fi
     fi
     norm_win="$(ghostty_zmx_hex_suffix "$local_win" 2>/dev/null || print -r -- "$local_win")"
