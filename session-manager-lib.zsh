@@ -302,39 +302,27 @@ ghostty_zmx_remote_zmx_for_host() {
 # as ghostty_zmx_remote_zmx_for_host for the remote zmx binary). Falls back to
 # the bare name (not empty) when the binary is not on PATH, so the error is
 # honest ("command not found: tsh") rather than a silent empty exec.
+
+# Is the given argv a `tsh ssh ...` invocation? Detects tsh by the BASENAME
+# of the first word, so both bare `tsh` and an absolute path
+# (e.g. /usr/local/bin/tsh, as the widget builds after transport-path
+# resolution) are detected. tsh does not accept ssh's `-T` (no-pty) flag,
+# so callers use this to avoid inserting `-T` into tsh commands. Returns 0
+# (true) if the argv is `tsh ssh ...`, 1 otherwise.
+ghostty_zmx_is_tsh_ssh() {
+  emulate -L zsh
+  local bin="${1:-}"
+  [[ "${bin:t}" == "tsh" && "${2:-}" == "ssh" ]]
+}
+
 ghostty_zmx_resolve_transport_path() {
   emulate -L zsh
   local bin="$1" resolved
   [[ -n "$bin" ]] || { print -r -- "$bin"; return 0; }
-  # First try the current PATH (works when the widget shell has /usr/local/bin
-  # via .zshrc, or for binaries like ssh that live in /usr/bin).
-  resolved="$(command -v "$bin" 2>/dev/null)"
-  if [[ -z "$resolved" ]]; then
-    # The widget/projection shells may inherit macOS launchd's minimal PATH
-    # (/usr/bin:/bin:/usr/sbin:/sbin), which lacks /usr/local/bin (where tsh
-    # lives on macOS, as a symlink to /Applications/tsh.app). Search common
-    # macOS transport-binary locations so the resolver finds tsh even under
-    # a launchd PATH. GHOSTTY_ZMX_TRANSPORT_SEARCH_PATHS (colon-separated)
-    # overrides the default list for testability.
-    local -a _search
-    if [[ -n "${GHOSTTY_ZMX_TRANSPORT_SEARCH_PATHS:-}" ]]; then
-      _search=(${(s/:/)GHOSTTY_ZMX_TRANSPORT_SEARCH_PATHS})
-    else
-      _search=(/usr/local/bin /opt/homebrew/bin /opt/local/bin)
-    fi
-    local _d
-    for _d in "${_search[@]}"; do
-      if [[ -x "$_d/$bin" ]]; then
-        resolved="$_d/$bin"
-        break
-      fi
-    done
-  fi
-  if [[ -n "$resolved" && "$resolved" == /* ]]; then
+  resolved="$(command -v "$bin" 2>/dev/null)" || { print -r -- "$bin"; return 0; }
+  if [[ "$resolved" == /* ]]; then
     print -r -- "$resolved"
   else
-    # Fall back to the bare name so the error is honest (e.g. "command not found:
-    # tsh") rather than an empty exec.
     print -r -- "$bin"
   fi
 }
@@ -346,8 +334,12 @@ ghostty_zmx_notty_prefix() {
   local inserted_t=0
   local i=1
   local is_tsh=0
-  if [[ "${probe[1]}" == "tsh" && "${probe[2]:-}" == "ssh" ]]; then
-    notty+=(tsh ssh)
+  # Detect tsh transport by the basename of probe[1], so an absolute path
+  # (e.g. /usr/local/bin/tsh, as the widget builds after transport-path
+  # resolution) is still detected as tsh. tsh does not accept ssh's `-T`
+  # flag, so we must not insert it for tsh commands.
+  if ghostty_zmx_is_tsh_ssh "${probe[1]}" "${probe[2]:-}"; then
+    notty+=("${probe[1]}" ssh)
     i=3
     is_tsh=1
   else

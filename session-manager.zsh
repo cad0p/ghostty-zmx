@@ -2136,7 +2136,7 @@ ghostty_zmx_accept_line() {
     transport="ssh"
     start=2
     prefix=(ssh)
-  elif [[ "${words[1]:-}" == "tsh" && "${words[2]:-}" == "ssh" ]]; then
+  elif ghostty_zmx_is_tsh_ssh "${words[1]:-}" "${words[2]:-}"; then
     transport="tsh"
     start=3
     prefix=(tsh ssh)
@@ -2264,9 +2264,8 @@ ghostty_zmx_accept_line() {
   local _have_t=0 _w _is_tsh=0
   # Detect tsh transport: projection[1] may be bare `tsh` or an absolute
   # path ending in `/tsh` (resolved by ghostty_zmx_resolve_transport_path).
-  # Match on the basename so the detection works either way.
-  local _bin_base="${projection[1]:t}"
-  if [[ "$_bin_base" == "tsh" && "${projection[2]:-}" == "ssh" ]]; then
+  # Use the shared basename helper so both forms are detected.
+  if ghostty_zmx_is_tsh_ssh "${projection[1]}" "${projection[2]:-}"; then
     _is_tsh=1
   fi
   for _w in "${projection[@]}"; do
