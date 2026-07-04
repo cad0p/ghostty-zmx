@@ -638,6 +638,16 @@ cleanup_seen_detached_sessions() {
 }
 
 sleep "$reaperStartupDelay"
+# Startup sweep: kill managed zmx sessions left detached (clients=0) by a
+# prior Ghostty instance that was killed (not cleanly exited). The reaper
+# only cleans up during its lifetime; a killed Ghostty leaves its managed
+# sessions detached forever. This runs once at startup. managed_detached_
+# sessions() filters by the v0.1 managed naming (zmx-<win>-<tab>-<term>) AND
+# cross-references the sessions log, so user-created sessions and gzr-* remote
+# sessions are never touched. A session the user intentionally detached
+# (zmx detach) to reattach later would be killed here; that is an accepted
+# trade-off (documented as a known limitation).
+cleanup_detached_sessions "startup-orphan-sweep"
 zeroWindowsSeen=0
 lastAttached=0
 typeset -A detachedSeen
