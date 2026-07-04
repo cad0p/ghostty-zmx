@@ -42,20 +42,24 @@ RUN case "$TARGETARCH" in \
 # non-interactive PATH lacks zmx — matching pcad-dev and exercising the probe.
 RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/gzmx/.zshrc
 
-# Emit a terminal query at interactive startup to mirror pcad-dev's remote
-# shell (oh-my-zsh + zsh-autosuggestions), which sends an OSC 11
-# (foreground-color) query during init. Ghostty answers; the response flows
-# back into the zmx PTY and leaks into scrollback if no mitigation is in place.
-# This makes the control-sequence-leak E2E scenario deterministic without
-# installing full oh-my-zsh. The fix is laptop-side: the installer sets
-# `osc-color-report-format = none` in the managed Ghostty config block so
-# Ghostty never responds to OSC 11 queries, eliminating the leak at the source.
-# Only emit for interactive shells (zsh startup file ordering: .zshrc runs
-# for interactive shells).
+# Emit terminal queries at interactive startup to mirror pcad-dev's remote
+# shell (oh-my-zsh + zsh-autosuggestions), which sends OSC 11
+# (foreground-color) and CSI 6n (cursor-position) queries during init.
+# Ghostty answers; the responses flow back into the zmx PTY, the shell echoes
+# them as keystrokes, and that echo is captured into scrollback if no
+# mitigation is in place. This makes the control-sequence-leak E2E scenario
+# deterministic without installing full oh-my-zmx. The interim fix is a
+# best-effort remote-side precmd drain (`dd iflag=nonblock`); the complete
+# fix is an upstream zmx feature (OSC/CSI query interception, same pattern as
+# zmx's existing DA1/DA2 handling). See Goldmine
+# 2026-07-03-zmx-terminal-query-interception-draft. Only emit for interactive
+# shells (zsh startup file ordering: .zshrc runs for interactive shells).
 RUN printf '%s\n' \
       'if [[ -o interactive ]]; then' \
       '  # OSC 11 ? (query foreground color) — Ghostty answers with rgb:...' \
       "  printf '\\e]11;?\\a'" \
+      '  # CSI 6n (query cursor position) — Ghostty answers with <row>;<col>R' \
+      "  printf '\\e[6n'" \
       'fi' >> /home/gzmx/.zshrc
 
 USER root

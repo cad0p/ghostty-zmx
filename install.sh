@@ -47,14 +47,6 @@ managed_block='# BEGIN ghostty-zmx
 env = GHOSTTY_ZMX_AUTO_ATTACH=1
 window-save-state = never
 confirm-close-surface = true
-# Suppress terminal-query-response leaks into zmx scrollback. Remote shell
-# startup emits OSC 11 (foreground-color) queries; Ghostty answers and the
-# response bytes leak into the zmx PTY capture, appearing as stray
-# `11;rgb:...` characters. Setting this to `none` makes Ghostty not respond
-# to OSC 4/10/11 color queries at all, eliminating the leak at the source.
-# Trade-off: laptop-side apps that query colors via OSC (rare) get no reply.
-# Remove this line if you rely on OSC color reporting.
-osc-color-report-format = none
 # END ghostty-zmx'
 
 backup_file() {

@@ -57,31 +57,53 @@ backup_counter=0
 # TERM_PROGRAM empty). This lets remote Ghostty shell integration auto-activate
 # even when the transport is `tsh ssh` (which does not forward these vars).
 #
-# Also suppresses terminal-query-response leaks into zmx scrollback. Remote
-# shell startup (oh-my-zsh + zsh-autosuggestions + prompt-init) emits terminal
+# Suppresses terminal-query-response leaks into zmx scrollback. Remote shell
+# startup (oh-my-zsh + zsh-autosuggestions + prompt-init) emits terminal
 # queries (OSC 11 foreground-color, CSI 6n cursor-position). Ghostty answers;
-# the response bytes flow back into the zmx PTY as input and get captured into
-# scrollback, appearing as stray `11;rgb:...1R` characters. Two mitigations:
-#   1. Set ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8' so zsh-autosuggestions uses an
-#      explicit color and skips its OSC 11 foreground-color query.
-#   2. Install a precmd hook that drains any pending query-response bytes from
-#      stdin before each prompt draws. This catches CSI 6n (and any other DSR)
-#      from all sources (prompt-init, themes, the fixture's direct emitter).
+# the response bytes flow back into the zmx PTY as input, the remote shell
+# echoes them as keystrokes, and that echo is captured into scrollback as
+# stray `11;rgb:...1R` characters. The complete fix is an upstream zmx
+# feature that intercepts OSC/CSI queries the same way it already
+# intercepts DA1/DA2 (see Goldmine 2026-07-03-zmx-terminal-query-interception-draft).
+# Until that ships, two best-effort mitigations that disable NO terminal
+# feature (unlike the removed `osc-color-report-format = none` global patch):
+#   1. Set ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8' so zsh-autosuggestions uses
+#      an explicit color and skips its OSC 11 foreground-color query.
+#   2. Install a self-disabling precmd hook that drains pending
+#      query-response bytes from the tty before each prompt draws, so the
+#      remote shell never echoes them and zmx never captures them. Uses
+#      `dd iflag=nonblock` (one syscall, no zsh `read` tty quirk). Covers the
+#      first 3 prompts only (remote shell init window); no steady-state cost.
 remote_env_block='# BEGIN ghostty-zmx remote-env
 if [[ -n "${SSH_CONNECTION:-}" && -z "${TERM_PROGRAM:-}" ]]; then
   export TERM_PROGRAM=ghostty
   export COLORTERM=truecolor
 fi
-# Suppress terminal-query-response leaks into zmx scrollback. The primary
-# fix is laptop-side: the installer sets `osc-color-report-format = none` in
-# the managed Ghostty config block so Ghostty never responds to OSC 4/10/11
-# color queries, eliminating the OSC 11 response leak at the source. As a
-# defense-in-depth measure for zsh-autosuggestions (which queries OSC 11 when
-# the highlight style is unset), set an explicit style so the plugin skips its
-# query. This does not affect the CSI 6n cursor-position response (no zsh-side
-# emitter found on the tested hosts; handled by the laptop-side fix only if a
-# future Ghostty release adds a DSR-disable option).
+# Suppress terminal-query-response leaks into zmx scrollback (best-effort,
+# interim). The complete fix is an upstream zmx feature (OSC/CSI query
+# interception, same pattern as the existing DA1/DA2 handling in zmx). See
+# Goldmine 2026-07-03-zmx-terminal-query-interception-draft. These two
+# mitigations disable NO terminal feature:
+#   1. Explicit suggestion color so zsh-autosuggestions skips its OSC 11 query.
+#   2. A self-disabling precmd drain that consumes pending query-response
+#      bytes before the shell echoes them (so zmx never captures them).
 export ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=8"
+if [[ -z "${_GZMX_DRAIN_INSTALLED:-}" ]]; then
+  export _GZMX_DRAIN_INSTALLED=1
+  _gzmx_drain_query_responses() {
+    (( _GZMX_DRAIN_COUNT++ ))
+    (( _GZMX_DRAIN_COUNT > 3 )) && { add-zsh-hook -d precmd _gzmx_drain_query_responses 2>/dev/null; return 0; }
+    # Brief settle for in-flight responses over ssh (~200ms RTT), then
+    # non-blocking drain of all pending bytes. `dd iflag=nonblock` reads
+    # everything available in one syscall (no zsh read -k / read -rd NUL
+    # tty quirks). Best-effort: responses arriving after the drain window
+    # still leak; the complete fix is the upstream zmx change.
+    sleep 0.1
+    dd bs=2048 count=1 iflag=nonblock of=/dev/null <"${TTY:-}" 2>/dev/null || true
+  }
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd _gzmx_drain_query_responses
+fi
 # END ghostty-zmx remote-env'
 
 backup_file() {

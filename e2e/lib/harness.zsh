@@ -219,7 +219,6 @@ gzmx_e2e_ghostty_launch() {
     --env=GHOSTTY_ZMX_E2E_FIXTURE_HOST="$GZMX_E2E_FIXTURE_HOST" \
     --window-save-state=never \
     --confirm-close-surface=false \
-    --osc-color-report-format=none \
     >/dev/null 2>&1 &
   GZMX_E2E_GHOSTTY_PID=$!
   GZMX_E2E_STARTED_GHOSTTY=1
@@ -454,20 +453,22 @@ gzmx_e2e_assert_remote_history_contains() {
   gzmx_e2e_pass "marker '$marker' found in $session history"
 }
 
-# Assert NO control-sequence leak (OSC 11 response bytes) in a remote session's
-# zmx history. The leak manifests as `11;rgb:...` or `;rgb:...` in the
-# scrollback. The fix is laptop-side: `osc-color-report-format = none` makes
-# Ghostty not respond to OSC 4/10/11 color queries, so no response bytes are
-# generated to leak. CSI 6n (cursor-position) responses are a separate,
-# lower-severity known limitation (no Ghostty config disables DSR) and are not
-# asserted here.
+# Assert NO control-sequence leak (OSC 11 / CSI 6n response bytes) in a remote
+# session's zmx history. The leak manifests as `11;rgb:...`, `;rgb:...`, or
+# `;...R` (CSI cursor-position-report) in the scrollback. The fix is a
+# best-effort remote-side precmd drain (`dd iflag=nonblock`) that consumes
+# pending query-response bytes before the shell echoes them, so zmx never
+# captures them. The complete fix is an upstream zmx feature (OSC/CSI query
+# interception); see Goldmine 2026-07-03-zmx-terminal-query-interception-draft.
+# This assertion does NOT set `osc-color-report-format = none` (the removed
+# bad patch that globally disabled OSC color reporting).
 gzmx_e2e_assert_no_query_leak() {
   emulate -L zsh
   local session="$1" hist zmx_bin
   zmx_bin="$(gzmx_e2e_fixture_zmx)"
   hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin history $session 2>/dev/null" 2>/dev/null)"
-  if [[ "$hist" == *"11;rgb:"* || "$hist" == *";rgb:"* ]]; then
-    print -r -- "$hist" | grep -E "11;rgb:|;rgb:" | head -3 >&2
+  if [[ "$hist" == *"11;rgb:"* || "$hist" == *";rgb:"* || "$hist" == *";1R"* || "$hist" == *"2;1R"* ]]; then
+    print -r -- "$hist" | grep -E "11;rgb:|;rgb:|;[0-9]+R" | head -3 >&2
     gzmx_e2e_fail "query-response leak detected in $session history"
   fi
   gzmx_e2e_pass "no query-response leak in $session history"
