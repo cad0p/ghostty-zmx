@@ -247,6 +247,101 @@ ghostty_zmx_find_live_projection() {
   return 1
 }
 
+# Find the tty of a SIBLING projection pane in the same window+tab as the
+# newly-created split pane (cur_win/cur_tab), other than the new pane itself
+# (cur_tty). When the user splits a pane, Ghostty creates a new terminal
+# (cur_tty) as a sibling of the previously-focused pane. The previously-
+# focused pane is the TRUE parent of the split — its remote cwd is what the
+# new pane should inherit, not the first pane in the tab (which may be at a
+# different cwd, e.g. the window's root pane still at ~ while the user
+# split a pane that had cd'd into a project).
+#
+# When multiple siblings exist (3+ panes in a tab), the parent is the most
+# recently CREATED sibling — i.e. the pane the user was most likely focused
+# on when they split. We cannot query Ghostty for "previous focus", but the
+# remote zmx `created` timestamp is a reliable recency signal: the pane being
+# split was created after its older siblings. The caller passes the remote
+# zmx binary so we can query `zmx list` for created times. If the query
+# fails, we fall back to the first sibling (legacy behavior).
+#
+# Returns 0 and prints the best sibling tty on stdout if found, 1 otherwise.
+ghostty_zmx_find_sibling_tty() {
+  emulate -L zsh
+  local cur_win="$1" cur_tab="$2" cur_tty="$3" raw pid tty_path win_id tab_id
+  [[ -n "$cur_win" && -n "$cur_tab" && "$cur_tty" == /dev/* ]] || return 1
+  raw="$(ghostty_zmx_enumerate_terminals)" || return 1
+  local -a sib_ttys
+  while read -r pid tty_path win_id tab_id; do
+    [[ "$tty_path" == /dev/* && "$tty_path" != "$cur_tty" ]] || continue
+    local sw="$(ghostty_zmx_hex_suffix "$win_id" 2>/dev/null || print -r -- "$win_id")"
+    local st="$(ghostty_zmx_hex_suffix "$tab_id" 2>/dev/null || print -r -- "$tab_id")"
+    if [[ "$sw" == "$cur_win" && "$st" == "$cur_tab" ]]; then
+      sib_ttys+=("$tty_path")
+    fi
+  done <<< "$raw"
+  (( ${#sib_ttys} > 0 )) || return 1
+  # One sibling: return it directly.
+  if (( ${#sib_ttys} == 1 )); then
+    print -r -- "${sib_ttys[1]}"
+    return 0
+  fi
+  # Multiple siblings: return all, newline-separated. The caller picks the
+  # best parent (newest remote created) among matching projection rows.
+  printf '%s\n' "${sib_ttys[@]}"
+  return 0
+}
+
+# Among multiple sibling panes in a tab, pick the one that was most likely
+# focused when the user hit Cmd+D — i.e. the pane whose remote zmx session was
+# MOST RECENTLY created. We cannot query Ghostty for "previous focus" (native
+# new_split moves focus to the new pane), and AppleScript exposes no parent
+# surface property. The `created` timestamp from the remote `zmx list` is a
+# reliable recency proxy: the pane the user split is the one they most recently
+# created or were interacting with.
+#
+# Args: cur_win cur_tab sibling_ttys (newline-separated). Reads the local
+# remote-projections file to map each sibling tty -> its gzr-* session, then
+# queries the remote host's zmx list for each session's `created` time.
+# Returns: the sibling tty with the newest created timestamp (or, if the
+# remote query fails for all, the first sibling — preserving legacy behavior).
+ghostty_zmx_select_parent_by_recency() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+  local cur_win="$1" cur_tab="$2" sibling_ttys="$3"
+  local projections_file host workspace parent_session tty_path pid state updated local_win local_tab norm_win norm_tab
+  [[ -n "$sibling_ttys" ]] || return 1
+  projections_file="$(ghostty_zmx_remote_projections_file)"
+  [[ -f "$projections_file" ]] || return 1
+  # The parent is the sibling whose local projection wrapper has the HIGHEST
+  # pid — pids are monotonic per boot, so the most-recently-created wrapper
+  # is the pane the user most recently split. This is a LOCAL file lookup
+  # (no remote ssh round-trip), avoiding both latency and the 1-second
+  # resolution of the remote `zmx list created` field.
+  local best_tty="" best_pid=0 first_tty=""
+  while IFS=$'\t' read -r host workspace parent_session tty_path pid state updated local_win local_tab; do
+    [[ "$state" == "attached" || "$state" == "opening" ]] || continue
+    norm_win="$(ghostty_zmx_hex_suffix "$local_win" 2>/dev/null || print -r -- "$local_win")"
+    [[ "$norm_win" == "$cur_win" ]] || continue
+    [[ -n "$tty_path" && "$tty_path" == /dev/* ]] || continue
+    # Is this row's tty one of the siblings?
+    print -r -- "$sibling_ttys" | grep -qF -- "$tty_path" || continue
+    [[ -z "$first_tty" ]] && first_tty="$tty_path"
+    # match_pid is the 5th field (the local wrapper process pid).
+    if [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > best_pid )); then
+      best_pid=$pid
+      best_tty="$tty_path"
+    fi
+  done < "$projections_file"
+  if [[ -n "$best_tty" ]]; then
+    print -r -- "$best_tty"
+    return 0
+  fi
+  # No pid-based winner (all rows had non-numeric pids) — fall back to first.
+  [[ -n "$first_tty" ]] || return 1
+  print -r -- "$first_tty"
+  return 0
+}
+
 ghostty_zmx_write_projection_row() {
   emulate -L zsh
   local host="$1" workspace="$2" session="$3" tty_path="$4" match_pid="$5" state="$6" win="$7" tab="$8"
@@ -415,6 +510,45 @@ ghostty_zmx_inherit_remote_context_if_any() {
   # is not usable for the final exec redirections. In that case the early hook
   # must fail open so the later ~/.zshrc manager can retry the legacy path.
   [[ -r "$cur_tty" && -w "$cur_tty" ]] || return 1
+  # When the user splits a pane in a tab that already has multiple projection
+  # panes (e.g. they cd'd in one and split it), the inherit loop must identify
+  # the TRUE parent — the pane that was focused when Cmd+D was hit — not the
+  # first projection row that matches the window. Ghostty's native `new_split`
+  # moves focus to the NEW pane, so at .zprofile time `focused terminal` is the
+  # new pane (cur_tty), not the parent. We cannot query Ghostty for "previous
+  # focus", and AppleScript exposes no `parent surface` property.
+  #
+  # The reliable proxy: the parent is the sibling whose REMOTE zmx session was
+  # MOST RECENTLY created. The pane the user was focused on is the one they
+  # most recently created/used — its remote session has the newest `created`
+  # timestamp among siblings. We enumerate the sibling ttys in the same tab
+  # (other than cur_tty), then for each, map the sibling tty -> its remote
+  # `gzr-*` session (via the projection row's tty field) -> the remote zmx
+  # `created` timestamp, and pick the newest.
+  #
+  # If only one sibling exists, it is trivially the parent. If the remote
+  # `created` query fails or siblings can't be mapped to sessions, fall back
+  # to the legacy first-matching-row behavior so single-pane / race cases
+  # still inherit correctly.
+  local _sibling_ttys=""
+  _sibling_ttys="$(ghostty_zmx_find_sibling_tty "$cur_win" "$cur_tab" "$cur_tty" 2>/dev/null)" || _sibling_ttys=""
+  local _sib_count=0
+  if [[ -n "$_sibling_ttys" ]]; then
+    _sib_count=$(print -r -- "$_sibling_ttys" | wc -l | tr -d ' ')
+    _ghostty_zmx_debug "inherit sibling-tty cur_win=$cur_win cur_tab=$cur_tab cur_tty=$cur_tty count=$_sib_count ttys=$(print -r -- "$_sibling_ttys" | tr '\n' ',')"
+  fi
+  # When multiple siblings exist, the parent is the one whose remote zmx
+  # session was MOST RECENTLY created (the pane the user was focused on is
+  # the one they most recently created/used). Query each candidate's remote
+  # `created` and pin the best parent tty so the loop below picks it. With a
+  # single sibling, that sibling IS the parent — no remote query needed.
+  local _best_parent_tty=""
+  if (( _sib_count > 1 )); then
+    _best_parent_tty="$(ghostty_zmx_select_parent_by_recency "$cur_win" "$cur_tab" "$_sibling_ttys" 2>/dev/null)" || _best_parent_tty=""
+    _ghostty_zmx_debug "inherit best-parent-tty=$_best_parent_tty"
+  elif (( _sib_count == 1 )); then
+    _best_parent_tty="$_sibling_ttys"
+  fi
   local host workspace parent_session tty_path pid state updated local_win local_tab norm_win norm_tab prefix session workspace_id remote_win remote_tab parent_pane pane parent axis ratio helper
   while IFS=$'\t' read -r host workspace parent_session tty_path pid state updated local_win local_tab; do
     [[ "$state" == "attached" || "$state" == "opening" ]] || continue
@@ -437,6 +571,16 @@ ghostty_zmx_inherit_remote_context_if_any() {
     norm_win="$(ghostty_zmx_hex_suffix "$local_win" 2>/dev/null || print -r -- "$local_win")"
     norm_tab="$(ghostty_zmx_hex_suffix "$local_tab" 2>/dev/null || print -r -- "$local_tab")"
     [[ "$norm_win" == "$cur_win" ]] || continue
+    # Disambiguate multi-pane tabs: if we found a best parent tty (single or
+    # selected), require this row's tty to match it. This picks the TRUE parent
+    # (the pane that was focused when Cmd+D was hit) even when multiple
+    # projection rows share the window. If no sibling was found (race / single
+    # pane not yet in projections), fall back to the legacy first-match behavior
+    # so the common case still inherits.
+    if [[ -n "$_best_parent_tty" && "$tty_path" != "$_best_parent_tty" ]]; then
+      _ghostty_zmx_debug "inherit skip-nonbest tty=$tty_path best=$_best_parent_tty session=$parent_session"
+      continue
+    fi
     _ghostty_zmx_debug "inherit match host=$host parent_session=$parent_session cur_win=$cur_win cur_tab=$cur_tab norm_win=$norm_win norm_tab=$norm_tab"
     prefix="$(ghostty_zmx_remote_prefix_for_host "$host")"
     [[ -n "$prefix" ]] || continue
