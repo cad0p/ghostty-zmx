@@ -467,11 +467,18 @@ gzmx_e2e_assert_no_query_leak() {
   local session="$1" hist zmx_bin
   zmx_bin="$(gzmx_e2e_fixture_zmx)"
   hist="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin history $session 2>/dev/null" 2>/dev/null)"
-  if [[ "$hist" == *"11;rgb:"* || "$hist" == *";rgb:"* || "$hist" == *";1R"* || "$hist" == *"2;1R"* ]]; then
-    print -r -- "$hist" | grep -E "11;rgb:|;rgb:|;[0-9]+R" | head -3 >&2
-    gzmx_e2e_fail "query-response leak detected in $session history"
+  # OSC 11 leak: the remote shell emits `ESC]11;?` (foreground-color query);
+  # Ghostty answers `ESC]11;rgb:...` and the response echoes into scrollback.
+  # The remote `precmd` drain (`dd iflag=nonblock`) is the mitigation for this
+  # shell-emitted path. This assertion covers OSC 11 only. CSI 6n is a
+  # tsh-specific leak (tsh emits it, not the shell) and is fixed by the
+  # projection wrapper's `TERM=dumb`-for-tsh suppression, exercised only by
+  # the live pcad-dev smoke (plain-ssh Docker fixtures cannot reproduce it).
+  if [[ "$hist" == *"11;rgb:"* || "$hist" == *";rgb:"* ]]; then
+    print -r -- "$hist" | grep -E "11;rgb:|;rgb:" | head -3 >&2
+    gzmx_e2e_fail "OSC 11 query-response leak detected in $session history"
   fi
-  gzmx_e2e_pass "no query-response leak in $session history"
+  gzmx_e2e_pass "no OSC 11 query-response leak in $session history"
 }
 
 # Assert the remote shell's cwd for a session (via zmx run pwd).

@@ -44,13 +44,22 @@ if [[ "$1" == "logout" ]]; then
 fi
 
 # `tsh ssh <args>` — translate to ssh.
+# Verify the projection wrapper set TERM=dumb (the tsh OSC 11 / CSI 6n leak
+# fix). Real tsh emits both queries on every connection and gates the probe
+# on the local TERM; TERM=dumb suppresses it. This mock asserts the wrapper
+# set TERM=dumb before exec-ing the transport, so scenario 02 can verify the
+# fix without a real Teleport cluster.
 if [[ "$1" == "ssh" ]]; then
   shift
-  # Pass remaining args to ssh with the fixture config. The fixture ignores
-  # the target host (always gzmx-fixture) but we preserve -t/-T and the
-  # remote command. Strip any user@host that the widget/projection added;
-  # the fixture always uses the gzmx user via its ssh config.
-  # We keep -t/-T and the remote command verbatim.
+  # Assert the projection wrapper set TERM=dumb, but ONLY when invoked as a
+  # projection (GHOSTTY_ZMX_PROJECTION=1). The widget's probe path runs
+  # `tsh ssh host 'cmd'` WITHOUT going through the projection wrapper, so
+  # TERM isn't dumb there — that's expected and fine (the probe is a
+  # one-shot non-interactive command, not a persistent pane).
+  if [[ "${GZMX_E2E_TSH_ASSERT_TERM_DUMB:-1}" == "1" && "${GHOSTTY_ZMX_PROJECTION:-}" == "1" && "${TERM:-}" != "dumb" ]]; then
+    print -u2 "mock-tsh: expected TERM=dumb in projection context, got TERM=${TERM:-<empty>}"
+    exit 2
+  fi
   exec ssh -F "$_emu_tsh_config" "$@"
 fi
 

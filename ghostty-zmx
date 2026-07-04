@@ -343,4 +343,21 @@ fi
 # replaced by the transport, so the `--session <gzr>` marker leaves `ps args`, but
 # the descendant-walk scan still matches `zmx attach <gzr>` in the transport's
 # args and GHOSTTY_ZMX_PROJECTION_SESSION in its env.
+#
+# Suppress tsh's terminal-capability probing. The Teleport `tsh` client emits
+# an OSC 11 (foreground-color) and CSI 6n (cursor-position) query to the LOCAL
+# terminal on every SSH connection (confirmed: `tsh ssh -T host /bin/true`
+# emits both; plain OpenSSH emits neither). Ghostty answers; in a projection
+# pane the local pty IS the zmx pty, so the response echoes into scrollback as
+# stray `11;rgb:...1R` characters. tsh gates this probe on the LOCAL TERM: with
+# TERM=dumb it emits zero queries. tsh does NOT forward local TERM to the remote
+# (the remote shell gets TERM from sshd), so setting TERM=dumb locally only
+# affects tsh's probe — it does NOT cripple the remote shell. This eliminates
+# both the OSC 11 and CSI 6n leaks at the source for tsh transports, without
+# disabling any Ghostty feature and without a drain. See Goldmine
+# 2026-07-04-osc-leak-live-verification-csi-6n-emitter-hunt.
+if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
+  export TERM=dumb
+  _gzmx_wdebug "projection: set TERM=dumb for tsh transport (suppress OSC 11 / CSI 6n probe)"
+fi
 exec "$@"

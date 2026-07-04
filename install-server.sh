@@ -79,31 +79,13 @@ if [[ -n "${SSH_CONNECTION:-}" && -z "${TERM_PROGRAM:-}" ]]; then
   export TERM_PROGRAM=ghostty
   export COLORTERM=truecolor
 fi
-# Suppress terminal-query-response leaks into zmx scrollback (best-effort,
-# interim). The complete fix is an upstream zmx feature (OSC/CSI query
-# interception, same pattern as the existing DA1/DA2 handling in zmx). See
-# Goldmine 2026-07-03-zmx-terminal-query-interception-draft. These two
-# mitigations disable NO terminal feature:
-#   1. Explicit suggestion color so zsh-autosuggestions skips its OSC 11 query.
-#   2. A self-disabling precmd drain that consumes pending query-response
-#      bytes before the shell echoes them (so zmx never captures them).
+# Pin the zsh-autosuggestions highlight style to its default (`fg=8`) explicitly.
+# This is NOT a leak mitigation — the OSC 11 leak was a tsh-client quirk
+# (tsh emits OSC 11 + CSI 6n on every connection; fixed by the projection
+# wrapper setting TERM=dumb for tsh transports). zsh-autosuggestions does not
+# emit OSC 11 (it defaults to `fg=8`, no query). This pin is a no-cost default
+# that keeps the suggestion color stable across environments.
 export ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=8"
-if [[ -z "${_GZMX_DRAIN_INSTALLED:-}" ]]; then
-  export _GZMX_DRAIN_INSTALLED=1
-  _gzmx_drain_query_responses() {
-    (( _GZMX_DRAIN_COUNT++ ))
-    (( _GZMX_DRAIN_COUNT > 3 )) && { add-zsh-hook -d precmd _gzmx_drain_query_responses 2>/dev/null; return 0; }
-    # Brief settle for in-flight responses over ssh (~200ms RTT), then
-    # non-blocking drain of all pending bytes. `dd iflag=nonblock` reads
-    # everything available in one syscall (no zsh read -k / read -rd NUL
-    # tty quirks). Best-effort: responses arriving after the drain window
-    # still leak; the complete fix is the upstream zmx change.
-    sleep 0.1
-    dd bs=2048 count=1 iflag=nonblock of=/dev/null <"${TTY:-}" 2>/dev/null || true
-  }
-  autoload -Uz add-zsh-hook
-  add-zsh-hook precmd _gzmx_drain_query_responses
-fi
 # END ghostty-zmx remote-env'
 
 backup_file() {
