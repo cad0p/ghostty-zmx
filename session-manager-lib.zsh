@@ -706,30 +706,41 @@ ghostty_zmx_inherit_remote_context_if_any() {
     # remote panes). zmx's spawned shell inherits the caller's cwd as
     # start_dir, so we `cd` to the parent's cwd before attaching.
     #
-    # The reliable way to query the LIVE cwd on Linux is to read
-    # /proc/<pid>/cwd: `zmx list` exposes the session pid, and readlink on
-    # the /proc/<pid>/cwd symlink yields the current cwd (not the initial
-    # start_dir). This avoids the unreliable `zmx run <parent> pwd` path
-    # (whose stdout over `ssh -T` is the remote-shell echo / zmx binary
-    # path, not the PTY output — see e2e scenario 10 investigation).
-    # If the pid is missing or readlink fails (non-Linux host, session
-    # gone), fall back to the remote home (zmx's default) — do not block.
-    local _parent_pid="" _parent_cwd=""
-    _parent_pid="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$_remote_zmx list" ; } 2>/dev/null )"
-    _parent_pid="$(print -r -- "$_parent_pid" | tr -d '\r' | awk -v n="$parent_session" '
-      { for (i=1; i<=NF; i++) if ($i ~ "^name=" n "$") {
-        for (j=i; j<=NF; j++) if ($j ~ /^pid=/) { sub(/^pid=/, "", $j); print $j; exit }
-      } }')"
-    if [[ "$_parent_pid" =~ ^[0-9]+$ ]]; then
-      _parent_cwd="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "readlink /proc/$_parent_pid/cwd" ; } 2>/dev/null )"
+    # PRIMARY: read Ghostty's `working directory` terminal property via
+    # AppleScript for the parent pane's tty. Local (no ssh round-trip), works
+    # on non-Linux remotes, reflects the live cwd. Requires the server
+    # installer's remote-env block to emit OSC 7 with file://localhost/<path>
+    # (oh-my-zsh skips its OSC 7 emitter over SSH per oh-my-zsh #11696, and
+    # Ghostty rejects non-localhost hosts for security).
+    # FALLBACK: readlink /proc/<pid>/cwd over ssh (Linux-only). Used when the
+    # AppleScript property is empty (remote-env block not installed yet, or
+    # the shell hasn't emitted OSC 7 for the current cwd).
+    local _parent_tty="$tty_path"
+    [[ -n "$_best_parent_tty" ]] && _parent_tty="$_best_parent_tty"
+    local _parent_cwd="" _parent_pid=""
+    if [[ -n "$_parent_tty" ]]; then
+      _parent_cwd="$(osascript -e "tell application \"$_ghostty_app_name\" to repeat with w in windows" -e "repeat with tb in tabs of w" -e "repeat with tm in terminals of tb" -e "try" -e "if (tty of tm as string) = \"$_parent_tty\" then return (working directory of tm as string)" -e "end" -e "end" -e "end" -e "end" 2>/dev/null)" || _parent_cwd=""
       _parent_cwd="$(print -r -- "$_parent_cwd" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    fi
+    if [[ -z "$_parent_cwd" ]]; then
+      _parent_pid="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$_remote_zmx list" ; } 2>/dev/null )"
+      _parent_pid="$(print -r -- "$_parent_pid" | tr -d '\r' | awk -v n="$parent_session" '
+        { for (i=1; i<=NF; i++) if ($i ~ "^name=" n "$") {
+          for (j=i; j<=NF; j++) if ($j ~ /^pid=/) { sub(/^pid=/, "", $j); print $j; exit }
+        } }')"
+      if [[ "$_parent_pid" =~ ^[0-9]+$ ]]; then
+        _parent_cwd="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "readlink /proc/$_parent_pid/cwd" ; } 2>/dev/null )"
+        _parent_cwd="$(print -r -- "$_parent_cwd" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      fi
+      _ghostty_zmx_debug "inherit cwd-fallback host=$host session=$session parent=$parent_session pid=${_parent_pid:-unknown} cwd=${_parent_cwd:-empty}"
+    else
+      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session tty=$_parent_tty cwd=$_parent_cwd"
     fi
     local _remote_cmd
     if [[ "$_parent_cwd" == /* ]]; then
-      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session pid=$_parent_pid cwd=$_parent_cwd"
       _remote_cmd="cd -P '$_parent_cwd' && $_remote_zmx attach $session"
     else
-      _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session pid=${_parent_pid:-unknown} cwd=unknown (using default)"
+      _ghostty_zmx_debug "inherit cwd-default host=$host session=$session parent=$parent_session (cwd unknown)"
       _remote_cmd="$_remote_zmx attach $session"
     fi
     exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "$_remote_cmd" <"$cur_tty" >"$cur_tty" 2>&1
