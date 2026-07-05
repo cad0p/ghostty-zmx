@@ -60,8 +60,8 @@ live_cwd="$(print -r -- "$live_cwd" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[
   || gzmx_e2e_fail "live cwd equals the zmx binary path ($remote_zmx) — the original zmx-run-pwd bug is back"
 
 # The live cwd should be the remote home (the projection's shell starts at ~).
-[[ "$live_cwd" == "/home/gzmx" ]] \
-  || gzmx_e2e_warn "live cwd is $live_cwd (expected /home/gzmx for a fresh projection)"
+[[ "$live_cwd" == "$GZMX_E2E_FIXTURE_HOME" ]] \
+  || gzmx_e2e_warn "live cwd is $live_cwd (expected $GZMX_E2E_FIXTURE_HOME for a fresh projection)"
 
 gzmx_e2e_log "pid=$pid live_cwd=$live_cwd (readlink returns LIVE cwd, not the zmx binary path)"
 

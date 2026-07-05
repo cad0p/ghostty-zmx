@@ -12,6 +12,82 @@ MARKER="ghostty-zmx-e2e-$(date +%s)"
 
 Before testing, confirm the installed Ghostty config contains the managed production block with `confirm-close-surface = true` unless a scenario explicitly says to use a temporary automated-test override.
 
+## Automated E2E Harness
+
+The scripted E2E scenarios live under `e2e/` and should run against `Ghostty-tip`, not stable Ghostty. Stable Ghostty must not be replaced by Homebrew's `ghostty@tip` cask because that cask targets `/Applications/Ghostty.app`.
+
+Prepare an isolated app copy from an existing downloaded tip DMG:
+
+```sh
+GZMX_E2E_GHOSTTY_TIP_DMG=/tmp/Ghostty-tip.dmg \
+GZMX_E2E_GHOSTTY_TIP_SHA256=<sha256> \
+GZMX_E2E_GHOSTTY_TIP_REPLACE=1 \
+e2e/setup-ghostty-tip.zsh
+```
+
+Or, if `/Applications/Ghostty-tip.app` already exists, normalize only the copied app identity/signature:
+
+```sh
+e2e/setup-ghostty-tip.zsh
+```
+
+That script rewrites only `/Applications/Ghostty-tip.app` to AppleScript name `Ghostty-tip` and bundle id `com.mitchellh.ghostty.tip`, then ad-hoc signs it. It refuses to touch `/Applications/Ghostty.app`.
+
+If macOS asks for Accessibility permission, the dialog should name `Ghostty-tip`. System Settings may still display the row as `Ghostty` because the app executable and upstream product metadata are still Ghostty. Verify the isolated copy if needed:
+
+```sh
+plutil -extract CFBundleName raw /Applications/Ghostty-tip.app/Contents/Info.plist
+plutil -extract CFBundleIdentifier raw /Applications/Ghostty-tip.app/Contents/Info.plist
+```
+
+Run all scenarios with the Docker sshd fixture:
+
+```sh
+e2e/run.zsh
+```
+
+Run against an existing SSH test host instead of Docker:
+
+```sh
+GZMX_E2E_EXTERNAL_FIXTURE=1 \
+GZMX_E2E_SSH_COMMAND='ssh yachunt-agentsdesk' \
+GZMX_E2E_FIXTURE_USER=yachunt \
+GZMX_E2E_FIXTURE_HOME=/home/yachunt \
+e2e/run.zsh
+```
+
+The external host should be disposable. The harness resets `~/.local/share/ghostty-zmx/remote-layout*` and kills `gzr-*` sessions on the fixture host. If the host needs custom SSH config, keep using `GZMX_E2E_SSH_COMMAND='ssh <alias>'` when `~/.ssh/config` already defines the alias, or append ssh_config lines:
+
+```sh
+GZMX_E2E_EXTERNAL_FIXTURE=1 \
+GZMX_E2E_FIXTURE_HOST=my-fixture \
+GZMX_E2E_EXTERNAL_HOST=example.internal \
+GZMX_E2E_EXTERNAL_SSH_CONFIG_APPEND=$'  User testuser\n  Port 2222\n  IdentityFile /tmp/key' \
+e2e/run.zsh
+```
+
+Run selected scenarios:
+
+```sh
+e2e/run.zsh e2e/01-ssh-handoff.zsh e2e/12-remote-split-multipane-cwd.zsh
+```
+
+Clean up after normal or interrupted runs:
+
+```sh
+e2e/cleanup.zsh
+```
+
+For an external host cleanup:
+
+```sh
+GZMX_E2E_EXTERNAL_FIXTURE=1 \
+GZMX_E2E_SSH_COMMAND='ssh yachunt-agentsdesk' \
+GZMX_E2E_FIXTURE_USER=yachunt \
+GZMX_E2E_FIXTURE_HOME=/home/yachunt \
+e2e/cleanup.zsh
+```
+
 ## Cmd-Q restore
 
 1. Open Ghostty with ghostty-zmx installed.

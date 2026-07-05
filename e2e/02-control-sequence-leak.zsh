@@ -37,7 +37,7 @@ gzmx_e2e_ghostty_launch
 #    projection wrapper must set TERM=dumb before exec-ing the mock tsh;
 #    otherwise the mock exits 2 and the projection pane dies.
 sleep 2
-gzmx_e2e_type "tsh ssh gzmx-fixture"
+gzmx_e2e_type "tsh ssh $GZMX_E2E_FIXTURE_HOST"
 gzmx_e2e_wait_remote_clients 1 30
 gzmx_e2e_assert_window_count 2
 gzmx_e2e_pass "projection opened via mock-tsh (wrapper set TERM=dumb)"

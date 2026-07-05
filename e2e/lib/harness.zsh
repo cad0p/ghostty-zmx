@@ -26,15 +26,24 @@ setopt local_options no_sh_word_split err_return
 # --- configuration -----------------------------------------------------------
 
 GZMX_E2E_GHOSTTY_APP=${GHOSTTY_APP_NAME:-Ghostty-tip}
-GZMX_E2E_GHOSTTY_BIN="/Applications/${GZMX_E2E_GHOSTTY_APP}.app/Contents/MacOS/${GZMX_E2E_GHOSTTY_APP}"
+GZMX_E2E_GHOSTTY_BUNDLE="/Applications/${GZMX_E2E_GHOSTTY_APP}.app"
+GZMX_E2E_GHOSTTY_BIN="${GHOSTTY_BIN:-$GZMX_E2E_GHOSTTY_BUNDLE/Contents/MacOS/$GZMX_E2E_GHOSTTY_APP}"
 GZMX_E2E_REPO_DIR="${0:A:h:h:h}"
 GZMX_E2E_FIXTURE_DIR="$GZMX_E2E_REPO_DIR/e2e/fixtures/sshd"
 GZMX_E2E_MOCK_TSH_DIR="$GZMX_E2E_REPO_DIR/e2e/fixtures/tsh-mock"
 GZMX_E2E_SSH_PORT=${GZMX_E2E_SSH_PORT:-2222}
-GZMX_E2E_FIXTURE_HOST="gzmx-fixture"
+GZMX_E2E_FIXTURE_HOST="${GZMX_E2E_FIXTURE_HOST:-gzmx-fixture}"
+GZMX_E2E_FIXTURE_USER="${GZMX_E2E_FIXTURE_USER:-gzmx}"
+GZMX_E2E_FIXTURE_HOME="${GZMX_E2E_FIXTURE_HOME:-/home/$GZMX_E2E_FIXTURE_USER}"
+GZMX_E2E_EXTERNAL_FIXTURE="${GZMX_E2E_EXTERNAL_FIXTURE:-0}"
+GZMX_E2E_EXTERNAL_HOST="${GZMX_E2E_EXTERNAL_HOST:-$GZMX_E2E_FIXTURE_HOST}"
+GZMX_E2E_EXTERNAL_INSTALL_SERVER="${GZMX_E2E_EXTERNAL_INSTALL_SERVER:-0}"
+GZMX_E2E_EXTERNAL_SSH_INCLUDE="${GZMX_E2E_EXTERNAL_SSH_INCLUDE:-$HOME/.ssh/config}"
+GZMX_E2E_EXTERNAL_SSH_CONFIG_APPEND="${GZMX_E2E_EXTERNAL_SSH_CONFIG_APPEND:-}"
 GZMX_E2E_TMPDIR=""
 GZMX_E2E_DATA_HOME=""
 GZMX_E2E_STATE_HOME=""
+GZMX_E2E_ZDOTDIR=""
 GZMX_E2E_GHOSTTY_PID=""
 GZMX_E2E_USE_MOCK_TSH="0"
 
@@ -83,8 +92,15 @@ gzmx_e2e_init() {
   GZMX_E2E_TMPDIR="$(mktemp -d /tmp/gzmx-e2e-XXXXXX)"
   GZMX_E2E_DATA_HOME="$GZMX_E2E_TMPDIR/data"
   GZMX_E2E_STATE_HOME="$GZMX_E2E_TMPDIR/state"
-  mkdir -p "$GZMX_E2E_DATA_HOME" "$GZMX_E2E_STATE_HOME"
+  GZMX_E2E_ZDOTDIR="$GZMX_E2E_TMPDIR/zdotdir"
+  mkdir -p "$GZMX_E2E_DATA_HOME" "$GZMX_E2E_STATE_HOME" "$GZMX_E2E_ZDOTDIR"
   GZMX_E2E_SSHCONFIG="$GZMX_E2E_TMPDIR/sshconfig"
+  cat > "$GZMX_E2E_ZDOTDIR/.zprofile" <<'EOF'
+[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"
+EOF
+  cat > "$GZMX_E2E_ZDOTDIR/.zshrc" <<'EOF'
+[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"
+EOF
   gzmx_e2e_log "tmpdir=$GZMX_E2E_TMPDIR"
 }
 
@@ -94,6 +110,23 @@ gzmx_e2e_init() {
 # up, reuses it.
 gzmx_e2e_fixture_sshd_up() {
   emulate -L zsh
+  if [[ "$GZMX_E2E_EXTERNAL_FIXTURE" == "1" ]]; then
+    cat > "$GZMX_E2E_SSHCONFIG" <<EOF
+Include $GZMX_E2E_EXTERNAL_SSH_INCLUDE
+Host $GZMX_E2E_FIXTURE_HOST
+  HostName $GZMX_E2E_EXTERNAL_HOST
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
+EOF
+    if [[ -n "$GZMX_E2E_EXTERNAL_SSH_CONFIG_APPEND" ]]; then
+      print -r -- "$GZMX_E2E_EXTERNAL_SSH_CONFIG_APPEND" >> "$GZMX_E2E_SSHCONFIG"
+    fi
+    ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" 'echo fixture-ok' >/dev/null 2>&1 \
+      || gzmx_e2e_fail "cannot reach external ssh fixture: $GZMX_E2E_EXTERNAL_HOST"
+    gzmx_e2e_log "external ssh fixture reachable: $GZMX_E2E_EXTERNAL_HOST"
+    return 0
+  fi
   # Already running?
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx ghostty-zmx-sshd-fixture; then
     gzmx_e2e_log "sshd fixture already running"
@@ -125,6 +158,7 @@ EOF
 
 gzmx_e2e_fixture_sshd_down() {
   emulate -L zsh
+  [[ "$GZMX_E2E_EXTERNAL_FIXTURE" == "1" ]] && return 0
   [[ "$GZMX_E2E_STARTED_DOCKER" == "1" ]] || return 0
   gzmx_e2e_log "stopping sshd fixture"
   ( cd "$GZMX_E2E_FIXTURE_DIR" && ./down.sh ) 2>/dev/null || true
@@ -134,6 +168,10 @@ gzmx_e2e_fixture_sshd_down() {
 # bootstrap (mirrors `ghostty-zmx install-server` but standalone).
 gzmx_e2e_fixture_install_server() {
   emulate -L zsh
+  if [[ "$GZMX_E2E_EXTERNAL_FIXTURE" == "1" && "$GZMX_E2E_EXTERNAL_INSTALL_SERVER" != "1" ]]; then
+    gzmx_e2e_log "using existing server install on external fixture"
+    return 0
+  fi
   local install_dir="$HOME/.config/ghostty-zmx"
   [[ -d "$install_dir" ]] || gzmx_e2e_fail "laptop install missing; run ghostty-zmx install first"
   local tmpdir="/tmp/ghostty-zmx-server-install.e2e.$$"
@@ -186,6 +224,9 @@ gzmx_e2e_fixture_reset_server_state() {
 # Does NOT use -e /bin/zsh (triggers the macOS execute prompt).
 gzmx_e2e_ghostty_launch() {
   emulate -L zsh
+  if [[ ! -x "$GZMX_E2E_GHOSTTY_BIN" && -x "$GZMX_E2E_GHOSTTY_BUNDLE/Contents/MacOS/ghostty" ]]; then
+    GZMX_E2E_GHOSTTY_BIN="$GZMX_E2E_GHOSTTY_BUNDLE/Contents/MacOS/ghostty"
+  fi
   [[ -x "$GZMX_E2E_GHOSTTY_BIN" ]] || gzmx_e2e_fail "Ghostty binary not found: $GZMX_E2E_GHOSTTY_BIN"
   # Pre-seed remote-hosts so the poller knows the fixture transport. Only
   # pre-seed if the file does not already exist: a reopen (Cmd-Q preservation
@@ -195,8 +236,9 @@ gzmx_e2e_ghostty_launch() {
   # to use bare `zmx` (not on the non-interactive remote PATH) and fail.
   if [[ ! -f "$GZMX_E2E_DATA_HOME/remote-hosts" ]]; then
     if [[ "$GZMX_E2E_USE_MOCK_TSH" == "1" ]]; then
-      printf '%s\ttsh\t0.6.0\tactive\ttsh ssh\t/home/gzmx/.local/bin/zmx\n' \
-        "$GZMX_E2E_FIXTURE_HOST" > "$GZMX_E2E_DATA_HOME/remote-hosts"
+      printf '%s\ttsh\t0.6.0\tactive\ttsh ssh\t%s/.local/bin/zmx\n' \
+        "$GZMX_E2E_FIXTURE_HOST" \
+        "$GZMX_E2E_FIXTURE_HOME" > "$GZMX_E2E_DATA_HOME/remote-hosts"
     else
       printf '%s\tssh\t0.6.0\tactive\tssh -t -F %s %s\n' \
         "$GZMX_E2E_FIXTURE_HOST" "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
@@ -208,23 +250,30 @@ gzmx_e2e_ghostty_launch() {
   # If mock-tsh is enabled, prepend it to PATH so the widget finds our `tsh`.
   local _path_env="${PATH}"
   [[ "$GZMX_E2E_USE_MOCK_TSH" == "1" ]] && _path_env="$GZMX_E2E_MOCK_TSH_DIR:${PATH}"
-  "$GZMX_E2E_GHOSTTY_BIN" \
+  open -na "$GZMX_E2E_GHOSTTY_BUNDLE" --args \
+    --config-default-files=false \
     --env=GHOSTTY_ZMX_AUTO_ATTACH=1 \
     --env=GHOSTTY_ZMX_DEBUG=1 \
     --env=GHOSTTY_ZMX_DATA_HOME="$GZMX_E2E_DATA_HOME" \
     --env=GHOSTTY_ZMX_STATE_HOME="$GZMX_E2E_STATE_HOME" \
+    --env=GHOSTTY_ZMX_INSTALL_DIR="$HOME/.config/ghostty-zmx" \
+    --env=ZDOTDIR="$GZMX_E2E_ZDOTDIR" \
     --env=PATH="$_path_env" \
     --env=GHOSTTY_ZMX_E2E_SSH_CONFIG="$GZMX_E2E_SSHCONFIG" \
-    --env=GHOSTTY_ZMX_E2E_FIXTURE_USER=gzmx \
+    --env=GHOSTTY_ZMX_E2E_FIXTURE_USER="$GZMX_E2E_FIXTURE_USER" \
     --env=GHOSTTY_ZMX_E2E_FIXTURE_HOST="$GZMX_E2E_FIXTURE_HOST" \
     --window-save-state=never \
     --confirm-close-surface=false \
-    >/dev/null 2>&1 &
-  GZMX_E2E_GHOSTTY_PID=$!
-  GZMX_E2E_STARTED_GHOSTTY=1
-  disown "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || true
-  # Wait for Ghostty to be AppleScript-addressable and report a surface.
+    >/dev/null 2>&1
   local i
+  for (( i=1; i<=40; i++ )); do
+    GZMX_E2E_GHOSTTY_PID="$(pgrep -nf "$GZMX_E2E_GHOSTTY_BIN" 2>/dev/null || true)"
+    [[ -n "$GZMX_E2E_GHOSTTY_PID" ]] && break
+    sleep 0.25
+  done
+  [[ -n "$GZMX_E2E_GHOSTTY_PID" ]] || gzmx_e2e_fail "Ghostty process not found after open"
+  GZMX_E2E_STARTED_GHOSTTY=1
+  # Wait for Ghostty to be AppleScript-addressable and report a surface.
   for (( i=1; i<=40; i++ )); do
     kill -0 "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || gzmx_e2e_fail "Ghostty exited during launch"
     if osascript -e "tell application \"$GZMX_E2E_GHOSTTY_APP\" to get version" >/dev/null 2>&1; then
@@ -412,7 +461,7 @@ gzmx_e2e_fixture_zmx() {
   emulate -L zsh
   [[ -n "$GZMX_E2E_FIXTURE_ZMX" ]] && { print -r -- "$GZMX_E2E_FIXTURE_ZMX"; return 0 }
   GZMX_E2E_FIXTURE_ZMX="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
-    'command -v zmx 2>/dev/null || ls /home/gzmx/.local/bin/zmx 2>/dev/null || echo zmx' 2>/dev/null)"
+    "command -v zmx 2>/dev/null || ls $GZMX_E2E_FIXTURE_HOME/.local/bin/zmx 2>/dev/null || echo zmx" 2>/dev/null)"
   print -r -- "$GZMX_E2E_FIXTURE_ZMX"
 }
 
@@ -503,7 +552,7 @@ gzmx_e2e_assert_remote_cwd() {
 # Return the remote-layout row (TSV) for a session, or empty if not present.
 gzmx_e2e_remote_layout_row() {
   emulate -L zsh
-  local session="$1" helper=/home/gzmx/.config/ghostty-zmx/ghostty-zmx-remote-layout
+  local session="$1" helper="$GZMX_E2E_FIXTURE_HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout"
   ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
     "$helper read 2>/dev/null" 2>/dev/null | awk -F '\t' -v s="$session" '$5 == s { print }'
 }

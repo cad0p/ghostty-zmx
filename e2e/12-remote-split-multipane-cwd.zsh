@@ -43,10 +43,10 @@ sleep 2
 
 # In pane B (now focused after the split), cd to proj-beta. Poll for pane B's
 # remote cwd to register as beta (readlink /proc/<pid>/cwd lags the cd).
-local zmx_bin session_a session_b session_c line name pid cwd sessions _beta_ready=0 _beta_i
+local zmx_bin session_a session_b session_c line name pid cwd sessions names_before_c _beta_ready=0 _beta_i
 zmx_bin="$(gzmx_e2e_fixture_zmx)"
 gzmx_e2e_type "mkdir -p /tmp/gzmx-e2e-multipane-beta && cd /tmp/gzmx-e2e-multipane-beta && pwd && echo BETA_READY"
-for (( _beta_i=1; _beta_i<=15; _beta_i++ )); do
+for (( _beta_i=1; _beta_i<=45; _beta_i++ )); do
   sleep 1
   sessions="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "$zmx_bin list 2>/dev/null" 2>/dev/null)"
   session_a=""; session_b=""
@@ -63,10 +63,11 @@ for (( _beta_i=1; _beta_i<=15; _beta_i++ )); do
   done <<< "$sessions"
   [[ -n "$session_b" ]] && { _beta_ready=1; break; }
 done
-[[ "$_beta_ready" -eq 1 ]] || gzmx_e2e_fail "could not find pane B (cwd=/tmp/gzmx-e2e-multipane-beta) after 15s"
+[[ "$_beta_ready" -eq 1 ]] || gzmx_e2e_fail "could not find pane B (cwd=/tmp/gzmx-e2e-multipane-beta) after 45s"
 gzmx_e2e_log "sessions after split A→B: $(print -r -- "$sessions" | tr '\n' '|')"
 gzmx_e2e_log "session A (cwd ~): ${session_a:-<none>}"
 gzmx_e2e_log "session B (cwd beta): $session_b"
+names_before_c="$(print -r -- "$sessions" | sed -n 's/.*name=\(gzr-[A-Za-z0-9-]*\).*/\1/p')"
 
 # Split pane B → pane C. Pane B is currently focused (we typed into it).
 gzmx_e2e_split_focused right
@@ -79,7 +80,7 @@ gzmx_e2e_log "sessions after split B→C: $(print -r -- "$sessions" | tr '\n' '|
 session_c=""
 while IFS= read -r line; do
   name="$(print -r -- "$line" | sed -n 's/.*name=\(gzr-[A-Za-z0-9-]*\).*/\1/p')"
-  [[ "$name" == "$session_a" || "$name" == "$session_b" ]] && continue
+  print -r -- "$names_before_c" | grep -qxF -- "$name" && continue
   [[ -n "$name" ]] && { session_c="$name"; break }
 done <<< "$sessions"
 [[ -n "$session_c" ]] || gzmx_e2e_fail "could not find pane C (the split of B)"
