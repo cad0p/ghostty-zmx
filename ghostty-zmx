@@ -118,13 +118,19 @@ _gzmx_install_server() {
   # does not support -T/-t and is non-interactive when a command arg is present.
   # Drop any -t/-tt/--tty from the stored prefix, and for ssh insert -T right
   # after the `ssh` token if no -T is already present.
+  #
+  # tsh detection must handle absolute paths: the manager resolves transport
+  # binaries absolutely (ghostty_zmx_resolve_transport_path), so a stored
+  # prefix may be "/usr/local/bin/tsh ssh -t pier@host" rather than "tsh ssh".
+  # Use the basename (${bin:t}) so both forms are detected.
   local -a notty_argv=() rest=()
   local is_tsh=0 have_T=0 arg
-  if [[ "${transport_argv[1]:-}" == "tsh" && "${transport_argv[2]:-}" == "ssh" ]]; then
+  local _bin1="${transport_argv[1]:-}"
+  if [[ "${_bin1:t}" == "tsh" && "${transport_argv[2]:-}" == "ssh" ]]; then
     is_tsh=1
-    notty_argv=(tsh ssh)
+    notty_argv=("$_bin1" ssh)
   else
-    notty_argv=(ssh)
+    notty_argv=("$_bin1")
   fi
   for (( i=2; i<=${#transport_argv}; i++ )); do
     arg="${transport_argv[$i]}"

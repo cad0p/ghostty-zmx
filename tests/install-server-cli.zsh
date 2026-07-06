@@ -96,6 +96,37 @@ rc=$?
 [[ "$out" == *"TSH_ARGV:ssh pier@pcad-dev"* ]] || { print -u2 "known-host: wrong transport argv: $out"; exit 1 }
 print "ok: known-host → tsh transport from remote-hosts"
 
+# --- Case 4b: install-server <known-host> with ABSOLUTE tsh path ---
+# Regression: the manager resolves transport binaries absolutely
+# (ghostty_zmx_resolve_transport_path), so a stored prefix may be
+# "/usr/local/bin/tsh ssh -t pier@host" rather than "tsh ssh". The
+# is_tsh detection must use the basename, not a literal == "tsh" compare,
+# or it falls into the plain-ssh branch and produces "ssh ssh pier@host"
+# ("Could not resolve hostname ssh").
+# Use a stub at an absolute path we control (the wrapper execs the absolute
+# path directly, so PATH shadowing doesn't work for absolute paths).
+# Name it 'tsh' so the basename detection (\${bin:t} == "tsh") works.
+stub_tsh_dir="$workdir/stub-bin"
+mkdir -p "$stub_tsh_dir"
+cat > "$stub_tsh_dir/tsh" <<'EOF'
+#!/bin/sh
+echo "TSH_ARGV:$@"
+exit 0
+EOF
+chmod +x "$stub_tsh_dir/tsh"
+stub_tsh="$stub_tsh_dir/tsh"
+print -r -- "pcad-dev-abs	tsh	0.6.0	active	$stub_tsh ssh -t pier@pcad-dev	/home/pier/.local/bin/zmx" \
+  > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts"
+
+out="$(PATH="$stubbin:$PATH" "$wrapper" install-server pcad-dev-abs 2>&1)"
+rc=$?
+[[ $rc -eq 0 ]] || { print -u2 "known-host-abs: expected exit 0, got $rc ($out)"; exit 1 }
+# The absolute stub tsh must receive: ssh pier@pcad-dev <remote_script>.
+# The -t is dropped (no-pty). The basename detection means is_tsh=1, so no
+# -T is inserted and the "ssh" after tsh is consumed as the subcommand.
+[[ "$out" == *"TSH_ARGV:ssh pier@pcad-dev"* ]] || { print -u2 "known-host-abs: wrong transport argv: $out"; exit 1 }
+print "ok: known-host with absolute tsh path → tsh transport (basename detection)"
+
 # --- Case 5: install-server <unknown-host> falls back to ssh <host> ---
 # Stub ssh in the same stubbin.
 cat > "$stubbin/ssh" <<'EOF'
