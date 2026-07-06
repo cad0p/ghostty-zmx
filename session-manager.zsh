@@ -457,20 +457,20 @@ _ghostty_zmx_start_reaper() {
   [[ -n "$ghosttyPID" ]] || return 0
   typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" || return 0
   typeset flag="$runtime_dir/reaper-${ghosttyPID}.lock"
-  mkdir "$flag" 2>/dev/null || return 0
-  _ghostty_zmx_debug "reaper start ghostty_pid=$ghosttyPID flag=$flag"
 
   # Per-install instance lock: refuse if another live Ghostty already holds
   # this install's lock (two Ghostty instances sharing one data-home would
   # corrupt remote-hosts/remote-projections/sessions/registry + stack
   # reapers/pollers). A dead pid means the prior instance is gone (crash/quit)
-  # and we take over. This is the only enforcement point; auto-attach calls
-  # this, so the check runs once per surface init.
+  # and we take over. Check BEFORE acquiring the start-lock flag so a skipped
+  # caller does not leave a stale flag that blocks a later caller.
   if ghostty_zmx_instance_locked_by_other "$ghosttyPID" 2>/dev/null; then
     _ghostty_zmx_debug "reaper skipped reason=instance-locked-by-other lock_pid=$_gzmx_lock_pid"
-    rmdir "$flag" 2>/dev/null
     return 0
   fi
+
+  mkdir "$flag" 2>/dev/null || return 0
+  _ghostty_zmx_debug "reaper start ghostty_pid=$ghosttyPID flag=$flag"
   ghostty_zmx_acquire_instance_lock "$ghosttyPID" 2>/dev/null || true
 
   typeset script="$runtime_dir/reaper-${ghosttyPID}.zsh"
