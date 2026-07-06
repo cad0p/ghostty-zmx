@@ -6,6 +6,13 @@
 # the server row stays `present`, and reopening Ghostty re-projects and
 # reattaches to the same session with scrollback intact.
 #
+# This scenario also covers orphan-poller resilience: after Ghostty quits,
+# the harness sweep (gzmx_e2e_ghostty_quit) kills ALL pollers in the runtime
+# dir, not just the current PID's. A stale orphan from a prior interrupted
+# run would otherwise re-open the surviving `present` row during the reopen
+# step, causing a duplicate window. The dedicated orphan-resilience scenario
+# is e2e/15-orphan-poller-resilience.zsh.
+#
 # Scenario:
 #   1. Open a projection to the fixture.
 #   2. In the remote pane, print a unique marker into the scrollback.
@@ -81,8 +88,11 @@ for (( i=1; i<=40; i++ )); do
 done
 # If still alive, force-kill (shouldn't happen but don't hang the harness).
 kill -9 "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || true
-# Sweep orphaned reaper/poller children.
-pkill -9 -f "ghostty-zmx-501/(reaper|remote-poller)-${GZMX_E2E_GHOSTTY_PID}" 2>/dev/null || true
+# Sweep orphaned reaper/poller children. Match ALL ghostty-zmx pollers
+# in the runtime dir, not just this PID's — orphans from prior runs survive
+# a PID-specific sweep and re-open projections (multiplication root cause).
+_runtime="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}"
+[[ -d "$_runtime" ]] && pkill -9 -f "${_runtime}/(reaper|remote-poller)-" 2>/dev/null || true
 GZMX_E2E_STARTED_GHOSTTY=0
 sleep 2
 gzmx_e2e_log "Ghostty quit complete"
