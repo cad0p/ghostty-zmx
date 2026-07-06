@@ -29,6 +29,8 @@ GZMX_E2E_GHOSTTY_APP=${GHOSTTY_APP_NAME:-Ghostty-tip}
 GZMX_E2E_GHOSTTY_BUNDLE="/Applications/${GZMX_E2E_GHOSTTY_APP}.app"
 GZMX_E2E_GHOSTTY_BIN="${GHOSTTY_BIN:-$GZMX_E2E_GHOSTTY_BUNDLE/Contents/MacOS/$GZMX_E2E_GHOSTTY_APP}"
 GZMX_E2E_REPO_DIR="${0:A:h:h:h}"
+GZMX_E2E_INSTALL_DIR="${GZMX_E2E_GHOSTTY_ZMX_INSTALL_DIR:-${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx-tip}}"
+[[ -d "$GZMX_E2E_INSTALL_DIR" ]] || GZMX_E2E_INSTALL_DIR="$HOME/.config/ghostty-zmx"
 GZMX_E2E_FIXTURE_DIR="$GZMX_E2E_REPO_DIR/e2e/fixtures/sshd"
 GZMX_E2E_MOCK_TSH_DIR="$GZMX_E2E_REPO_DIR/e2e/fixtures/tsh-mock"
 GZMX_E2E_SSH_PORT=${GZMX_E2E_SSH_PORT:-2222}
@@ -95,11 +97,11 @@ gzmx_e2e_init() {
   GZMX_E2E_ZDOTDIR="$GZMX_E2E_TMPDIR/zdotdir"
   mkdir -p "$GZMX_E2E_DATA_HOME" "$GZMX_E2E_STATE_HOME" "$GZMX_E2E_ZDOTDIR"
   GZMX_E2E_SSHCONFIG="$GZMX_E2E_TMPDIR/sshconfig"
-  cat > "$GZMX_E2E_ZDOTDIR/.zprofile" <<'EOF'
-[[ -r "$HOME/.config/ghostty-zmx/session-manager-early.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager-early.zsh"
+  cat > "$GZMX_E2E_ZDOTDIR/.zprofile" <<EOF
+[[ -r ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager-early.zsh ]] && source ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager-early.zsh
 EOF
-  cat > "$GZMX_E2E_ZDOTDIR/.zshrc" <<'EOF'
-[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"
+  cat > "$GZMX_E2E_ZDOTDIR/.zshrc" <<EOF
+[[ -r ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager.zsh ]] && source ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager.zsh
 EOF
   gzmx_e2e_log "tmpdir=$GZMX_E2E_TMPDIR"
 }
@@ -172,7 +174,7 @@ gzmx_e2e_fixture_install_server() {
     gzmx_e2e_log "using existing server install on external fixture"
     return 0
   fi
-  local install_dir="$HOME/.config/ghostty-zmx"
+  local install_dir="$GZMX_E2E_INSTALL_DIR"
   [[ -d "$install_dir" ]] || gzmx_e2e_fail "laptop install missing; run ghostty-zmx install first"
   local tmpdir="/tmp/ghostty-zmx-server-install.e2e.$$"
   local -a remote_cmd=(
@@ -250,13 +252,14 @@ gzmx_e2e_ghostty_launch() {
   # If mock-tsh is enabled, prepend it to PATH so the widget finds our `tsh`.
   local _path_env="${PATH}"
   [[ "$GZMX_E2E_USE_MOCK_TSH" == "1" ]] && _path_env="$GZMX_E2E_MOCK_TSH_DIR:${PATH}"
-  open -na "$GZMX_E2E_GHOSTTY_BUNDLE" --args \
+  open -F -n -a "$GZMX_E2E_GHOSTTY_APP" --args \
     --config-default-files=false \
+    --env=GHOSTTY_ZMX_APP_NAME="$GZMX_E2E_GHOSTTY_APP" \
     --env=GHOSTTY_ZMX_AUTO_ATTACH=1 \
     --env=GHOSTTY_ZMX_DEBUG=1 \
     --env=GHOSTTY_ZMX_DATA_HOME="$GZMX_E2E_DATA_HOME" \
     --env=GHOSTTY_ZMX_STATE_HOME="$GZMX_E2E_STATE_HOME" \
-    --env=GHOSTTY_ZMX_INSTALL_DIR="$HOME/.config/ghostty-zmx" \
+    --env=GHOSTTY_ZMX_INSTALL_DIR="$GZMX_E2E_INSTALL_DIR" \
     --env=ZDOTDIR="$GZMX_E2E_ZDOTDIR" \
     --env=PATH="$_path_env" \
     --env=GHOSTTY_ZMX_E2E_SSH_CONFIG="$GZMX_E2E_SSHCONFIG" \
@@ -366,6 +369,49 @@ end tell
 OSA
 }
 
+# Create a native tab in the front window via AppleScript. The new tab uses the
+# default shell, so it sources the ghostty-zmx startup hooks and exercises the
+# remote tab inheritance path.
+gzmx_e2e_new_tab_focused() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set w to front window
+  set cfg to new surface configuration
+  set tb to new tab in w with configuration cfg
+  select tab tb
+  activate window w
+end tell
+OSA
+}
+
+gzmx_e2e_new_tab_in_window_id_suffix() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  local window_suffix="$1"
+  local escaped="${window_suffix//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set targetWindow to missing value
+  repeat with w in windows
+    set winStr to id of w as string
+    if winStr ends with "$escaped" then
+      set targetWindow to w
+      exit repeat
+    end if
+  end repeat
+  if targetWindow is not missing value then
+    activate window targetWindow
+    set cfg to new surface configuration
+    set tb to new tab in targetWindow with configuration cfg
+    select tab tb
+  end if
+end tell
+OSA
+}
+
 # Type text into window N (1-indexed), focused terminal of its selected tab.
 # Activates the window first so input lands in the right pane.
 gzmx_e2e_type_in_window() {
@@ -382,6 +428,90 @@ tell application "$GZMX_E2E_GHOSTTY_APP"
   send key "enter" to tm
 end tell
 OSA
+}
+
+gzmx_e2e_front_window_id() {
+  emulate -L zsh
+  osascript -e "tell application \"$GZMX_E2E_GHOSTTY_APP\" to get id of front window" 2>/dev/null
+}
+
+# Type text into a specific Ghostty window id without activating it, then press
+# Enter. Window ids are stable when projection windows are opened and reordered
+# during a handoff.
+gzmx_e2e_type_in_window_id_direct() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  local window_id="$1" text="$2"
+  local escaped_window_id="${window_id//\\/\\\\}"
+  escaped_window_id="${escaped_window_id//\"/\\\"}"
+  local escaped="${text//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set targetWindow to missing value
+  repeat with candidateWindow in windows
+    if id of candidateWindow is "$escaped_window_id" then
+      set targetWindow to candidateWindow
+      exit repeat
+    end if
+  end repeat
+  if targetWindow is not missing value then
+    set tb to selected tab of targetWindow
+    set tm to focused terminal of tb
+    input text "$escaped" to tm
+    send key "enter" to tm
+  end if
+end tell
+OSA
+}
+
+gzmx_e2e_terminal_control_in_window_id() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  local window_id="$1" control="$2"
+  local escaped_window_id="${window_id//\\/\\\\}"
+  escaped_window_id="${escaped_window_id//\"/\\\"}"
+  local key="" modifiers=""
+  case "$control" in
+    up) key="arrowUp" ;;
+    ctrl-a) key="a"; modifiers="control" ;;
+    *) gzmx_e2e_fail "unknown terminal control sequence: $control" ;;
+  esac
+  if [[ -n "$modifiers" ]]; then
+    osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set targetWindow to missing value
+  repeat with candidateWindow in windows
+    if id of candidateWindow is "$escaped_window_id" then
+      set targetWindow to candidateWindow
+      exit repeat
+    end if
+  end repeat
+  if targetWindow is not missing value then
+    set tb to selected tab of targetWindow
+    set tm to focused terminal of tb
+    send key "$key" modifiers {"$modifiers"} to tm
+  end if
+end tell
+OSA
+  else
+    osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  set targetWindow to missing value
+  repeat with candidateWindow in windows
+    if id of candidateWindow is "$escaped_window_id" then
+      set targetWindow to candidateWindow
+      exit repeat
+    end if
+  end repeat
+  if targetWindow is not missing value then
+    set tb to selected tab of targetWindow
+    set tm to focused terminal of tb
+    send key "$key" to tm
+  end if
+end tell
+OSA
+  fi
 }
 
 # Type text WITHOUT pressing Enter (for pre-fill scenarios).
@@ -440,6 +570,57 @@ gzmx_e2e_assert_window_count() {
   gzmx_e2e_pass "window count == $expected"
 }
 
+gzmx_e2e_assert_window_with_tabs_and_terminals() {
+  emulate -L zsh
+  local expected_tabs="$1" expected_terms="$2" found
+  found="$(osascript <<OSA 2>/dev/null
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  repeat with w in windows
+    if (count of tabs of w) is $expected_tabs then
+      set okShape to true
+      repeat with tb in tabs of w
+        if (count of terminals of tb) is not $expected_terms then
+          set okShape to false
+        end if
+      end repeat
+      if okShape then return "1"
+    end if
+  end repeat
+  return "0"
+end tell
+OSA
+)"
+  [[ "$found" == "1" ]] \
+    || gzmx_e2e_fail "no window with $expected_tabs tabs and $expected_terms terminals per tab"
+  gzmx_e2e_pass "window shape includes $expected_tabs tabs x $expected_terms terminal(s)"
+}
+
+gzmx_e2e_assert_window_id_with_tabs_and_terminals() {
+  emulate -L zsh
+  local window_suffix="$1" expected_tabs="$2" expected_terms="$3" found
+  local escaped="${window_suffix//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  found="$(osascript <<OSA 2>/dev/null
+tell application "$GZMX_E2E_GHOSTTY_APP"
+  repeat with w in windows
+    set winStr to id of w as string
+    if winStr ends with "$escaped" then
+      if (count of tabs of w) is not $expected_tabs then return "0"
+      repeat with tb in tabs of w
+        if (count of terminals of tb) is not $expected_terms then return "0"
+      end repeat
+      return "1"
+    end if
+  end repeat
+  return "0"
+end tell
+OSA
+)"
+  [[ "$found" == "1" ]] \
+    || gzmx_e2e_fail "window $window_suffix does not have $expected_tabs tabs and $expected_terms terminals per tab"
+  gzmx_e2e_pass "window $window_suffix has $expected_tabs tabs x $expected_terms terminal(s)"
+}
+
 # Wait up to N seconds for a condition (function name) to return 0.
 gzmx_e2e_wait_for() {
   emulate -L zsh
@@ -450,6 +631,25 @@ gzmx_e2e_wait_for() {
     sleep 0.25
   done
   return 1
+}
+
+gzmx_e2e_local_session() {
+  emulate -L zsh
+  local sessions_file="$GZMX_E2E_DATA_HOME/sessions" session i
+  for (( i=1; i<=40; i++ )); do
+    if [[ -r "$sessions_file" ]]; then
+      session="$(awk '/^zmx-/ { print; exit }' "$sessions_file" 2>/dev/null)"
+      [[ -n "$session" ]] && { print -r -- "$session"; return 0; }
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
+gzmx_e2e_local_history_compact() {
+  emulate -L zsh
+  local session="$1"
+  zmx history "$session" 2>/dev/null | tr -d '\r\n'
 }
 
 # The absolute zmx path on the fixture (zmx is NOT on the non-interactive PATH —

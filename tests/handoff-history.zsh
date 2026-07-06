@@ -10,8 +10,9 @@
 #
 # This test uses a pty to faithfully reproduce the zle widget context: it
 # binds Enter to a widget that mimics ghostty_zmx_accept_line's history step,
-# types a handoff command, presses Enter (widget fires), then presses Up-arrow
-# and asserts the command is recalled into the buffer.
+# runs a marker command, types a handoff command, presses Enter (widget fires),
+# then presses Up-arrow and asserts the handoff command, not the marker command,
+# is recalled into the buffer.
 
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
@@ -20,22 +21,36 @@ zdot="$workdir/zdot"
 mkdir -p "$zdot"
 hf="$workdir/.zsh_history"
 
-# Two variants: BUGGY (print -s only) and FIXED (print -s + fc -R).
-# Both should pass after the fix is in place; the BUGGY variant is kept to
-# document the historical failure mode (it may pass on some zsh/option
-# combinations, which is why this is a defense-in-depth test).
-widget_body='print -s -- "$BUFFER"; fc -R "$HISTFILE"; BUFFER=""; zle reset-prompt'
-
 cat > "$zdot/.zshrc" <<EOF
 export HISTFILE='$hf'
 rm -f '$hf'
 export HISTSIZE=100 SAVEHIST=100
 setopt share_history hist_ignore_dups
 PS1="P> "
-gzmx_test_widget() { $widget_body }
+gzmx_test_widget() {
+  local original_buffer="\$BUFFER"
+  print -s -- "\$original_buffer"
+  fc -AI "\$HISTFILE" 2>/dev/null || fc -W "\$HISTFILE" 2>/dev/null || true
+  fc -R "\$HISTFILE" 2>/dev/null || true
+  typeset -g _GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL="\$original_buffer"
+  BUFFER=""
+  zle reset-prompt
+}
+gzmx_test_up() {
+  if [[ -n "\${_GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL:-}" && -z "\${BUFFER:-}" ]]; then
+    BUFFER="\$_GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL"
+    CURSOR=\${#BUFFER}
+    _GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL=""
+    zle redisplay
+    return
+  fi
+  zle .up-line-or-history
+}
 zle -N gzmx_test_widget
+zle -N gzmx_test_up
 bindkey "^M" gzmx_test_widget
 bindkey "^J" gzmx_test_widget
+bindkey "\e[A" gzmx_test_up
 EOF
 
 # Drive a pty: type the handoff + Enter, then Up-arrow, then dump BUFFER.
@@ -52,7 +67,11 @@ if pid == 0:
 
 out = b''
 t0 = time.time()
-inputs = [b'tsh ssh pcad-dev\r', b'\x1b[A']  # handoff+Enter, then Up-arrow
+inputs = [
+    b'print -r -- GZMX_HISTORY_MARKER\r',
+    b'tsh ssh pcad-dev\r',
+    b'\x1b[A',
+]
 idx = 0
 last = time.time()
 while time.time() - t0 < 10:
@@ -74,7 +93,8 @@ except: pass
 clean = re.sub(r'\x1b\][0-9;]*[^\x07\x1b]*(\x07|\x1b\\)', '', out.decode('utf-8','replace'))
 clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', clean)
 # After Up-arrow, the buffer should contain 'tsh ssh pcad-dev' on the prompt line.
-if 'tsh ssh pcad-dev' in clean.split('P> ')[-1] if 'P> ' in clean else '':
+last_prompt = clean.split('P> ')[-1] if 'P> ' in clean else ''
+if 'tsh ssh pcad-dev' in last_prompt and 'GZMX_HISTORY_MARKER' not in last_prompt:
     print("  ok: handoff command recalled by Up-arrow")
     sys.exit(0)
 # Fallback: check the whole output for the command after the second prompt.
@@ -89,6 +109,13 @@ sys.exit(1)
 PY
 
 if (( $? == 0 )); then
+  _last_history="$(tail -n 1 "$hf" 2>/dev/null)"
+  [[ "$_last_history" == ": "*";"* ]] && _last_history="${_last_history#*;}"
+  [[ "$_last_history" == "tsh ssh pcad-dev" ]] || {
+    print -u2 "FAIL: handoff command was not persisted as latest history entry: $_last_history"
+    exit 1
+  }
+  print "  ok: handoff command persisted as latest history entry"
   print "all handoff-history tests passed"
   exit 0
 else

@@ -10,6 +10,7 @@ export GHOSTTY_ZMX_DATA_HOME="$workdir/data"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state"
 export XDG_RUNTIME_DIR="$workdir/runtime"
 export GHOSTTY_ZMX_SCROLLBACK_LINES=3
+unset TERM_PROGRAM GHOSTTY_RESOURCES_DIR 2>/dev/null || true
 mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$XDG_RUNTIME_DIR" "$workdir/bin"
 
 cat > "$workdir/bin/zmx" <<'STUB'

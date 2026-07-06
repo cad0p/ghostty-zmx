@@ -10,6 +10,7 @@ export GHOSTTY_ZMX_DATA_HOME="$workdir/data/ghostty-zmx"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state/ghostty-zmx"
 export XDG_RUNTIME_DIR="$workdir/runtime"
 export GHOSTTY_ZMX_RESTORE_STEP_DELAY=0
+unset TERM_PROGRAM GHOSTTY_RESOURCES_DIR 2>/dev/null || true
 # v0.2 identity is tty-based (_ghostty_zmx_current_surface_identity matches
 # the shell TTY against AppleScript `tty of tm`), so the osascript stubs below
 # match the `ttyStr is` query and the test shell advertises a fake TTY.

@@ -19,6 +19,7 @@ repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 export HOME="$workdir/home"
+unset TERM_PROGRAM GHOSTTY_RESOURCES_DIR 2>/dev/null || true
 mkdir -p "$HOME"
 
 source "$repo_dir/session-manager.zsh"

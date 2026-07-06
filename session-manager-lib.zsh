@@ -14,8 +14,8 @@ _GHOSTTY_ZMX_LIB_SOURCED=1
 # Default AppleScript app name; overridden by the hosting-bundle derivation below
 # when running inside a Ghostty surface. Non-Ghostty surfaces never reach the
 # v0.2 osascript call sites, so this default is only a safety net.
-typeset _ghostty_app_name="Ghostty"
-if [[ -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then
+typeset _ghostty_app_name="${GHOSTTY_ZMX_APP_NAME:-Ghostty}"
+if [[ -z "${GHOSTTY_ZMX_APP_NAME:-}" && -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then
   typeset _gzmx_bundle="${GHOSTTY_RESOURCES_DIR%/Contents/Resources/ghostty}"
   _ghostty_app_name="${_gzmx_bundle##*/}"
   _ghostty_app_name="${_ghostty_app_name%.app}"
@@ -25,7 +25,7 @@ fi
 : ${GHOSTTY_ZMX_STATE_HOME:=${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}
 
 ghostty_zmx_has_tty_capability() {
-  [[ "${TERM_PROGRAM:-}" == "ghostty" && -n "${GHOSTTY_RESOURCES_DIR:-}" ]] || return 1
+  [[ "${TERM_PROGRAM:-}" == "ghostty" && -n "${_ghostty_app_name:-}" ]] || return 1
   osascript -e "tell application \"$_ghostty_app_name\" to get tty of focused terminal of selected tab of front window" >/dev/null 2>&1
 }
 

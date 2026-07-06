@@ -63,9 +63,14 @@ cat > "$GHOSTTY_ZMX_DATA_HOME/sessions" <<EOF
 zmx-6000035bc6c0-10b40f340-85691562
 zmx-6000035bc6c0-10b40f340-DEADBEEF
 EOF
+cat > "$GHOSTTY_ZMX_DATA_HOME/tty-map" <<EOF
+S	zmx-6000035bc6c0-10b40f340-DEADBEEF	/dev/ttys777	12345
+EOF
 
 got="$(zsh -c '
   log="'"$GHOSTTY_ZMX_DATA_HOME"'/sessions"
+  ttyMap="'"$GHOSTTY_ZMX_DATA_HOME"'/tty-map"
+  current_terminal_ttys() { print /dev/ttys777; }
   zmx() {
     case "$1" in
       list) cat <<ZMX
@@ -113,6 +118,12 @@ if print "$got" | grep -q "85691562"; then
   print "  ok: orphan 85691562 returned"; pass=$((pass+1))
 else
   print -u2 "  FAIL: expected 85691562"; fail=$((fail+1))
+fi
+# Excludes a clients=0 session whose mapped Ghostty terminal tty is still live.
+if print "$got" | grep -q "DEADBEEF"; then
+  print -u2 "  FAIL: live-tty DEADBEEF returned"; fail=$((fail+1))
+else
+  print "  ok: live-tty session excluded"; pass=$((pass+1))
 fi
 
 print ""

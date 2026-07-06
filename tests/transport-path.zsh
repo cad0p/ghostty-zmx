@@ -18,6 +18,7 @@ repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 export HOME="$workdir/home"
+unset TERM_PROGRAM GHOSTTY_RESOURCES_DIR 2>/dev/null || true
 mkdir -p "$HOME"
 
 # Stub a fake tsh on a custom PATH so the test is hermetic.

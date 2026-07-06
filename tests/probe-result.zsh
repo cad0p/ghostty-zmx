@@ -17,6 +17,7 @@ trap 'rm -rf "$workdir"' EXIT
 export HOME="$workdir/home"
 export GHOSTTY_ZMX_DATA_HOME="$workdir/data/ghostty-zmx"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state/ghostty-zmx"
+unset TERM_PROGRAM GHOSTTY_RESOURCES_DIR 2>/dev/null || true
 mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
 
 # Source the manager without triggering auto-attach (no AUTO_ATTACH/TERM_PROGRAM).
@@ -41,6 +42,14 @@ run_probe "gzmx-fixture" "" 255
 # Leading newline (message on its own line, separate from typed command).
 [[ "$_probe_out" == $'\n'* ]] || { print -u2 "unreachable: missing leading newline: $_probe_out"; exit 1 }
 print "ok: unreachable → connection error"
+
+# --- Case 1b: probe timeout ---
+run_probe "gzmx-fixture" "" 124
+[[ "$_probe_rc" -ne 0 ]] || { print -u2 "timeout: expected non-zero exit, got $_probe_rc"; exit 1 }
+[[ "$_probe_out" == *"timed out probing gzmx-fixture over ssh"* ]] || { print -u2 "timeout: wrong message: $_probe_out"; exit 1 }
+[[ "$_probe_out" == *"ssh proxy/auth is ready"* ]] || { print -u2 "timeout: missing proxy/auth hint: $_probe_out"; exit 1 }
+[[ "$_probe_out" == $'\n'* ]] || { print -u2 "timeout: missing leading newline: $_probe_out"; exit 1 }
+print "ok: timeout → proxy/auth hint"
 
 # --- Case 2: zmx missing (no-zmx) ---
 run_probe "gzmx-fixture" "no-zmx" 0
@@ -100,6 +109,7 @@ print -r -- $'gzmx-fixture\tssh\t0.6.1\tactive\tssh gzmx-fixture\t/home/gzmx/.lo
 _cmd="$(ghostty_zmx_projection_command_string gzmx-fixture ws sess 'ssh gzmx-fixture')"
 [[ "$_cmd" == *"/home/gzmx/.local/bin/zmx attach sess"* ]] || { print -u2 "projection command did not use remote zmx path: $_cmd"; exit 1 }
 [[ "$_cmd" != *"source ~/.zshrc"* ]] || { print -u2 "projection command still sources remote zshrc: $_cmd"; exit 1 }
+[[ "$_cmd" == env\ PATH=* ]] || { print -u2 "projection command did not carry local PATH for ssh ProxyCommand helpers: $_cmd"; exit 1 }
 print "ok: projection command uses remote zmx path"
 
 print "all probe-result tests passed"
