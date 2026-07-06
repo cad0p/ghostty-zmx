@@ -296,6 +296,18 @@ fi
 plutil -replace CFBundleName -string "$app_name" "$target/Contents/Info.plist"
 plutil -replace CFBundleDisplayName -string "$app_name" "$target/Contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "$bundle_id" "$target/Contents/Info.plist"
+# Rename the executable to match the app name so the bundle is self-consistent
+# (CFBundleExecutable points at $app_name, binary is $app_name). A fresh ditto
+# from a Ghostty DMG leaves the binary named 'ghostty' and CFBundleExecutable
+# 'ghostty'; without this rename, AppleScript `tell application "$app_name"`
+# works (LaunchServices uses CFBundleName) but direct binary launch by path
+# requires knowing the original lowercase name. Renaming makes both paths
+# resolve to $app_name consistently.
+local _orig_exec="$(plutil -extract CFBundleExecutable raw "$target/Contents/Info.plist" 2>/dev/null || print ghostty)"
+if [[ "$_orig_exec" != "$app_name" ]]; then
+  mv "$target/Contents/MacOS/$_orig_exec" "$target/Contents/MacOS/$app_name" 2>/dev/null || true
+  plutil -replace CFBundleExecutable -string "$app_name" "$target/Contents/Info.plist"
+fi
 [[ "$install_live" == "1" ]] && configure_tip_bundle_environment
 codesign --force --deep --sign - "$target" >/dev/null
 codesign --verify --deep --strict "$target" >/dev/null

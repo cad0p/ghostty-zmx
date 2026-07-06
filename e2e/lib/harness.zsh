@@ -252,6 +252,13 @@ gzmx_e2e_ghostty_launch() {
   # If mock-tsh is enabled, prepend it to PATH so the widget finds our `tsh`.
   local _path_env="${PATH}"
   [[ "$GZMX_E2E_USE_MOCK_TSH" == "1" ]] && _path_env="$GZMX_E2E_MOCK_TSH_DIR:${PATH}"
+  # Pre-launch sweep: kill any orphaned reapers/pollers from prior interrupted
+  # E2E runs. These survive in the runtime dir (reparented to launchd) and
+  # would re-open projections during this run, causing false failures.
+  local _pre_runtime="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}"
+  if [[ -d "$_pre_runtime" ]]; then
+    pkill -9 -f "${_pre_runtime}/(reaper|remote-poller)-" 2>/dev/null || true
+  fi
   open -F -n -a "$GZMX_E2E_GHOSTTY_APP" --args \
     --config-default-files=false \
     --env=GHOSTTY_ZMX_APP_NAME="$GZMX_E2E_GHOSTTY_APP" \
@@ -309,10 +316,17 @@ gzmx_e2e_ghostty_quit() {
     sleep 0.25
   done
   kill -9 "$GZMX_E2E_GHOSTTY_PID" 2>/dev/null || true
-  # Sweep any orphaned reaper/poller children the manager spawned under the
-  # disposable runtime dir. These are identified by the runtime path pattern,
-  # which is unique to this harness run (GZMX_E2E_GHOSTTY_PID).
-  pkill -9 -f "ghostty-zmx-501/(reaper|remote-poller)-${GZMX_E2E_GHOSTTY_PID}" 2>/dev/null || true
+  # Sweep ALL orphaned reaper/poller children the manager spawned under the
+  # ghostty-zmx runtime dir, not just the current PID's. Orphans from prior
+  # interrupted E2E runs (different PID, reparented to launchd) survive a
+  # PID-specific sweep and re-open projections on the next run — the
+  # multiplication root cause. The manager's own kill_orphaned_pollers runs
+  # at poller startup, but only if a fresh Ghostty launches; this sweep
+  # guarantees cleanliness regardless.
+  local _runtime="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/ghostty-zmx-${UID:-$(id -u)}"
+  if [[ -d "$_runtime" ]]; then
+    pkill -9 -f "${_runtime}/(reaper|remote-poller)-" 2>/dev/null || true
+  fi
   GZMX_E2E_STARTED_GHOSTTY=0
 }
 
