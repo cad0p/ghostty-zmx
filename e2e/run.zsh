@@ -74,7 +74,7 @@ if [[ -n "${GZMX_E2E_SSH_COMMAND:-}" ]]; then
 fi
 
 export GHOSTTY_APP_NAME="${GHOSTTY_APP_NAME:-Ghostty-tip}"
-export GHOSTTY_BIN="${GHOSTTY_BIN:-/Applications/${GHOSTTY_APP_NAME}.app/Contents/MacOS/ghostty}"
+export GHOSTTY_BIN="${GHOSTTY_BIN:-/Applications/${GHOSTTY_APP_NAME}.app/Contents/MacOS/${GHOSTTY_APP_NAME}}"
 
 local -a scenarios
 if [[ "$#" -gt 0 ]]; then

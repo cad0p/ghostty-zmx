@@ -691,6 +691,22 @@ gzmx_e2e_wait_remote_clients() {
   gzmx_e2e_fail "remote clients never reached $expected (last=$actual)"
 }
 
+# Wait for a projection row to reach `attached` state with a non-dash window id.
+# The widget's post-open synchronous wait can leave the row at `opening` for a
+# few seconds after the remote ssh has already connected (clients==1). Tests
+# that read the projection window id must wait for `attached` first.
+gzmx_e2e_wait_projection_attached() {
+  emulate -L zsh
+  local host="$1" seconds="${2:-30}" i win
+  for (( i=1; i<=seconds*4; i++ )); do
+    win="$(awk -F '\t' -v h="$host" '$1 == h && $6 == "attached" { print $8; exit }' \
+      "$GZMX_E2E_DATA_HOME/remote-projections" 2>/dev/null)"
+    [[ -n "$win" && "$win" != "-" ]] && return 0
+    sleep 0.25
+  done
+  return 1
+}
+
 # Assert a marker string is present in a remote session's zmx history (scrollback).
 gzmx_e2e_assert_remote_history_contains() {
   emulate -L zsh

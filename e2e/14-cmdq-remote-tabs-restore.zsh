@@ -28,6 +28,7 @@ gzmx_e2e_type "ssh -F $GZMX_E2E_SSHCONFIG $GZMX_E2E_FIXTURE_HOST"
 gzmx_e2e_wait_remote_clients 1 20
 gzmx_e2e_assert_window_count 2
 
+gzmx_e2e_wait_projection_attached "$GZMX_E2E_FIXTURE_HOST" 30 || gzmx_e2e_fail "projection row never reached attached state"
 projection_win="$(awk -F '\t' -v h="$GZMX_E2E_FIXTURE_HOST" '$1 == h && $6 == "attached" { print $8; exit }' "$GZMX_E2E_DATA_HOME/remote-projections" 2>/dev/null)"
 [[ -n "$projection_win" && "$projection_win" != "-" ]] || gzmx_e2e_fail "could not read projection window id from remote-projections"
 gzmx_e2e_log "projection window id suffix: $projection_win"
