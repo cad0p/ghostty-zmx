@@ -211,6 +211,13 @@ if [[ -d "$registry_dir" ]]; then
   fi
 fi
 
+# Always remove this install's instance lock (per-install single-Ghostty lock).
+# This allows a fresh Ghostty to take over the data-home after uninstall without
+# waiting for the stale lock's pid check. The lock is under data-home.
+if [[ -n "$data_home" && -f "$data_home/instance.lock" ]]; then
+  rm -f "$data_home/instance.lock" 2>/dev/null && print "Removed this install's instance lock."
+fi
+
 if [[ "$REMOVE_STATE" -eq 1 ]]; then
   safe_remove_tree "$state_home" "state" || exit 1
 else

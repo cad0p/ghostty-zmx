@@ -207,11 +207,11 @@ _ghostty_zmx_registry_tracked_sessions() {
 }
 
 # Rewrite this install's registry file with the current live managed zmx-*
-# sessions + the owning Ghostty pid + timestamp. Called from the reaper loop
-# (heartbeat). Sessions that are gone (killed, or no longer in zmx list) drop
-# out of the file naturally on the next rewrite.
+# sessions + timestamp. Called from the reaper loop (heartbeat). Sessions
+# that are gone (killed, or no longer in zmx list) drop out of the file
+# naturally on the next rewrite.
 _ghostty_zmx_registry_heartbeat() {
-  typeset ghosttyPID="$1" now tmp file dir
+  typeset now tmp file dir
   dir="$(_ghostty_zmx_managed_sessions_dir 2>/dev/null)" || return 0
   file="$(_ghostty_zmx_managed_sessions_file 2>/dev/null)" || return 0
   mkdir -p "$dir" 2>/dev/null || return 0
@@ -222,7 +222,7 @@ _ghostty_zmx_registry_heartbeat() {
   zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ { sub(/^[→ ]*name=/, "", $1); print $1 }' |
     while IFS= read -r name; do
       _ghostty_zmx_valid_session_name "$name" 2>/dev/null || continue
-      print -r -- "${name}\t${ghosttyPID}\t${now}" >> "$tmp" 2>/dev/null
+      print -r -- "${name}\t${now}" >> "$tmp" 2>/dev/null
     done
   mv "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
 }
@@ -460,6 +460,19 @@ _ghostty_zmx_start_reaper() {
   mkdir "$flag" 2>/dev/null || return 0
   _ghostty_zmx_debug "reaper start ghostty_pid=$ghosttyPID flag=$flag"
 
+  # Per-install instance lock: refuse if another live Ghostty already holds
+  # this install's lock (two Ghostty instances sharing one data-home would
+  # corrupt remote-hosts/remote-projections/sessions/registry + stack
+  # reapers/pollers). A dead pid means the prior instance is gone (crash/quit)
+  # and we take over. This is the only enforcement point; auto-attach calls
+  # this, so the check runs once per surface init.
+  if ghostty_zmx_instance_locked_by_other "$ghosttyPID" 2>/dev/null; then
+    _ghostty_zmx_debug "reaper skipped reason=instance-locked-by-other lock_pid=$_gzmx_lock_pid"
+    rmdir "$flag" 2>/dev/null
+    return 0
+  fi
+  ghostty_zmx_acquire_instance_lock "$ghosttyPID" 2>/dev/null || true
+
   typeset script="$runtime_dir/reaper-${ghosttyPID}.zsh"
   typeset reaper_log="$runtime_dir/reaper-${ghosttyPID}.log"
   typeset ghosttyElapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghosttyPID")"
@@ -645,7 +658,7 @@ registry_heartbeat() {
   zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ { sub(/^[→ ]*name=/, "", $1); print $1 }' |
     while IFS= read -r name; do
       valid_session_name "$name" 2>/dev/null || continue
-      print -r -- "${name}\t${ghosttyPID}\t${now}" >> "$tmp" 2>/dev/null
+      print -r -- "${name}\t${now}" >> "$tmp" 2>/dev/null
     done
   mv "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
 }
@@ -785,9 +798,9 @@ sleep "$reaperStartupDelay"
 cleanup_detached_sessions "startup-orphan-sweep"
 # Heartbeat this install's registry file before entering the loop, so the
 # cross-install tracked set is fresh even if the first loop iteration sleeps.
-# This marks all live zmx-* sessions as tracked by THIS Ghostty pid, so other
+# This marks all live zmx-* sessions as tracked by THIS install, so other
 # installs' reapers (or this one after a restart) will not reap them.
-registry_heartbeat "$ghosttyPID" 2>/dev/null || true
+registry_heartbeat 2>/dev/null || true
 zeroWindowsSeen=0
 lastAttached=0
 typeset -A detachedSeen
@@ -796,7 +809,7 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   # set reflects current live sessions. This is the cross-install persistence
   # signal — closed Ghostty's file stays on disk (sessions survive), but a
   # live Ghostty keeps its file fresh so other reapers know it's active.
-  registry_heartbeat "$ghosttyPID" 2>/dev/null || true
+  registry_heartbeat 2>/dev/null || true
   typeset currentElapsed
   currentElapsed="$(elapsed_seconds "$ghosttyPID")"
   if [[ -n "$currentElapsed" && "$currentElapsed" -lt "$ghosttyElapsed" ]]; then

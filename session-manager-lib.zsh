@@ -29,6 +29,38 @@ ghostty_zmx_has_tty_capability() {
   osascript -e "tell application \"$_ghostty_app_name\" to get tty of focused terminal of selected tab of front window" >/dev/null 2>&1
 }
 
+# Per-install instance lock. Prevents two Ghostty instances from sharing one
+# GHOSTTY_ZMX_DATA_HOME (which would corrupt remote-hosts, remote-projections,
+# sessions log, registry file, and stack reapers/pollers). The lock lives in
+# the data-home (per-install, survives restart) and holds the owning Ghostty
+# pid. A dead pid means the prior instance is gone (crash/quit) and a new one
+# can take over. Checked by auto-attach/reaper start; cleaned by uninstall.
+ghostty_zmx_instance_lock_file() {
+  print -r -- "${GHOSTTY_ZMX_DATA_HOME:-default}/instance.lock"
+}
+
+# Return 0 if another live Ghostty owns this install's lock; sets _gzmx_lock_pid.
+# Return 1 if the lock is absent, stale (pid dead), or owned by $1 (self).
+ghostty_zmx_instance_locked_by_other() {
+  typeset self_pid="${1:-}" lock_file old_pid
+  typeset -g _gzmx_lock_pid=""
+  lock_file="$(ghostty_zmx_instance_lock_file 2>/dev/null)" || return 1
+  [[ -f "$lock_file" ]] || return 1
+  IFS= read -r old_pid < "$lock_file" 2>/dev/null || return 1
+  [[ "$old_pid" =~ ^[0-9]+$ ]] || return 1
+  [[ -n "$self_pid" && "$old_pid" == "$self_pid" ]] && return 1
+  kill -0 "$old_pid" 2>/dev/null && { typeset -g _gzmx_lock_pid="$old_pid"; return 0 } || return 1
+}
+
+# Acquire the instance lock for $1 (Ghostty pid). Overwrites stale locks.
+ghostty_zmx_acquire_instance_lock() {
+  typeset ghostty_pid="$1" lock_file
+  [[ "$ghostty_pid" =~ ^[0-9]+$ ]] || return 1
+  lock_file="$(ghostty_zmx_instance_lock_file 2>/dev/null)" || return 1
+  mkdir -p "${lock_file:h}" 2>/dev/null || return 1
+  print -r -- "$ghostty_pid" > "${lock_file}.tmp.$$" 2>/dev/null && mv "${lock_file}.tmp.$$" "$lock_file" 2>/dev/null
+}
+
 _ghostty_zmx_hex_suffix() {
   typeset id="$1" suffix="" i ch
   [[ -n "$id" ]] || return 1
