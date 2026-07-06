@@ -160,6 +160,70 @@ _ghostty_zmx_tty_map_file() {
   print -r -- "$GHOSTTY_ZMX_DATA_HOME/tty-map"
 }
 
+# --- shared managed-sessions registry (cross-install) ---
+#
+# The zmx daemon is global (one per machine), so co-running Ghostty installs
+# (stable + tip, or multiple tips simulating multi-device) share one set of
+# local zmx-* sessions. A detached session (clients=0) created by stable must
+# NOT be reaped by tip's reaper just because stable is closed — stable will
+# reopen and reattach (persistence is the core product goal).
+#
+# The registry is a shared dir at a FIXED path (not data-home-relative) so
+# every install reads/writes the same location regardless of its
+# GHOSTTY_ZMX_DATA_HOME. Each install manages ONE file named by a hash of its
+# effective GHOSTTY_ZMX_DATA_HOME (so stable and tip get different files).
+# File content: one TSV row per tracked session:
+#   <session-name>\t<ghostty-pid>\t<updated-at>
+# The owning reaper rewrites its whole file on each cycle (heartbeat). Closed
+# Ghostty's file stays on disk (persistence signal); only ghostty-zmx uninstall
+# removes it. A session is reapable only if NO install tracks it.
+_ghostty_zmx_managed_sessions_dir() {
+  print -r -- "${HOME:-/tmp}/.local/state/ghostty-zmx/managed-sessions"
+}
+
+_ghostty_zmx_managed_sessions_file() {
+  local dir="$(_ghostty_zmx_managed_sessions_dir 2>/dev/null)" hash
+  [[ -n "$dir" ]] || return 1
+  # Hash the effective data-home so stable (ghostty-zmx) and tip (ghostty-zmx-tip)
+  # get distinct files. cksum is portable; first 16 hex chars are enough.
+  hash="$(print -r -- "${GHOSTTY_ZMX_DATA_HOME:-default}" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
+  [[ -n "$hash" ]] || hash="default"
+  print -r -- "$dir/${hash}.tsv"
+}
+
+# Return all session names tracked by ANY install (union of all registry files).
+# Used by managed_detached_sessions to decide what to skip.
+_ghostty_zmx_registry_tracked_sessions() {
+  local dir="$(_ghostty_zmx_managed_sessions_dir 2>/dev/null)" f name
+  [[ -d "$dir" ]] || return 0
+  for f in "$dir"/*.tsv(N); do
+    while IFS=$'\t' read -r name _ghostty_pid _updated; do
+      [[ -n "$name" ]] && print -r -- "$name"
+    done < "$f" 2>/dev/null
+  done
+}
+
+# Rewrite this install's registry file with the current live managed zmx-*
+# sessions + the owning Ghostty pid + timestamp. Called from the reaper loop
+# (heartbeat). Sessions that are gone (killed, or no longer in zmx list) drop
+# out of the file naturally on the next rewrite.
+_ghostty_zmx_registry_heartbeat() {
+  typeset ghosttyPID="$1" now tmp file dir
+  dir="$(_ghostty_zmx_managed_sessions_dir 2>/dev/null)" || return 0
+  file="$(_ghostty_zmx_managed_sessions_file 2>/dev/null)" || return 0
+  mkdir -p "$dir" 2>/dev/null || return 0
+  now="$(date +%s)"
+  tmp="${file}.tmp.$$"
+  : > "$tmp" 2>/dev/null || return 0
+  # List live zmx-* sessions (both clients=0 and clients=1) — all are tracked.
+  zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ { sub(/^[→ ]*name=/, "", $1); print $1 }' |
+    while IFS= read -r name; do
+      _ghostty_zmx_valid_session_name "$name" 2>/dev/null || continue
+      print -r -- "${name}\t${ghosttyPID}\t${now}" >> "$tmp" 2>/dev/null
+    done
+  mv "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+}
+
 
 
 _ghostty_zmx_record_tty_map() {
@@ -541,11 +605,57 @@ managed_sessions_from_log() {
   done < "$log"
 }
 
+# --- inlined registry helpers (reaper is standalone, can't source manager) ---
+# Mirrors _ghostty_zmx_managed_sessions_dir/_file/_tracked_sessions/_heartbeat
+# in the manager body. Keep in sync.
+registry_dir() {
+  print -r -- "${HOME:-/tmp}/.local/state/ghostty-zmx/managed-sessions"
+}
+registry_file() {
+  local dir hash
+  dir="$(registry_dir 2>/dev/null)" || return 1
+  hash="$(print -r -- "$dataHome" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
+  [[ -n "$hash" ]] || hash="default"
+  print -r -- "$dir/${hash}.tsv"
+}
+registry_tracked_sessions() {
+  local dir f name
+  dir="$(registry_dir 2>/dev/null)" || return 0
+  [[ -d "$dir" ]] || return 0
+  for f in "$dir"/*.tsv(N); do
+    while IFS=$'\t' read -r name _gp _up; do
+      [[ -n "$name" ]] && print -r -- "$name"
+    done < "$f" 2>/dev/null
+  done
+}
+registry_heartbeat() {
+  local now tmp file dir name
+  dir="$(registry_dir 2>/dev/null)" || return 0
+  file="$(registry_file 2>/dev/null)" || return 0
+  mkdir -p "$dir" 2>/dev/null || return 0
+  now="$(date +%s)"
+  tmp="${file}.tmp.$$"
+  : > "$tmp" 2>/dev/null || return 0
+  zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ { sub(/^[→ ]*name=/, "", $1); print $1 }' |
+    while IFS= read -r name; do
+      valid_session_name "$name" 2>/dev/null || continue
+      print -r -- "${name}\t${ghosttyPID}\t${now}" >> "$tmp" 2>/dev/null
+    done
+  mv "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
+}
+
 managed_detached_sessions() {
   local liveTtys=""
   if (( $+functions[current_terminal_ttys] )); then
     liveTtys="$(current_terminal_ttys 2>/dev/null | grep '^/dev/' 2>/dev/null || true)"
   fi
+  # Build the set of sessions tracked by ANY install (stable, tip, ...) from the
+  # shared registry. A session tracked by any install must not be reaped even if
+  # that install's Ghostty is currently closed — it may reopen and reattach
+  # (persistence is the core product goal). Only truly untracked sessions
+  # (test orphans, prior-version leftovers) are reapable.
+  local tracked=""
+  tracked="$(registry_tracked_sessions 2>/dev/null)"
   zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ && $3=="clients=0" { sub(/^[→ ]*name=/, "", $1); print $1 }' |
   while IFS= read -r orphan; do
     [[ -n "$orphan" ]] || continue
@@ -553,7 +663,11 @@ managed_detached_sessions() {
       debug_log "invalid session skipped action=managed-detached session=$orphan"
       continue
     fi
-    grep -qxF "$orphan" "$log" 2>/dev/null || continue
+    # Skip if ANY install tracks this session (cross-install safety).
+    if [[ -n "$tracked" ]] && print -r -- "$tracked" | grep -qxF "$orphan" 2>/dev/null; then
+      debug_log "managed-detached skipped reason=registry-tracked session=$orphan"
+      continue
+    fi
     if [[ -n "$liveTtys" && -n "${ttyMap:-}" && -f "$ttyMap" ]]; then
       local mappedTty=""
       mappedTty="$(awk -F '\t' -v s="$orphan" '$1 == "S" && $2 == s { print $3; exit }' "$ttyMap" 2>/dev/null)"
@@ -594,7 +708,10 @@ managed_disappeared_sessions() {
   while IFS=$'\t' read -r kind session ttyPath mappedPid; do
     [[ "$kind" == "S" && -n "$session" && -n "$ttyPath" ]] || continue
     valid_session_name "$session" || continue
-    grep -qxF "$session" "$log" 2>/dev/null || continue
+    # Use the registry (cross-install tracked set) instead of the per-install
+    # sessions log, so a session tracked by any install is not reported as
+    # disappeared just because this install's log doesn't have it.
+    registry_tracked_sessions 2>/dev/null | grep -qxF "$session" 2>/dev/null || continue
     if ! grep -qxF "$ttyPath" "$liveClean" 2>/dev/null; then
       debug_log "tty disappeared session=$session tty=$ttyPath pid=$mappedPid"
       print -r -- "$session"
@@ -660,10 +777,20 @@ sleep "$reaperStartupDelay"
 # (zmx detach) to reattach later would be killed here; that is an accepted
 # trade-off (documented as a known limitation).
 cleanup_detached_sessions "startup-orphan-sweep"
+# Heartbeat this install's registry file before entering the loop, so the
+# cross-install tracked set is fresh even if the first loop iteration sleeps.
+# This marks all live zmx-* sessions as tracked by THIS Ghostty pid, so other
+# installs' reapers (or this one after a restart) will not reap them.
+registry_heartbeat "$ghosttyPID" 2>/dev/null || true
 zeroWindowsSeen=0
 lastAttached=0
 typeset -A detachedSeen
 while kill -0 "$ghosttyPID" 2>/dev/null; do
+  # Heartbeat every cycle: refresh this install's registry file so the tracked
+  # set reflects current live sessions. This is the cross-install persistence
+  # signal — closed Ghostty's file stays on disk (sessions survive), but a
+  # live Ghostty keeps its file fresh so other reapers know it's active.
+  registry_heartbeat "$ghosttyPID" 2>/dev/null || true
   typeset currentElapsed
   currentElapsed="$(elapsed_seconds "$ghosttyPID")"
   if [[ -n "$currentElapsed" && "$currentElapsed" -lt "$ghosttyElapsed" ]]; then

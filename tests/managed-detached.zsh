@@ -53,6 +53,12 @@ print "test 3: managed_detached_sessions filters correctly"
 extracted="$workdir/funcs.zsh"
 # Extract valid_session_name (a single short function).
 sed -n '/^valid_session_name() {/,/^}/p' "$repo_dir/session-manager.zsh" > "$extracted"
+# Append the inlined registry helpers (reaper is standalone; these are the
+# no-prefix versions: registry_dir, registry_file, registry_tracked_sessions,
+# registry_heartbeat).
+sed -n '/^registry_dir() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
+sed -n '/^registry_file() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
+sed -n '/^registry_tracked_sessions() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
 # Append managed_detached_sessions (also def-through-close-brace).
 sed -n '/^managed_detached_sessions() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
 # debug_log stub (extracted code calls it).
@@ -125,6 +131,49 @@ if print "$got" | grep -q "DEADBEEF"; then
 else
   print "  ok: live-tty session excluded"; pass=$((pass+1))
 fi
+
+# --- Test 4: cross-install registry protects a session tracked by another install ---
+print ""
+print "test 4: registry-tracked session (another install) is not reaped"
+# Stage a registry file for a DIFFERENT install (different data-home hash)
+# that tracks a session the reaper would otherwise reap.
+registry_dir="$HOME/.local/state/ghostty-zmx/managed-sessions"
+mkdir -p "$registry_dir"
+other_hash="$(print -r -- "/fake/other/install/data-home" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
+cat > "$registry_dir/${other_hash}.tsv" <<EOF
+zmx-6000035bc6c0-10b40f340-REGISTRY	99999	$(date +%s)
+EOF
+# Re-run managed_detached_sessions; the REGISTRY session must now be excluded
+got2="$(zsh -c '
+  log="'"$GHOSTTY_ZMX_DATA_HOME"'/sessions"
+  ttyMap="'"$GHOSTTY_ZMX_DATA_HOME"'/tty-map"
+  current_terminal_ttys() { print /dev/ttys777; }
+  zmx() {
+    case "$1" in
+      list) cat <<ZMX
+  name=zmx-6000035bc6c0-10b40f340-85691562	pid=42979	clients=0	created=1	start_dir=/h
+  name=zmx-6000035bc6c0-10b40f340-REGISTRY	pid=47669	clients=0	created=1	start_dir=/h
+ZMX
+      ;;
+    esac
+  }
+  source "'"$extracted"'" 2>/dev/null
+  managed_detached_sessions
+' 2>/dev/null)"
+print "  returned: [$(print "$got2" | tr '\n' ' ')]"
+# 85691562 (untracked) is still reaped
+if print "$got2" | grep -q "85691562"; then
+  print "  ok: untracked orphan 85691562 still reaped"; pass=$((pass+1))
+else
+  print -u2 "  FAIL: expected 85691562 reaped"; fail=$((fail+1))
+fi
+# REGISTRY (tracked by another install) is NOT reaped
+if print "$got2" | grep -q "REGISTRY"; then
+  print -u2 "  FAIL: registry-tracked REGISTRY reaped"; fail=$((fail+1))
+else
+  print "  ok: registry-tracked session (another install) excluded"; pass=$((pass+1))
+fi
+rm -rf "$registry_dir" 2>/dev/null
 
 print ""
 if [[ "$fail" -eq 0 ]]; then
