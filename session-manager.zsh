@@ -184,9 +184,12 @@ _ghostty_zmx_managed_sessions_dir() {
 _ghostty_zmx_managed_sessions_file() {
   local dir="$(_ghostty_zmx_managed_sessions_dir 2>/dev/null)" hash
   [[ -n "$dir" ]] || return 1
+  # Bail if data-home is empty — an empty data-home produces a spurious
+  # "empty" hash file that shadows real installs' tracking.
+  [[ -n "${GHOSTTY_ZMX_DATA_HOME:-}" ]] || return 1
   # Hash the effective data-home so stable (ghostty-zmx) and tip (ghostty-zmx-tip)
   # get distinct files. cksum is portable; first 16 hex chars are enough.
-  hash="$(print -r -- "${GHOSTTY_ZMX_DATA_HOME:-default}" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
+  hash="$(print -r -- "$GHOSTTY_ZMX_DATA_HOME" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
   [[ -n "$hash" ]] || hash="default"
   print -r -- "$dir/${hash}.tsv"
 }
@@ -614,6 +617,9 @@ registry_dir() {
 registry_file() {
   local dir hash
   dir="$(registry_dir 2>/dev/null)" || return 1
+  # Bail if dataHome is empty — an empty dataHome produces a spurious
+  # "empty" hash file that shadows real installs' tracking.
+  [[ -n "$dataHome" ]] || return 1
   hash="$(print -r -- "$dataHome" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
   [[ -n "$hash" ]] || hash="default"
   print -r -- "$dir/${hash}.tsv"
