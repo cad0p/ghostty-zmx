@@ -240,7 +240,7 @@ e2e/cleanup.zsh
 
 ## Remote multi-client projection
 
-These scenarios require the Ubuntu 24.04 Docker sshd fixture (`ghostty-zmx-sshd-fixture`, port 2222, zmx 0.6.0, `ghostty-zmx-remote-layout` helper installed) and `Ghostty-tip` (1.4.0+ `pid`/`tty` capability). Run them from iTerm2, not from inside a managed Ghostty pane.
+These scenarios require the Ubuntu 24.04 Docker sshd fixture (`ghostty-zmx-sshd-fixture`, port 2222, zmx 0.6.0, `cli/remote-layout` helper installed) and `Ghostty-tip` (1.4.0+ `pid`/`tty` capability). Run them from iTerm2, not from inside a managed Ghostty pane.
 
 ### Fixture one-time setup
 
@@ -250,7 +250,7 @@ cat /tmp/ghostty-zmx-fixture-sshconfig
 # → Host gzmx-fixture  HostName 127.0.0.1  Port 2222  User gzmx  IdentityFile /tmp/ghostty-zmx-docker-fixture/id_ed25519
 
 # verify
-ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx version | tr "\t" " " | head -1; ls ~/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx version | tr "\t" " " | head -1; ls ~/.config/ghostty-zmx/cli/remote-layout'
 ```
 
 ### Clean state before each scenario
@@ -299,9 +299,9 @@ Do **not** use `-e /bin/zsh -il` (triggers the macOS "Allow Ghostty to Execute /
 
    ```sh
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
-     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout add wsAA winAA tabAA paneA1 gzr-AA-winAA-tabAA-paneA1 - root 1 present'
+     '$HOME/.config/ghostty-zmx/cli/remote-layout add wsAA winAA tabAA paneA1 gzr-AA-winAA-tabAA-paneA1 - root 1 present'
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
-     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+     '$HOME/.config/ghostty-zmx/cli/remote-layout read'
    ```
 
 2. Pre-seed client B's `remote-hosts` so its poller knows the transport:
@@ -335,7 +335,7 @@ Do **not** use `-e /bin/zsh -il` (triggers the macOS "Allow Ghostty to Execute /
 
    ```sh
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
-     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout transition gzr-AA-winAA-tabAA-paneA1 deleted'
+     '$HOME/.config/ghostty-zmx/cli/remote-layout transition gzr-AA-winAA-tabAA-paneA1 deleted'
    ```
 
 2. Wait one poller interval (~5s, `GHOSTTY_ZMX_REMOTE_POLL_INTERVAL` default 3s).
@@ -371,7 +371,7 @@ This verifies that closing a remote pane (Cmd-W, which kills the local ssh) trig
    # expect: poller close-txn ... pid=<PROJ_PID>
    #         poller server-removed state=deleted
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
-     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+     '$HOME/.config/ghostty-zmx/cli/remote-layout read'
    # expect: the row is state=deleted
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list' | grep gzr || echo none
    # expect: none (remote zmx session killed)
@@ -397,7 +397,7 @@ This verifies that quitting Ghostty (Cmd-Q) does **not** trigger the server clos
    tail "$TMPSTATE/debug.log" | grep -E 'stopped|close-txn'
    # expect: poller stopped reason=ghostty-exit (and NO close-txn line)
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture \
-     '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'
+     '$HOME/.config/ghostty-zmx/cli/remote-layout read'
    # expect: the row is still state=present
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list' | grep gzr
    # expect: clients=0 (session survived, detached)
@@ -475,7 +475,7 @@ This verifies that a native Ghostty split from a remote projection window inheri
    osascript -e 'tell application "Ghostty-tip" to count of terminals of every tab of every window'  # expect 3 (original proj + split proj + local)
    ps -eo pid,ppid,comm,args | awk '$3=="ssh" && /zmx attach gzr-/{cnt++} END{print cnt+0}'  # expect 2
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list | grep gzr | grep clients'  # expect two clients=1
-   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read'  # expect 2 present rows
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/cli/remote-layout read'  # expect 2 present rows
    cat "$TMPDATA/remote-projections"   # expect 2 attached rows
    grep inherit "$TMPSTATE/debug.log" | tail  # expect early-inherit match + inherit exec
    ```
@@ -593,7 +593,7 @@ Copy the installer and its dependencies to the fixture:
 ```sh
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'rm -rf ~/.config/ghostty-zmx; echo "" > ~/.zshrc; rm -rf ~/.terminfo/x/xterm-ghostty 2>/dev/null; mkdir -p /tmp/gzmx-itest/terminfo'
 scp -F /tmp/ghostty-zmx-fixture-sshconfig \
-  install-server.sh session-manager.zsh session-manager-lib.zsh ghostty-zmx-remote-layout \
+  install-server.sh session-manager.zsh session-manager-lib.zsh cli/remote-layout \
   gzmx-fixture:/tmp/gzmx-itest/
 scp -F /tmp/ghostty-zmx-fixture-sshconfig \
   terminfo/xterm-ghostty.terminfo \
@@ -612,7 +612,7 @@ Verify:
 ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'ls ~/.config/ghostty-zmx/; cat ~/.zshrc; infocmp -x xterm-ghostty >/dev/null 2>&1 && echo "terminfo installed"'
 ```
 
-Expected: `session-manager.zsh`, `session-manager-lib.zsh`, `ghostty-zmx-remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
+Expected: `session-manager.zsh`, `session-manager-lib.zsh`, `cli/remote-layout`, `terminfo/xterm-ghostty.terminfo` installed; zshrc has one source line + one remote-env block; `xterm-ghostty` terminfo installed via `tic`.
 
 #### Idempotent re-run
 
@@ -644,7 +644,7 @@ Expected: "Installation declined; no files changed."
 - Re-run is idempotent (no duplication).
 - zmx missing: refuses with a clear hint.
 - Interactive decline: no files changed.
-- After install, the `ghostty-zmx-remote-layout` helper works (`add` → `present`, `close` → `deleted`).
+- After install, the `cli/remote-layout` helper works (`add` → `present`, `close` → `deleted`).
 
 ### Remote grouped layout restore (windows/tabs/splits after Cmd-Q)
 
@@ -653,7 +653,7 @@ This verifies that after Cmd-Q + reopen, the poller recreates the remote window/
 1. Pre-seed a server layout with 2 windows, each with 1 tab, each tab with 2 split panes (4 `present` rows with split geometry):
 
    ```sh
-   H='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+   H='$HOME/.config/ghostty-zmx/cli/remote-layout'
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H add wsXX aaaaaaaa aabbba aaa111 gzr-wsXX-aaaaaaaa-aabbba-aaa111 - root 1 present"
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H add wsXX aaaaaaaa aabbba aaa222 gzr-wsXX-aaaaaaaa-aabbba-aaa222 aaa111 vertical 0.5 present"
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture "$H add wsXX bbbbbbbb bbb111 bbb111 gzr-wsXX-bbbbbbbb-bbb111-bbb111 - root 1 present"
@@ -702,7 +702,7 @@ This verifies that after Cmd-Q + reopen, the poller recreates the remote window/
    GHOSTPID=$(pgrep -f "Ghostty-tip.app/Contents/MacOS" | head -1)
    kill -9 "$GHOSTPID"; sleep 8
    ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture 'zmx list 2>/dev/null | grep gzr | grep -o "clients=[0-9]"'  # expect 4x clients=0
-   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout read | grep -c present'  # expect 4
+   ssh -F /tmp/ghostty-zmx-fixture-sshconfig gzmx-fixture '$HOME/.config/ghostty-zmx/cli/remote-layout read | grep -c present'  # expect 4
    lsof ~/.config/ghostty-zmx/session-manager.zsh  # expect empty (no orphaned pollers)
    ```
 

@@ -23,6 +23,9 @@ emulate -L zsh
 setopt no_sh_word_split
 
 typeset -r _GZMX_WRAPPER_DIR="${0:A:h}"
+# Install scripts (install.sh, install-dev.sh, uninstall.sh) live one level up
+# from cli/ (the install-dir root or the repo root in a checkout).
+typeset -r _GZMX_INSTALL_ROOT="${_GZMX_WRAPPER_DIR:h}"
 
 # Debug logging to the state debug.log (mirrors the manager's _ghostty_zmx_debug).
 _gzmx_wdebug() {
@@ -56,11 +59,11 @@ _gzmx_wdebug() {
 mode="${1:-}"
 case "$mode" in
   projection) shift ;;
-  install-server) shift; source "$_GZMX_WRAPPER_DIR/ghostty-zmx-install-server" 2>/dev/null || { print -u2 "ghostty-zmx: ghostty-zmx-install-server not found in $_GZMX_WRAPPER_DIR"; exit 127; }; _gzmx_install_server "$@"; exit $? ;;
-  install) shift; exec "$_GZMX_WRAPPER_DIR/install.sh" "$@" ;;
-  install-dev) shift; exec "$_GZMX_WRAPPER_DIR/install-dev.sh" "$@" ;;
-  uninstall) shift; exec "$_GZMX_WRAPPER_DIR/uninstall.sh" "$@" ;;
-  debug) shift; source "$_GZMX_WRAPPER_DIR/ghostty-zmx-debug" 2>/dev/null || { print -u2 "ghostty-zmx: ghostty-zmx-debug not found in $_GZMX_WRAPPER_DIR"; exit 127; }; _gzmx_debug_subcommand "$@"; exit $? ;;
+  install-server) shift; source "$_GZMX_WRAPPER_DIR/install-server" 2>/dev/null || { print -u2 "ghostty-zmx: install-server not found in $_GZMX_WRAPPER_DIR"; exit 127; }; _gzmx_install_server "$@"; exit $? ;;
+  install) shift; exec "$_GZMX_INSTALL_ROOT/install.sh" "$@" ;;
+  install-dev) shift; exec "$_GZMX_INSTALL_ROOT/install-dev.sh" "$@" ;;
+  uninstall) shift; exec "$_GZMX_INSTALL_ROOT/uninstall.sh" "$@" ;;
+  debug) shift; source "$_GZMX_WRAPPER_DIR/debug" 2>/dev/null || { print -u2 "ghostty-zmx: debug not found in $_GZMX_WRAPPER_DIR"; exit 127; }; _gzmx_debug_subcommand "$@"; exit $? ;;
   -h|--help|help)
     print "Usage: ghostty-zmx <mode> [options]"
     print ""
@@ -170,7 +173,7 @@ if [[ "$session" == gzr-* ]]; then
   # the present row. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   if [[ "$_dropped_cmd" -eq 1 ]]; then
-    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || _gzmx_wdebug "wrapper add FAILED rc=$? host=$host session=$session"
+    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/cli/remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || _gzmx_wdebug "wrapper add FAILED rc=$? host=$host session=$session"
   fi
 fi
 

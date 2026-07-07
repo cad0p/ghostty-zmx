@@ -115,9 +115,9 @@ EOS
   trap 'rm -rf "$tmp"' EXIT
   export GHOSTTY_ZMX_DATA_HOME="$tmp/data"
   export GHOSTTY_ZMX_INSTALL_DIR="$tmp/install"
-  mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_INSTALL_DIR"
-  : > "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
-  chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
+  mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_INSTALL_DIR/cli"
+  : > "$GHOSTTY_ZMX_INSTALL_DIR/cli/ghostty-zmx"
+  chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/cli/ghostty-zmx"
   print -r -- $'h\ttsh\tzmx 0.6.0\tactive\t/tmp/should-not-run' > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts"
   print -r -- $'h\tdeadbeef\tgzr-deadbeef-cafebabe-abc123-def456\t/dev/ghostty-zmx-missing-tty\t123\tattached\t1\taaaa\tbbbb' > "$GHOSTTY_ZMX_DATA_HOME/remote-projections"
   unset GHOSTTY_ZMX_EARLY_INHERIT_RAN || true
@@ -191,8 +191,8 @@ fi
   export GHOSTTY_ZMX_DATA_HOME="$tmp/data"
   export GHOSTTY_ZMX_STATE_HOME="$tmp/state"
   export GHOSTTY_ZMX_INSTALL_DIR="$tmp/install"
-  mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$GHOSTTY_ZMX_INSTALL_DIR" "$tmp/bin"
-  : > "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"; chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
+  mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$GHOSTTY_ZMX_INSTALL_DIR/cli" "$tmp/bin"
+  : > "$GHOSTTY_ZMX_INSTALL_DIR/cli/ghostty-zmx"; chmod +x "$GHOSTTY_ZMX_INSTALL_DIR/cli/ghostty-zmx"
 
   # Fake `ssh` on PATH that records every call and reports success for add.
   # The lib's notty_prefix expands to `ssh -T host` so `ssh` is argv[0].

@@ -24,8 +24,8 @@ _gzmx_debug_subcommand() {
 
   case "$sub" in
     on|off)
-      [[ -r "${_GZMX_WRAPPER_DIR}/install-lib.sh" ]] || { print -u2 "install-lib.sh not found"; return 1; }
-      source "${_GZMX_WRAPPER_DIR}/install-lib.sh"
+      [[ -r "${_GZMX_INSTALL_ROOT}/install-lib.sh" ]] || { print -u2 "install-lib.sh not found"; return 1; }
+      source "${_GZMX_INSTALL_ROOT}/install-lib.sh"
       mkdir -p "${ghostty_config:h}" 2>/dev/null
       backup_file "$ghostty_config" 2>/dev/null || true
       validate_managed_block_pairs "$ghostty_config" 2>/dev/null || { print -u2 "Managed block malformed in $ghostty_config"; return 1; }
@@ -80,10 +80,10 @@ _gzmx_debug_report() {
   local state_home="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}"
   local log="$state_home/debug.log"
 
-  # ghostty-zmx version: prefer git describe of the wrapper's dir (the checkout);
-  # fall back to package.json version with a warning if git is absent.
+  # ghostty-zmx version: prefer git describe of the install root (where
+  # package.json/.git live); fall back to package.json if git is absent.
   local gzmx_version="unknown" git_warning=""
-  local version_dir="$_GZMX_WRAPPER_DIR"
+  local version_dir="${_GZMX_INSTALL_ROOT:-$_GZMX_WRAPPER_DIR}"
   if command -v git >/dev/null 2>&1; then
     gzmx_version="$(git -C "$version_dir" describe --tags 2>/dev/null || echo unknown)"
     [[ "$gzmx_version" == "unknown" ]] && [[ -r "$version_dir/package.json" ]] && \

@@ -547,11 +547,11 @@ ghostty_zmx_notty_prefix() {
 }
 
 ghostty_zmx_remote_layout_helper_cmd() {
-  print -r -- "\$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout"
+  print -r -- "\$HOME/.config/ghostty-zmx/cli/remote-layout"
 }
 
 ghostty_zmx_wrapper_path() {
-  print -r -- "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/ghostty-zmx"
+  print -r -- "${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/cli/ghostty-zmx"
 }
 
 ghostty_zmx_inherit_remote_context_if_any() {

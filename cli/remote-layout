@@ -1,10 +1,10 @@
 #!/bin/sh
-# ghostty-zmx-remote-layout — server-side transactional helper for the
+# remote-layout — server-side transactional helper for the
 # remote-layout canonical state file.
 #
-# Installed by install-server.sh to ~/.config/ghostty-zmx/ghostty-zmx-remote-layout.
+# Installed by install-server.sh to ~/.config/ghostty-zmx/cli/remote-layout.
 # Invoked over ssh by the laptop as a bare-word argv:
-#   ssh host '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' <subcommand> <args...>
+#   ssh host '$HOME/.config/ghostty-zmx/cli/remote-layout' <subcommand> <args...>
 #
 # All remote-layout mutations go through this helper so the ssh argv carries no
 # awk/printf/tabs/lock-loop metacharacters — the command shape that triggered
@@ -43,7 +43,7 @@ rev_file="$data_home/remote-layout.rev"
 lock="$data_home/remote-layout.lock"
 ttl="${GHOSTTY_ZMX_TOMBSTONE_TTL:-3600}"
 
-mkdir -p "$data_home" 2>/dev/null || { echo "ghostty-zmx-remote-layout: cannot mkdir $data_home" >&2; exit 1; }
+mkdir -p "$data_home" 2>/dev/null || { echo "remote-layout: cannot mkdir $data_home" >&2; exit 1; }
 
 acquire_lock() {
   _i=0
@@ -68,7 +68,7 @@ next_rev() {
 now() { date +%s; }
 
 cmd="${1:-}"
-[ -n "$cmd" ] || { echo "ghostty-zmx-remote-layout: no subcommand" >&2; exit 2; }
+[ -n "$cmd" ] || { echo "remote-layout: no subcommand" >&2; exit 2; }
 shift
 
 case "$cmd" in
@@ -139,7 +139,7 @@ case "$cmd" in
     release_lock
     ;;
   *)
-    echo "ghostty-zmx-remote-layout: unknown subcommand '$cmd'" >&2
+    echo "remote-layout: unknown subcommand '$cmd'" >&2
     exit 2
     ;;
 esac

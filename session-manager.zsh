@@ -1426,11 +1426,11 @@ ghostty_zmx_remove_remote_projection() {
 # not supported flags — tsh ssh is non-interactive when a command arg is
 # provided, so no flag is needed. Prints the argv as a space-joined string.
 
-# Path to the server-side ghostty-zmx-remote-layout helper, as invoked over
-# ssh. The helper is installed by install-server.sh to
-# ~/.config/ghostty-zmx/ on the remote host. We invoke it as a bare-word argv
-# ($HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout <sub> <args>) so the
-# ssh command is simple and carries no awk/printf/tabs/lock-loop
+# Path to the server-side remote-layout helper, as invoked over ssh. The
+# helper is installed by install-server.sh to
+# ~/.config/ghostty-zmx/cli/remote-layout on the remote host. We invoke it as
+# a bare-word argv ($HOME/.config/ghostty-zmx/cli/remote-layout <sub> <args>)
+# so the ssh command is simple and carries no awk/printf/tabs/lock-loop
 # metacharacters. (A prior theory blamed such command shapes for surface
 # multiplication; that was disproven — the cause was orphaned poller shells.
 # The bare-word argv is kept because it is simpler and correct.) See
@@ -1948,7 +1948,7 @@ ghostty_zmx_poll_once() {
 
     # 1. Read the server-authoritative remote-layout for this host.
     local notty="$(ghostty_zmx_notty_prefix "$prefix")"
-    local helper='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+    local helper="$(ghostty_zmx_remote_layout_helper_cmd)"
     local layout
     layout="$("${(z)notty}" "$helper" read 2>/dev/null)" || layout=""
 

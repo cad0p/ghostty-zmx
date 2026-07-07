@@ -20,28 +20,24 @@ repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
 source_lib="$repo_dir/session-manager-lib.zsh"
 source_install_lib="$repo_dir/install-lib.sh"
-source_install_server_sub="$repo_dir/ghostty-zmx-install-server"
-source_debug_sub="$repo_dir/ghostty-zmx-debug"
 source_package_json="$repo_dir/package.json"
 source_early_manager="$repo_dir/session-manager-early.zsh"
 source_v01_manager="$repo_dir/session-manager-v0.1.zsh"
-source_wrapper="$repo_dir/ghostty-zmx"
+source_wrapper="$repo_dir/cli/ghostty-zmx"
 source_uninstall="$repo_dir/uninstall.sh"
 source_server_install="$repo_dir/install-server.sh"
-source_remote_layout="$repo_dir/ghostty-zmx-remote-layout"
+source_remote_layout="$repo_dir/cli/remote-layout"
 source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
 lib_dest="$install_dir/session-manager-lib.zsh"
 install_lib_dest="$install_dir/install-lib.sh"
-install_server_sub_dest="$install_dir/ghostty-zmx-install-server"
-debug_sub_dest="$install_dir/ghostty-zmx-debug"
 early_manager_dest="$install_dir/session-manager-early.zsh"
 v01_manager_dest="$install_dir/session-manager-v0.1.zsh"
-wrapper_dest="$install_dir/ghostty-zmx"
+wrapper_dest="$install_dir/cli/ghostty-zmx"
 uninstall_dest="$install_dir/uninstall.sh"
 server_install_dest="$install_dir/install-server.sh"
-remote_layout_dest="$install_dir/ghostty-zmx-remote-layout"
+remote_layout_dest="$install_dir/cli/remote-layout"
 terminfo_dest="$install_dir/terminfo/xterm-ghostty.terminfo"
 zshrc="$HOME/.zshrc"
 zprofile="$HOME/.zprofile"
@@ -74,8 +70,6 @@ print_plan() {
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }
 [[ -f "$source_lib" ]] || { print -u2 "Missing $source_lib"; exit 1; }
 [[ -f "$source_install_lib" ]] || { print -u2 "Missing $source_install_lib"; exit 1; }
-[[ -f "$source_install_server_sub" ]] || { print -u2 "Missing $source_install_server_sub"; exit 1; }
-[[ -f "$source_debug_sub" ]] || { print -u2 "Missing $source_debug_sub"; exit 1; }
 [[ -f "$source_package_json" ]] || { print -u2 "Missing $source_package_json"; exit 1; }
 [[ -f "$source_early_manager" ]] || { print -u2 "Missing $source_early_manager"; exit 1; }
 [[ -f "$source_v01_manager" ]] || { print -u2 "Missing $source_v01_manager"; exit 1; }
@@ -83,6 +77,12 @@ print_plan() {
 [[ -f "$source_uninstall" ]] || { print -u2 "Missing $source_uninstall"; exit 1; }
 [[ -f "$source_server_install" ]] || { print -u2 "Missing $source_server_install"; exit 1; }
 [[ -f "$source_remote_layout" ]] || { print -u2 "Missing $source_remote_layout"; exit 1; }
+# All cli/ subcommand files must exist (glob so new subcommands are caught).
+[[ -d "$repo_dir/cli" && -n "$(print -r "$repo_dir/cli"/*(N))" ]] || { print -u2 "Missing cli/ subcommand files"; exit 1; }
+local _cli_f
+for _cli_f in "$repo_dir"/cli/*(N); do
+  [[ -f "$_cli_f" ]] || { print -u2 "Missing $_cli_f"; exit 1; }
+done
 [[ -f "$source_terminfo" ]] || { print -u2 "Missing $source_terminfo"; exit 1; }
 
 require_command zmx
@@ -109,13 +109,11 @@ remove_source_line "$zprofile" "$source_line" || exit 1
 ensure_source_line "$zprofile" "$early_source_line" || exit 1
 
 validate_install_dir
-mkdir -p "$install_dir" || exit 1
+mkdir -p "$install_dir/cli" || exit 1
 validate_install_dir
 install -m 0644 "$source_manager" "$manager_dest" || exit 1
 install -m 0644 "$source_lib" "$lib_dest" || exit 1
 install -m 0644 "$source_install_lib" "$install_lib_dest" || exit 1
-install -m 0755 "$source_install_server_sub" "$install_server_sub_dest" || exit 1
-install -m 0755 "$source_debug_sub" "$debug_sub_dest" || exit 1
 install -m 0644 "$source_package_json" "$install_dir/package.json" || exit 1
 install -m 0644 "$source_early_manager" "$early_manager_dest" || exit 1
 install -m 0644 "$source_v01_manager" "$v01_manager_dest" || exit 1
@@ -123,6 +121,14 @@ install -m 0755 "$source_wrapper" "$wrapper_dest" || exit 1
 install -m 0755 "$source_uninstall" "$uninstall_dest" || exit 1
 install -m 0755 "$source_server_install" "$server_install_dest" || exit 1
 install -m 0755 "$source_remote_layout" "$remote_layout_dest" || exit 1
+# Install the remaining cli/ subcommand files (install-server, debug, and any
+# future subcommands). Glob-driven so adding a subcommand requires no edit here.
+local _cli_src _cli_basename
+for _cli_src in "$repo_dir"/cli/*(N); do
+  _cli_basename="${_cli_src:t}"
+  [[ "$_cli_basename" == "ghostty-zmx" || "$_cli_basename" == "remote-layout" ]] && continue
+  install -m 0755 "$_cli_src" "$install_dir/cli/$_cli_basename" || exit 1
+done
 # Refresh the vendored Ghostty terminfo from the installed Ghostty at install
 # time so the copy always matches the laptop's Ghostty version (per the v0.2
 # design, "Vendored terminfo staleness"). If infocmp against the installed
@@ -131,8 +137,6 @@ refresh_vendored_terminfo "$terminfo_dest" "$source_terminfo" || exit 1
 print "Installed $manager_dest"
 print "Installed $lib_dest"
 print "Installed $install_lib_dest"
-print "Installed $install_server_sub_dest"
-print "Installed $debug_sub_dest"
 print "Installed $install_dir/package.json"
 print "Installed $early_manager_dest"
 print "Installed $v01_manager_dest"
@@ -140,6 +144,11 @@ print "Installed $wrapper_dest"
 print "Installed $uninstall_dest"
 print "Installed $server_install_dest"
 print "Installed $remote_layout_dest"
+for _cli_src in "$repo_dir"/cli/*(N); do
+  _cli_basename="${_cli_src:t}"
+  [[ "$_cli_basename" == "ghostty-zmx" || "$_cli_basename" == "remote-layout" ]] && continue
+  print "Installed $install_dir/cli/$_cli_basename"
+done
 print "Installed $terminfo_dest"
 
 backup_file "$ghostty_config"

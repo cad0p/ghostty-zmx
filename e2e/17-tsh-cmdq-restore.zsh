@@ -47,7 +47,7 @@ GZMX_E2E_SESSION="$(awk -F '\t' '/name=gzr-/ {sub(/.*name=gzr-/, "gzr-"); sub(/[
 gzmx_e2e_log "session=$GZMX_E2E_SESSION"
 
 # --- THE KEY ASSERTION: server remote-layout must have a present row --------
-# The wrapper writes this row via `ghostty-zmx-remote-layout add ... present`
+# The wrapper writes this row via `cli/remote-layout add ... present`
 # over the (no-pty) transport. For tsh, a bug in _is_tsh detection appended -T
 # to the tsh command, the add failed silently, and no row was written — so
 # Cmd-Q+reopen found nothing to re-project. Asserting the row exists here
@@ -60,7 +60,7 @@ _server_row_has_present() {
 gzmx_e2e_wait_for 10 _server_row_has_present || {
   print -u2 "  server remote-layout row for $GZMX_E2E_SESSION:"
   ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
-    '~/.config/ghostty-zmx/ghostty-zmx-remote-layout read' >&2 2>/dev/null || true
+    '~/.config/ghostty-zmx/cli/remote-layout read' >&2 2>/dev/null || true
   gzmx_e2e_fail "server remote-layout has no present row for $GZMX_E2E_SESSION (wrapper add failed)"
 }
 gzmx_e2e_pass "server remote-layout row is 'present' after tsh handoff"

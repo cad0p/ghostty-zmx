@@ -298,14 +298,14 @@ install_live_files() {
     session-manager-lib.zsh
     session-manager-early.zsh
     session-manager-v0.1.zsh
-    ghostty-zmx
-    ghostty-zmx-install-server
-    ghostty-zmx-debug
+    cli/ghostty-zmx
+    cli/install-server
+    cli/debug
+    cli/remote-layout
     uninstall.sh
     install-server.sh
     install-lib.sh
     package.json
-    ghostty-zmx-remote-layout
     terminfo/xterm-ghostty.terminfo
   )
   local f
@@ -313,19 +313,19 @@ install_live_files() {
     [[ -r "$repo_dir/$f" ]] || { print -u2 "Missing checkout file: $repo_dir/$f"; exit 1; }
   done
 
-  mkdir -p "$install_dir/terminfo" "$tip_config_root" "$tip_zdotdir" "$tip_data_home" "$tip_state_home"
+  mkdir -p "$install_dir/cli" "$install_dir/terminfo" "$tip_config_root" "$tip_zdotdir" "$tip_data_home" "$tip_state_home"
   install -m 0644 "$repo_dir/session-manager.zsh" "$install_dir/session-manager.zsh"
   install -m 0644 "$repo_dir/session-manager-lib.zsh" "$install_dir/session-manager-lib.zsh"
   install -m 0644 "$repo_dir/session-manager-early.zsh" "$install_dir/session-manager-early.zsh"
   install -m 0644 "$repo_dir/session-manager-v0.1.zsh" "$install_dir/session-manager-v0.1.zsh"
-  install -m 0755 "$repo_dir/ghostty-zmx" "$install_dir/ghostty-zmx"
+  install -m 0755 "$repo_dir/cli/ghostty-zmx" "$install_dir/cli/ghostty-zmx"
+  install -m 0755 "$repo_dir/cli/install-server" "$install_dir/cli/install-server"
+  install -m 0755 "$repo_dir/cli/debug" "$install_dir/cli/debug"
+  install -m 0755 "$repo_dir/cli/remote-layout" "$install_dir/cli/remote-layout"
   install -m 0755 "$repo_dir/uninstall.sh" "$install_dir/uninstall.sh"
   install -m 0755 "$repo_dir/install-server.sh" "$install_dir/install-server.sh"
   install -m 0644 "$repo_dir/install-lib.sh" "$install_dir/install-lib.sh"
-  install -m 0755 "$repo_dir/ghostty-zmx-install-server" "$install_dir/ghostty-zmx-install-server"
-  install -m 0755 "$repo_dir/ghostty-zmx-debug" "$install_dir/ghostty-zmx-debug"
   install -m 0644 "$repo_dir/package.json" "$install_dir/package.json"
-  install -m 0755 "$repo_dir/ghostty-zmx-remote-layout" "$install_dir/ghostty-zmx-remote-layout"
 
   refresh_vendored_terminfo "$install_dir/terminfo/xterm-ghostty.terminfo" "$repo_dir/terminfo/xterm-ghostty.terminfo"
 

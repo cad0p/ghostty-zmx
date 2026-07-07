@@ -7,7 +7,7 @@
 #
 # One-shot server-side bootstrap. Bundles the four files install-server.sh needs
 # as siblings (session-manager.zsh, session-manager-lib.zsh,
-# ghostty-zmx-remote-layout, terminfo/xterm-ghostty.terminfo) from the local
+# cli/remote-layout, terminfo/xterm-ghostty.terminfo) from the local
 # install dir, streams the tarball over the no-pty transport into a temp dir on
 # the remote, runs install-server.sh --yes there, and cleans up.
 #
@@ -29,7 +29,9 @@ _gzmx_install_server() {
   local install_dir="${GHOSTTY_ZMX_INSTALL_DIR:-}"
 
   if [[ -z "$install_dir" ]]; then
-    local self_dir="$_GZMX_WRAPPER_DIR"
+    # install-server.sh lives one level up from cli/ (the install-dir root or
+    # the repo root in a checkout). Prefer that; fall back to the default install.
+    local self_dir="${_GZMX_INSTALL_ROOT:-$_GZMX_WRAPPER_DIR}"
     if [[ -r "$self_dir/install-server.sh" ]]; then
       install_dir="$self_dir"
     else
@@ -75,7 +77,7 @@ _gzmx_install_server() {
     "$install_dir/install-server.sh"
     "$install_dir/session-manager.zsh"
     "$install_dir/session-manager-lib.zsh"
-    "$install_dir/ghostty-zmx-remote-layout"
+    "$install_dir/cli/remote-layout"
     "$install_dir/terminfo/xterm-ghostty.terminfo"
   )
   local f
@@ -145,7 +147,7 @@ _gzmx_install_server() {
   # Bundle the files into a tarball, stripping macOS metadata.
   # install-server.sh resolves its siblings via repo_dir=${0:A:h}, so the tarball
   # must lay out: install-server.sh, session-manager.zsh, session-manager-lib.zsh,
-  # ghostty-zmx-remote-layout, terminfo/xterm-ghostty.terminfo (with the subdir).
+  # cli/remote-layout, terminfo/xterm-ghostty.terminfo (with the subdir).
   # --no-mac-metadata + --format ustar + COPYFILE_DISABLE avoid ._ AppleDouble
   # files and LIBARCHIVE.xattr warnings that GNU tar on the remote would emit.
   COPYFILE_DISABLE=1 tar --no-mac-metadata --format ustar -czf - \
@@ -153,7 +155,7 @@ _gzmx_install_server() {
     install-server.sh \
     session-manager.zsh \
     session-manager-lib.zsh \
-    ghostty-zmx-remote-layout \
+    cli/remote-layout \
     terminfo/xterm-ghostty.terminfo 2>/dev/null \
     | "${notty_argv[@]}" "$remote_script"
   local rc=$?

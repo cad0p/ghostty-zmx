@@ -172,16 +172,15 @@ else
   rm -f "$install_dir/session-manager.zsh" \
         "$install_dir/session-manager-lib.zsh" \
         "$install_dir/install-lib.sh" \
-        "$install_dir/ghostty-zmx-install-server" \
-        "$install_dir/ghostty-zmx-debug" \
         "$install_dir/package.json" \
         "$install_dir/session-manager-early.zsh" \
         "$install_dir/session-manager-v0.1.zsh" \
-        "$install_dir/ghostty-zmx" \
         "$install_dir/uninstall.sh" \
         "$install_dir/install-server.sh" \
-        "$install_dir/ghostty-zmx-remote-layout" \
         "$install_dir/terminfo/xterm-ghostty.terminfo" 2>/dev/null || true
+  # cli/ holds the wrapper + all subcommands (ghostty-zmx, install-server,
+  # debug, remote-layout, and any future ones). Remove the whole subdir.
+  rm -rf "$install_dir/cli" 2>/dev/null || true
   rmdir "$install_dir/terminfo" "$install_dir" 2>/dev/null || true
   print "Removed installed ghostty-zmx files under $install_dir where present."
 fi
