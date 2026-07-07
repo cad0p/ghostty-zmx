@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - *(v0.2)* Ghostty-zmx install-server subcommand ([#34](https://github.com/cad0p/ghostty-zmx/pull/34))
 - *(v0.2)* Unify install/uninstall under ghostty-zmx CLI ([#35](https://github.com/cad0p/ghostty-zmx/pull/35))
 - *(v0.2)* E2E tsh Docker fixture + bug fixes (WIP) ([#36](https://github.com/cad0p/ghostty-zmx/pull/36))
+- *(v0.2)* Install-dev command + debug subcommand + log rotation ([#40](https://github.com/cad0p/ghostty-zmx/pull/40))
 
 ### 🐛 Bug Fixes
 
