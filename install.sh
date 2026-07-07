@@ -119,7 +119,7 @@ install -m 0755 "$source_remote_layout" "$remote_layout_dest" || exit 1
 # time so the copy always matches the laptop's Ghostty version (per the v0.2
 # design, "Vendored terminfo staleness"). If infocmp against the installed
 # Ghostty fails, fall back to the repo's committed copy.
-refresh_vendored_terminfo "$terminfo_dest" || exit 1
+refresh_vendored_terminfo "$terminfo_dest" "$source_terminfo" || exit 1
 print "Installed $manager_dest"
 print "Installed $lib_dest"
 print "Installed $install_lib_dest"

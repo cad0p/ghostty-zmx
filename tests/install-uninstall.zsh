@@ -1,5 +1,5 @@
 #!/bin/zsh
-set -eux
+set -eu
 
 repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
