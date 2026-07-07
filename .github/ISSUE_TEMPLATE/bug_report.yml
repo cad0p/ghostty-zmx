@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a bug in ghostty-zmx
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! Before you continue:
+
+        1. **Reproduce with debug logging on.** Run `ghostty-zmx debug on`, restart Ghostty, reproduce the issue, then run `ghostty-zmx debug log --lines 200` to get a ready-to-paste report block (includes versions, remotes, and the debug-log tail).
+        2. Paste that report block into the "Debug report" field below.
+        3. **Turn debug off when done:** `ghostty-zmx debug off` (debug logging survives restart until you turn it off).
+
+        Without a debug log, we can't investigate most issues.
+
+  - type: dropdown
+    id: debug-reproduced
+    attributes:
+      label: Reproduced with GHOSTTY_ZMX_DEBUG=1?
+      options:
+        - "Yes — I ran ghostty-zmx debug on and reproduced the issue"
+        - "No"
+    validations:
+      required: true
+
+  - type: textarea
+    id: debug-report
+    attributes:
+      label: Debug report
+      description: |
+        Paste the output of `ghostty-zmx debug log --lines 200` here. This prints ghostty-zmx version, ghostty version, macOS version, configured remotes, and the last 200 lines of the debug log. Remember to run `ghostty-zmx debug off` after pasting.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug. What did you expect, and what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Step-by-step instructions to trigger the bug. Include the exact commands you typed (ssh/tsh invocations, key combos like Cmd-Q / Cmd+W, etc.).
+      placeholder: |
+        1. Open a managed Ghostty pane.
+        2. Type `tsh ssh <host>`.
+        3. ...
+        4. See error.
+    validations:
+      required: true
+
+  - type: input
+    id: ghostty-version
+    attributes:
+      label: Ghostty version
+      description: Run `ghostty-zmx debug log` to get this automatically, or check Ghostty > About.
+      placeholder: "Ghostty-tip 4812fcdc7 (build 16419)"
+    validations:
+      required: true
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Output of `sw_vers -productVersion`.
+      placeholder: "15.6.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: remote-hosts
+    attributes:
+      label: Remote hosts configured (if relevant)
+      description: Contents of `~/.local/share/ghostty-zmx/remote-hosts` (TSV). Omit if not using remote panes.
+      render: shell
+    validations:
+      required: false

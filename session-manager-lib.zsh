@@ -124,7 +124,30 @@ _ghostty_zmx_runtime_path() {
 _ghostty_zmx_debug() {
   [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
   mkdir -p "$GHOSTTY_ZMX_STATE_HOME" 2>/dev/null
+  _ghostty_zmx_debug_rotate "$GHOSTTY_ZMX_STATE_HOME/debug.log"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$GHOSTTY_ZMX_STATE_HOME/debug.log"
+}
+
+# Rotate the debug log if it exceeds the cap (default 1MB). Keeps one rotated
+# copy (debug.log.1, overwritten on each rotation) so total disk is ~2x cap.
+# Also sweeps stray debug.log.2+ (defensive; a prior version may have left them).
+# Called by every debug append site (shells, widget, wrapper, reaper, poller)
+# via _ghostty_zmx_debug / debug_log / _gzmx_widget_debug / _gzmx_wdebug.
+# Single-writer per process (append-only), so no locking is needed.
+_ghostty_zmx_debug_rotate() {
+  local log="$1"
+  [[ -f "$log" ]] || return 0
+  local cap="${GHOSTTY_ZMX_DEBUG_LOG_MAX_BYTES:-1048576}"
+  [[ "$cap" =~ '^[0-9]+$' ]] || cap=1048576
+  local size
+  size=$(stat -f %z "$log" 2>/dev/null || stat -c %s "$log" 2>/dev/null) || return 0
+  [[ "$size" -gt "$cap" ]] || return 0
+  mv -f "$log" "${log}.1" 2>/dev/null || return 0
+  # Sweep any stray higher-numbered rotations from a prior version.
+  local n
+  for (( n=2; n<=9; n++ )); do
+    [[ -f "${log}.${n}" ]] && rm -f "${log}.${n}" 2>/dev/null || true
+  done
 }
 
 _ghostty_zmx_shell_tty() {

@@ -171,6 +171,8 @@ if [[ -L "$install_dir" ]]; then
 else
   rm -f "$install_dir/session-manager.zsh" \
         "$install_dir/session-manager-lib.zsh" \
+        "$install_dir/install-lib.sh" \
+        "$install_dir/package.json" \
         "$install_dir/session-manager-early.zsh" \
         "$install_dir/session-manager-v0.1.zsh" \
         "$install_dir/ghostty-zmx" \

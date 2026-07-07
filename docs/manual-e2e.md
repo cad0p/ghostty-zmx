@@ -18,22 +18,21 @@ The scripted E2E scenarios live under `e2e/` and should run against `Ghostty-tip
 
 The v0.2 SSH/projection scenarios require Ghostty 1.4.x AppleScript `tty`/`pid` support, which is currently available in Ghostty-tip but not stable Ghostty.
 
-Prepare an isolated app copy from an existing downloaded tip DMG:
+Prepare an isolated Ghostty-tip app + dev install in one command:
 
 ```sh
-GZMX_E2E_GHOSTTY_TIP_DMG=/tmp/Ghostty-tip.dmg \
-GZMX_E2E_GHOSTTY_TIP_SHA256=<sha256> \
-GZMX_E2E_GHOSTTY_TIP_REPLACE=1 \
-e2e/setup-ghostty-tip.zsh
+git clone https://github.com/cad0p/ghostty-zmx.git
+c ghostty-zmx
+ghostty-zmx install-dev
 ```
 
-Or, if `/Applications/Ghostty-tip.app` already exists, normalize only the copied app identity/signature:
+`install-dev` ensures a signed `Ghostty-tip.app` exists at `/Applications/Ghostty-tip.app`. If the app is missing, or with `--update-tip`, it downloads the latest tip from the [official Ghostty appcast](https://tip.files.ghostty.org/appcast.xml) (TLS-verified, length-checked), copies it, rewrites the bundle identity to `Ghostty-tip` / `com.mitchellh.ghostty.tip`, ad-hoc signs it, and registers it with LaunchServices. It refuses to touch `/Applications/Ghostty.app`.
+
+To refresh the tip app to the latest build:
 
 ```sh
-e2e/setup-ghostty-tip.zsh
+ghostty-zmx install-dev --update-tip
 ```
-
-That script rewrites only `/Applications/Ghostty-tip.app` to AppleScript name `Ghostty-tip` and bundle id `com.mitchellh.ghostty.tip`, then ad-hoc signs it. It refuses to touch `/Applications/Ghostty.app`.
 
 If macOS asks for Accessibility permission, the dialog should name `Ghostty-tip`. System Settings may still display the row as `Ghostty` because the app executable and upstream product metadata are still Ghostty. Verify the isolated copy if needed:
 
@@ -42,13 +41,7 @@ plutil -extract CFBundleName raw /Applications/Ghostty-tip.app/Contents/Info.pli
 plutil -extract CFBundleIdentifier raw /Applications/Ghostty-tip.app/Contents/Info.plist
 ```
 
-For manual testing of the live checkout on Ghostty-tip only, install the dev copy with:
-
-```sh
-e2e/setup-ghostty-tip.zsh --install-live
-```
-
-This installs the checkout under `~/.config/ghostty-zmx-tip` by default, writes an isolated Ghostty-tip config under `~/.config/ghostty-tip`, writes an isolated `ZDOTDIR` under `~/.config/ghostty-tip-zdotdir`, and keeps live tip state under `~/.local/share/ghostty-zmx-tip` / `~/.local/state/ghostty-zmx-tip`. It also stamps the copied Ghostty-tip bundle's `LSEnvironment` so launching Ghostty-tip from Spotlight gets the same isolated env. It does not edit stable Ghostty, stable Ghostty config, `~/.zshrc`, or `~/.zprofile`. The isolated config sets `GHOSTTY_ZMX_APP_NAME=Ghostty-tip` because copied tip bundles can still expose `GHOSTTY_RESOURCES_DIR` pointing at stable Ghostty. The generated `ZDOTDIR` sources user dotfiles with `GHOSTTY_ZMX_AUTO_ATTACH=0` first, then sources the tip install so an existing stable/default ghostty-zmx install stays dormant. While sourcing the user `.zshrc`, it also temporarily sets `POWERLEVEL9K_INSTANT_PROMPT=off`; Powerlevel10k instant prompt redirects terminal I/O during shell init, which can make startup `zmx attach` create a detached session and return to the outer shell before the prompt is finalized.
+`install-dev` installs the checkout under `~/.config/ghostty-zmx-tip`, writes an isolated Ghostty-tip config under `~/.config/ghostty-tip/config.ghostty` (with `GHOSTTY_ZMX_DEBUG=1` always baked in), writes an isolated `ZDOTDIR` under `~/.config/ghostty-tip-zdotdir`, and keeps live tip state under `~/.local/share/ghostty-zmx-tip` / `~/.local/state/ghostty-zmx-tip`. It stamps the tip bundle's `LSEnvironment` so Spotlight/double-click launches get the isolated env. It does not redirect `XDG_CONFIG_HOME` via `launchctl setenv` (the Ghostty maintainer's suggestion in [ghostty-org/ghostty#12408](https://github.com/ghostty-org/ghostty/issues/12408)) because that is global and would break stable Ghostty; instead the env is carried per-app by `LSEnvironment` (Spotlight) and `--config-file` (launcher), both from a single shared env list. The generated `ZDOTDIR` sources user dotfiles with `GHOSTTY_ZMX_AUTO_ATTACH=0` first, then sources the tip install so an existing stable/default ghostty-zmx install stays dormant. While sourcing the user `.zshrc`, it also temporarily sets `POWERLEVEL9K_INSTANT_PROMPT=off`; Powerlevel10k instant prompt redirects terminal I/O during shell init, which can make startup `zmx attach` create a detached session and return to the outer shell before the prompt is finalized.
 
 Launch the isolated live copy with:
 
@@ -57,6 +50,8 @@ Launch the isolated live copy with:
 ```
 
 The launcher intentionally uses `open -F -n -a Ghostty-tip --args ...`. `-F` prevents macOS from restoring stale Ghostty-tip windows without the isolated args. Do not use `open -na /Applications/Ghostty-tip.app`; `-a` is for app names, not bundle paths, and can leave Ghostty-tip running without a terminal window or the isolated config.
+
+### Running the E2E suite
 
 Run all scenarios with the Docker sshd fixture:
 
