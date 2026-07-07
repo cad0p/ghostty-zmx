@@ -101,6 +101,9 @@ gzmx_e2e_init() {
 [[ -r ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager-early.zsh ]] && source ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager-early.zsh
 EOF
   cat > "$GZMX_E2E_ZDOTDIR/.zshrc" <<EOF
+export HISTFILE="$GZMX_E2E_DATA_HOME/.zsh_history"
+export HISTSIZE=1000 SAVEHIST=1000
+setopt share_history hist_ignore_dups
 [[ -r ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager.zsh ]] && source ${(qqq)GZMX_E2E_INSTALL_DIR}/session-manager.zsh
 EOF
   gzmx_e2e_log "tmpdir=$GZMX_E2E_TMPDIR"
@@ -259,7 +262,7 @@ gzmx_e2e_ghostty_launch() {
   if [[ -d "$_pre_runtime" ]]; then
     pkill -9 -f "${_pre_runtime}/(reaper|remote-poller)-" 2>/dev/null || true
   fi
-  open -F -n -a "$GZMX_E2E_GHOSTTY_APP" --args \
+  env -u ZMX_SESSION -u TMUX open -F -n -a "$GZMX_E2E_GHOSTTY_APP" --args \
     --config-default-files=false \
     --env=GHOSTTY_ZMX_APP_NAME="$GZMX_E2E_GHOSTTY_APP" \
     --env=GHOSTTY_ZMX_AUTO_ATTACH=1 \
@@ -568,6 +571,34 @@ gzmx_e2e_send_key() {
 tell application "$GZMX_E2E_GHOSTTY_APP" to activate
 tell application "System Events"
   keystroke "$key_char" {$mods}
+end tell
+OSA
+}
+
+# Send a raw macOS key code (e.g. 126=Up arrow, 125=Down arrow, 36=Return) to
+# the focused terminal via System Events. Unlike gzmx_e2e_send_key (which
+# types a character), this dispatches the physical key event, so it works for
+# arrow keys that have no single-character representation. Requires
+# Accessibility permission for osascript (same as gzmx_e2e_send_key).
+# Key codes: 126=Up, 125=Down, 123=Left, 124=Right, 36=Return, 48=Tab, 51=Delete.
+gzmx_e2e_send_key_code() {
+  emulate -L zsh
+  setopt local_options no_err_return
+  local code="$1" mods=""
+  shift || true
+  local m
+  for m in "$@"; do
+    case "$m" in
+      cmd|super) mods="$mods command" ;;
+      shift) mods="$mods shift" ;;
+      ctrl|control) mods="$mods control" ;;
+      alt|option) mods="$mods option" ;;
+    esac
+  done
+  osascript <<OSA 2>/dev/null || true
+tell application "$GZMX_E2E_GHOSTTY_APP" to activate
+tell application "System Events"
+  key code $code {$mods}
 end tell
 OSA
 }

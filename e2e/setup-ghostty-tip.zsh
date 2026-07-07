@@ -158,6 +158,7 @@ install_live_files() {
 env = ZDOTDIR=$tip_zdotdir
 env = GHOSTTY_ZMX_APP_NAME=$app_name
 env = GHOSTTY_ZMX_AUTO_ATTACH=1
+env = GHOSTTY_ZMX_DEBUG=1
 env = GHOSTTY_ZMX_INSTALL_DIR=$install_dir
 env = GHOSTTY_ZMX_DATA_HOME=$tip_data_home
 env = GHOSTTY_ZMX_STATE_HOME=$tip_state_home
@@ -246,6 +247,7 @@ configure_tip_bundle_environment() {
     ZDOTDIR "$tip_zdotdir" \
     GHOSTTY_ZMX_APP_NAME "$app_name" \
     GHOSTTY_ZMX_AUTO_ATTACH 1 \
+    GHOSTTY_ZMX_DEBUG 1 \
     GHOSTTY_ZMX_INSTALL_DIR "$install_dir" \
     GHOSTTY_ZMX_DATA_HOME "$tip_data_home" \
     GHOSTTY_ZMX_STATE_HOME "$tip_state_home" \

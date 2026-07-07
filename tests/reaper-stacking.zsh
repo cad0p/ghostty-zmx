@@ -11,15 +11,21 @@ export HOME="$workdir/home"
 export GHOSTTY_ZMX_DATA_HOME="$workdir/data"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state"
 export XDG_RUNTIME_DIR="$workdir/runtime"
+export TERM_PROGRAM=ghostty
 mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$XDG_RUNTIME_DIR"
 
 # Use a fake but live pid (our own $$) as the ghostty pid.
 fake_ghostty_pid=$$
 pass=0; fail=0
 
-# Source the manager (defines _ghostty_zmx_start_reaper and the lib functions)
+# Source the lib first, then stub the 1.4.0 tty/pid capability probe so the
+# manager's version-self-gate (top of session-manager.zsh) does not early-
+# return and leave _ghostty_zmx_start_reaper undefined. Without this stub the
+# test silently exercises nothing: `source ... 2>/dev/null` swallows the
+# early `return 0` and every assertion fails with "command not found".
 source "$repo_dir/session-manager-lib.zsh"
-source "$repo_dir/session-manager.zsh" 2>/dev/null
+ghostty_zmx_has_tty_capability() { return 0; }
+source "$repo_dir/session-manager.zsh"
 
 # Stub the actual reaper launch so we don't spawn a real background process.
 # We override the part that runs nohup by checking the flag + script generation.

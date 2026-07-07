@@ -261,8 +261,23 @@ if [[ "$session" == gzr-* ]]; then
   local _pane="${_rest#*-}"
   local -a _notty=()
   local _have_t=0 _is_tsh=0 _arg
-  if [[ "${@[1]}" == "tsh" && "${@[2]:-}" == "ssh" ]]; then
+  # Strip the path prefix: the widget resolves tsh/ssh to absolute paths
+  # (ghostty_zmx_resolve_transport_path), so argv[1] may be /usr/local/bin/tsh
+  # rather than bare "tsh". ${1##*/} extracts the basename (like the :t
+  # modifier). Without this, _is_tsh stays 0 for a tsh invoked via absolute
+  # path, -T gets appended to the `tsh ssh ... add` call, tsh rejects -T, and
+  # the remote-layout row is never written — silently breaking Cmd-Q+reopen
+  # restore for every tsh host. See e2e/17-tsh-cmdq-restore.zsh.
+  if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
     _is_tsh=1
+    # Set TERM=dumb BEFORE the `add` call below: tsh gates its OSC 11 / CSI 6n
+    # probe on the LOCAL TERM, and the `add` is itself a `tsh ssh` invocation.
+    # If TERM is not dumb here, tsh emits the probe and (for the mock-tsh E2E
+    # fixture) the TERM=dumb assertion rejects the call with rc=2, so the
+    # remote-layout row is never written. The later `exec "$@"` re-affirms
+    # TERM=dumb for the attach; setting it here covers both paths.
+    export TERM=dumb
+    _gzmx_wdebug "projection: set TERM=dumb for tsh transport (before add + attach)"
   fi
   for _arg in "$@"; do
     case "$_arg" in
@@ -291,7 +306,7 @@ if [[ "$session" == gzr-* ]]; then
   # the present row. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   if [[ "$_dropped_cmd" -eq 1 ]]; then
-    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || true
+    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || _gzmx_wdebug "wrapper add FAILED rc=$? host=$host session=$session"
   fi
 fi
 
@@ -379,6 +394,5 @@ fi
 # 2026-07-04-osc-leak-live-verification-csi-6n-emitter-hunt.
 if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
   export TERM=dumb
-  _gzmx_wdebug "projection: set TERM=dumb for tsh transport (suppress OSC 11 / CSI 6n probe)"
 fi
 exec "$@"

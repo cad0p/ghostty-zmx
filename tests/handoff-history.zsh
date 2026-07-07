@@ -27,30 +27,20 @@ rm -f '$hf'
 export HISTSIZE=100 SAVEHIST=100
 setopt share_history hist_ignore_dups
 PS1="P> "
+# Mirror the production accept-line widget's history step ONLY: print -s + fc -R.
+# No Up-arrow override is installed — the handoff command must be recallable by
+# plain up-line-or-history, exactly as if the user had executed it.
 gzmx_test_widget() {
   local original_buffer="\$BUFFER"
   print -s -- "\$original_buffer"
   fc -AI "\$HISTFILE" 2>/dev/null || fc -W "\$HISTFILE" 2>/dev/null || true
   fc -R "\$HISTFILE" 2>/dev/null || true
-  typeset -g _GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL="\$original_buffer"
   BUFFER=""
   zle reset-prompt
 }
-gzmx_test_up() {
-  if [[ -n "\${_GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL:-}" && -z "\${BUFFER:-}" ]]; then
-    BUFFER="\$_GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL"
-    CURSOR=\${#BUFFER}
-    _GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL=""
-    zle redisplay
-    return
-  fi
-  zle .up-line-or-history
-}
 zle -N gzmx_test_widget
-zle -N gzmx_test_up
 bindkey "^M" gzmx_test_widget
 bindkey "^J" gzmx_test_widget
-bindkey "\e[A" gzmx_test_up
 EOF
 
 # Drive a pty: type the handoff + Enter, then Up-arrow, then dump BUFFER.
@@ -116,8 +106,104 @@ if (( $? == 0 )); then
     exit 1
   }
   print "  ok: handoff command persisted as latest history entry"
-  print "all handoff-history tests passed"
-  exit 0
 else
   exit 1
 fi
+
+# --- Second assertion: multi-Up/Down traversal after a handoff ---
+# Regression: an earlier revision overrode Up-arrow (but not Down) to surface
+# the handoff command via a pending-recall short-circuit. That asymmetric
+# binding desynced search widgets' internal state after the synthetic recall,
+# so pressing Up again did not traverse to older history. The fix removed the
+# Up-arrow override entirely; plain up-line-or-history must walk the full
+# history (handoff -> CCC -> BBB -> AAA -> BBB -> CCC) just like normal zsh.
+workdir2="$(mktemp -d)"
+trap 'rm -rf "$workdir2"' EXIT
+zdot2="$workdir2/zdot"; mkdir -p "$zdot2"
+hf2="$workdir2/.zsh_history"
+dumpfile="$workdir2/bufs.txt"; : > "$dumpfile"
+
+cat > "$zdot2/.zshrc" <<EOF
+export HISTFILE='$hf2'
+rm -f '$hf2'
+export HISTSIZE=100 SAVEHIST=100
+setopt share_history hist_ignore_dups
+PS1="P> "
+gzmx_test_widget() {
+  local original_buffer="\$BUFFER"
+  if [[ "\$BUFFER" == ssh* || "\$BUFFER" == tsh\ ssh* ]]; then
+    print -s -- "\$original_buffer"
+    fc -AI "\$HISTFILE" 2>/dev/null || fc -W "\$HISTFILE" 2>/dev/null || true
+    fc -R "\$HISTFILE" 2>/dev/null || true
+    BUFFER=""
+    zle reset-prompt
+  else
+    zle .accept-line
+  fi
+}
+dumpw() { print -rn -- "\$BUFFER" >> "$dumpfile"; printf '\n' >> "$dumpfile"; zle redisplay; }
+zle -N gzmx_test_widget; zle -N dumpw
+bindkey "^M" gzmx_test_widget; bindkey "^J" gzmx_test_widget
+bindkey "^[d" dumpw
+EOF
+
+python3 - "$zdot2" <<'PY' || { print -u2 "FAIL: multi-traversal pty harness failed"; exit 1; }
+import pty, os, sys, time, select
+zdot = sys.argv[1]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ['ZDOTDIR'] = zdot
+    os.execvp('zsh', ['zsh', '-i'])
+out = b''; t0 = time.time()
+# Type three normal commands, then an ssh handoff. Then traverse history with
+# Up x4, Down x3, dumping BUFFER after each arrow.
+inputs = [b'echo AAA\r', b'echo BBB\r', b'echo CCC\r',
+          b'tsh ssh pcad-dev\r',
+          b'\x1b[A', b'\x1bd',   # Up1: tsh ssh pcad-dev
+          b'\x1b[A', b'\x1bd',   # Up2: echo CCC
+          b'\x1b[A', b'\x1bd',   # Up3: echo BBB
+          b'\x1b[A', b'\x1bd',   # Up4: echo AAA
+          b'\x1b[B', b'\x1bd',   # Down1: echo BBB
+          b'\x1b[B', b'\x1bd',   # Down2: echo CCC
+          b'\x1b[B', b'\x1bd']   # Down3: (tsh ssh pcad-dev or empty)
+idx=0; last=time.time()
+while time.time()-t0 < 18:
+    r,_,_ = select.select([fd],[],[],0.2)
+    if r:
+        try: d=os.read(fd,4096)
+        except OSError: break
+        if not d: break
+        out += d
+    if idx < len(inputs) and time.time()-last > 0.9:
+        os.write(fd, inputs[idx]); idx+=1; last=time.time()
+    try:
+        wpid,_=os.waitpid(pid, os.WNOHANG)
+        if wpid==pid: break
+    except ChildProcessError: break
+try: os.close(fd)
+except: pass
+PY
+
+# Assert the recorded traversal matches the expected sequence.
+expected=("tsh ssh pcad-dev" "echo CCC" "echo BBB" "echo AAA" "echo BBB" "echo CCC")
+actual=()
+while IFS= read -r line; do actual+=("$line"); done < "$dumpfile"
+if (( ${#actual[@]} < ${#expected[@]} )); then
+  print -u2 "FAIL: multi-traversal captured only ${#actual[@]} buffers, expected ${#expected[@]}"
+  print -u2 "  got: ${actual[*]}"
+  exit 1
+fi
+fail=0
+for ((i=1; i<=${#expected[@]}; i++)); do
+  if [[ "${actual[$i]}" != "${expected[$i]}" ]]; then
+    print -u2 "FAIL: traversal step $i: expected '${expected[$i]}', got '${actual[$i]}'"
+    fail=1
+  fi
+done
+if (( fail )); then
+  print -u2 "  full sequence: ${actual[*]}"
+  exit 1
+fi
+print "  ok: multi-Up/Down traversal intact after handoff (no Up-arrow override)"
+print "all handoff-history tests passed"
+exit 0

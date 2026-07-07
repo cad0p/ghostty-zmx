@@ -2371,7 +2371,7 @@ ghostty_zmx_accept_line() {
   setopt local_options no_sh_word_split
   local _gzmx_widget_log="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/debug.log"
   local _gzmx_widget_debug() { [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0; mkdir -p "${_gzmx_widget_log:h}" 2>/dev/null; print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') widget $*" >> "$_gzmx_widget_log"; }
-  local _gzmx_widget_accept_fallthrough() { typeset -g _GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL=""; zle .accept-line; }
+  local _gzmx_widget_accept_fallthrough() { zle .accept-line; }
   [[ -n "${BUFFER:-}" ]] || { zle .accept-line; return }
   [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" && "${TERM_PROGRAM:-}" == "ghostty" && -n "${ZMX_SESSION:-}" ]] || { _gzmx_widget_debug "fallthrough reason=not-managed buffer=$BUFFER"; _gzmx_widget_accept_fallthrough; return }
   # Bisection kill switch: disable the widget interception entirely.
@@ -2446,18 +2446,19 @@ ghostty_zmx_accept_line() {
   [[ -n "$host_key" ]] || { _gzmx_widget_accept_fallthrough; return }
 
   # The widget intercepts the line instead of calling zle .accept-line, so zsh
-  # would not add the typed ssh/tsh command to history. Explicitly push it so
-  # Up-arrow and zsh-autosuggestions behave as if the user had executed it.
+  # would not add the typed ssh/tsh command to history. Explicitly push it via
+  # `print -s` and force an immediate re-read via `fc -R` so Up-arrow (and
+  # zsh-autosuggestions, history-substring-search, etc.) recall the handoff
+  # command at the current prompt — exactly as if the user had executed it.
   # Unsupported/one-shot commands fall through to normal accept-line and are
   # recorded by zsh itself, so only do this for confirmed interactive handoffs.
   #
-  # print -s appends to the history FILE, but the in-memory history list that
-  # zle Up-arrow traverses is only refreshed on accept-line (which we skip) or
-  # when SHARE_HISTORY re-reads on the next prompt cycle. Without fc -R, the
-  # command is in the file but Up-arrow at the SAME prompt does not recall it.
-  # fc -R forces an immediate re-read in ordinary shells. The one-shot
-  # Up-arrow wrapper below covers managed zmx shells whose history cursor can
-  # still point at the command before the handoff.
+  # `fc -R` alone is sufficient: it inserts the entry as the newest in the
+  # in-memory history list, so plain `up-line-or-history` (or whatever the
+  # user has bound to Up) lands on it immediately. No Up-arrow override is
+  # needed — overriding only Up (not Down) desyncs search widgets' internal
+  # state after a synthetic recall. Verified by pty test in both plain and
+  # ZMX_SESSION-set shells.
   local _gzmx_widget_refresh_history
   _gzmx_widget_refresh_history() {
     if [[ -n "${HISTFILE:-}" ]]; then
@@ -2469,7 +2470,6 @@ ghostty_zmx_accept_line() {
   }
   print -s -- "$original_buffer" 2>/dev/null || true
   _gzmx_widget_refresh_history
-  typeset -g _GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL="$original_buffer"
 
   local -a probe
   projection=(${words[@]})
@@ -2660,44 +2660,13 @@ EOS
   zle reset-prompt
 }
 
-ghostty_zmx_up_line_or_handoff_history() {
-  emulate -L zsh
-  setopt local_options no_sh_word_split
-  if [[ -n "${_GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL:-}" && -z "${BUFFER:-}" ]]; then
-    BUFFER="$_GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL"
-    CURSOR=${#BUFFER}
-    _GHOSTTY_ZMX_PENDING_HANDOFF_HISTORY_RECALL=""
-    zle redisplay
-    return
-  fi
-
-  local _gzmx_previous="${_GHOSTTY_ZMX_PREVIOUS_UP_WIDGET:-up-line-or-history}"
-  if [[ "$_gzmx_previous" == "ghostty_zmx_up_line_or_handoff_history" || -z "$_gzmx_previous" ]]; then
-    zle .up-line-or-history
-  else
-    zle "$_gzmx_previous" 2>/dev/null || zle .up-line-or-history
-  fi
-}
-
-
 _ghostty_zmx_install_accept_line_widget() {
   [[ -o interactive ]] || return 0
   [[ "${TERM_PROGRAM:-}" == "ghostty" ]] || return 0
   [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" ]] || return 0
   zle -N ghostty_zmx_accept_line 2>/dev/null || return 0
-  zle -N ghostty_zmx_up_line_or_handoff_history 2>/dev/null || true
   bindkey '^M' ghostty_zmx_accept_line 2>/dev/null || true
   bindkey '^J' ghostty_zmx_accept_line 2>/dev/null || true
-  local _gzmx_up_seq _gzmx_binding _gzmx_previous
-  for _gzmx_up_seq in "${terminfo[kcuu1]:-$'\e[A'}" $'\e[A' $'\eOA'; do
-    [[ -n "$_gzmx_up_seq" ]] || continue
-    _gzmx_binding="$(bindkey "$_gzmx_up_seq" 2>/dev/null || true)"
-    _gzmx_previous="${${(z)_gzmx_binding}[-1]}"
-    if [[ -n "$_gzmx_previous" && "$_gzmx_previous" != "ghostty_zmx_up_line_or_handoff_history" ]]; then
-      typeset -g _GHOSTTY_ZMX_PREVIOUS_UP_WIDGET="$_gzmx_previous"
-    fi
-    bindkey "$_gzmx_up_seq" ghostty_zmx_up_line_or_handoff_history 2>/dev/null || true
-  done
 }
 
 _ghostty_zmx_auto_attach() {
