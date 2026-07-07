@@ -11,6 +11,14 @@ export GHOSTTY_ZMX_STATE_HOME="$workdir/state/ghostty-zmx"
 export XDG_RUNTIME_DIR="$workdir/runtime"
 export GHOSTTY_ZMX_RESTORE_STEP_DELAY=0
 unset TERM_PROGRAM GHOSTTY_RESOURCES_DIR 2>/dev/null || true
+# The zsh -fic subprocesses below source the manager and must auto-attach. If
+# this test is run from inside a managed zmx shell (ZMX_SESSION set in the
+# caller env), the subprocess inherits it and auto-attach skips with
+# "reason=nested zmx" — the test then fails at the "generated first-launch
+# session was not attached" assertion. Unset ZMX_SESSION/TMUX so the
+# subprocesses get a clean multiplexer env. Mirrors the E2E harness fix
+# (env -u ZMX_SESSION -u TMUX before `open`).
+unset ZMX_SESSION TMUX 2>/dev/null || true
 # v0.2 identity is tty-based (_ghostty_zmx_current_surface_identity matches
 # the shell TTY against AppleScript `tty of tm`), so the osascript stubs below
 # match the `ttyStr is` query and the test shell advertises a fake TTY.
