@@ -52,14 +52,81 @@ zshrc="$HOME/.zshrc"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
 backup_counter=0
 
-# Managed remote-env block: set TERM_PROGRAM/COLORTERM for remote interactive
-# shells only when the transport did not forward them (SSH_CONNECTION set and
-# TERM_PROGRAM empty). This lets remote Ghostty shell integration auto-activate
-# even when the transport is `tsh ssh` (which does not forward these vars).
+# Managed remote-env block: set TERM_PROGRAM/COLORTERM/TERM for remote
+# interactive shells so terminal integration works correctly.
+#
+# Why this is needed: the projection wrapper sets TERM=dumb locally before
+# exec-ing the tsh transport (to suppress tsh's OSC 11 / CSI 6n probe — see
+# ghostty-zmx wrapper). tsh DOES forward the local TERM to the remote over a
+# pty (-t), so the remote interactive shell inherits TERM=dumb. This breaks:
+#   - oh-my-zsh's termsupport.zsh OSC 7 emitter (its `case "$TERM"` gate
+#     rejects `dumb`, so it never defines omz_termsupport_cwd -> Ghostty's
+#     `working directory` terminal property stays empty for remote panes,
+#     which blocks local cwd reads for split inheritance).
+#   - every curses/tui app in the projection pane (TERM=dumb disables colors,
+#     cursor addressing, alt screen).
+#   - any terminal-integration check that gates on TERM or TERM_PROGRAM.
+#
+# The fix runs in the remote ~/.zshrc (sourced by the interactive shell) and
+# restores a working TERM when the Ghostty terminfo is installed. It is gated
+# on SSH_CONNECTION (only remote sessions) and only overrides TERM when it is
+# `dumb` or empty (never clobbers a valid user/transport TERM like
+# xterm-256color or screen-256color). TERM_PROGRAM/COLORTERM are set when the
+# transport did not forward them (tsh does not; plain ssh + Ghostty's +ssh
+# does, handled there — this block is a no-op for +ssh hosts).
 remote_env_block='# BEGIN ghostty-zmx remote-env
-if [[ -n "${SSH_CONNECTION:-}" && -z "${TERM_PROGRAM:-}" ]]; then
-  export TERM_PROGRAM=ghostty
-  export COLORTERM=truecolor
+if [[ -n "${SSH_CONNECTION:-}" ]]; then
+  [[ -n "${TERM_PROGRAM:-}" ]] || export TERM_PROGRAM=ghostty
+  [[ -n "${COLORTERM:-}" ]] || export COLORTERM=truecolor
+  # Restore a working TERM when the transport left it dumb/empty (the
+  # projection wrapper sets TERM=dumb locally to suppress the tsh probe; tsh
+  # forwards it to the remote). Only override dumb/empty — never clobber a
+  # valid TERM. Requires the Ghostty terminfo (installed by this installer
+  # via `tic -x`; a prior `ghostty +ssh` connect also installs it).
+  if [[ "${TERM:-}" == "dumb" || -z "${TERM:-}" ]]; then
+    if infocmp -x xterm-ghostty >/dev/null 2>&1; then
+      export TERM=xterm-ghostty
+    else
+      export TERM=xterm-256color
+    fi
+  fi
+fi
+# Pin the zsh-autosuggestions highlight style to its default (`fg=8`) explicitly.
+# This is NOT a leak mitigation — the OSC 11 leak was a tsh-client quirk
+# (tsh emits OSC 11 + CSI 6n on every connection; fixed by the projection
+# wrapper setting TERM=dumb for tsh transports). zsh-autosuggestions does not
+# emit OSC 11 (it defaults to `fg=8`, no query). This pin is a no-cost default
+# that keeps the suggestion color stable across environments.
+export ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=8"
+# Emit OSC 7 (current working directory) on every prompt so the local Ghostty
+# tracks the remote cwd via its `working directory` terminal property. This is
+# needed because: (1) oh-my-zsh deliberately skips its omz_termsupport_cwd
+# emitter in any SSH session (oh-my-zsh #11696: the guard `if [[ -n
+# $SSH_CLIENT || -n $SSH_TTY ]]; then return`); and (2) even if oh-my-zsh did
+# emit it, Ghostty rejects OSC 7 with a non-localhost host (a security design
+# so a remote shell cannot set the local working-directory property). Our
+# emitter uses `file://localhost/<remote-path>` so Ghostty accepts it, and the
+# path is the remote cwd we want for split inheritance. Fires for interactive
+# shells under Ghostty only.
+if [[ -o interactive && "${TERM_PROGRAM:-}" == "ghostty" && -z "${_GZMX_OSC7_HOOK:-}" ]]; then
+  export _GZMX_OSC7_HOOK=1
+  _gzmx_osc7_cwd() {
+    # file: URI with percent-encoded path. Use `localhost` as the host so
+    # Ghostty accepts the OSC 7 (it rejects non-localhost hosts for
+    # security: a remote shell must not set the local working-directory
+    # property). The path is the REMOTE path, which is what we want for
+    # split cwd inheritance (we cd to it over ssh). Reuse oh-my-zsh encoder
+    # if available, otherwise emit the raw path (paths are usually safe).
+    local _op
+    if (( ${+functions[omz_urlencode]} )); then
+      _op="$(omz_urlencode -P "${PWD}")" 2>/dev/null
+    else
+      _op="${PWD}"
+    fi
+    printf "\e]7;file://localhost%s\e\\" "$_op"
+  }
+  autoload -Uz add-zsh-hook
+  add-zsh-hook precmd _gzmx_osc7_cwd
 fi
 # END ghostty-zmx remote-env'
 
@@ -155,15 +222,27 @@ strip_block() {
 }
 
 ensure_remote_env_block() {
-  local file="$1"
+  local file="$1" tmp
   mkdir -p "${file:h}" 2>/dev/null || return 1
   touch "$file" || return 1
   validate_block_pairs "$file" "ghostty-zmx remote-env" || return 1
   strip_block "$file" "ghostty-zmx remote-env" || return 1
+  # PREPEND the block (not append) so it runs before oh-my-zsh's termsupport.zsh
+  # loads. oh-my-zsh's OSC 7 emitter (omz_termsupport_cwd) is only defined if
+  # its `case "$TERM"` gate passes at load time; if TERM is still dumb/empty
+  # when oh-my-zsh sources, the function is never defined and our later TERM
+  # fix comes too late. By prepending, TERM/TERM_PROGRAM/COLORTERM are set
+  # before any interactive-shell customization sees them.
+  tmp="${file}.tmp.$$"
   {
-    print ""
     print -r -- "$remote_env_block"
-  } >> "$file"
+    print ""
+    [[ -f "$file" ]] && cat "$file"
+  } > "$tmp" 2>/dev/null && mv "$tmp" "$file" 2>/dev/null || {
+    rm -f "$tmp" 2>/dev/null || true
+    print -u2 "Failed to update $file"
+    return 1
+  }
   print "Updated managed ghostty-zmx remote-env block in $file"
 }
 

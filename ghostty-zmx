@@ -22,6 +22,8 @@
 emulate -L zsh
 setopt no_sh_word_split
 
+typeset -r _GZMX_WRAPPER_DIR="${0:A:h}"
+
 # Debug logging to the state debug.log (mirrors the manager's _ghostty_zmx_debug).
 _gzmx_wdebug() {
   [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0
@@ -54,7 +56,15 @@ _gzmx_install_server() {
   emulate -L zsh
   setopt local_options no_sh_word_split extended_glob
 
-  local install_dir="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}"
+  local install_dir="${GHOSTTY_ZMX_INSTALL_DIR:-}"
+  if [[ -z "$install_dir" ]]; then
+    local self_dir="$_GZMX_WRAPPER_DIR"
+    if [[ -r "$self_dir/install-server.sh" ]]; then
+      install_dir="$self_dir"
+    else
+      install_dir="$HOME/.config/ghostty-zmx"
+    fi
+  fi
   local data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
   local hosts_file="$data_home/remote-hosts"
 
@@ -108,13 +118,19 @@ _gzmx_install_server() {
   # does not support -T/-t and is non-interactive when a command arg is present.
   # Drop any -t/-tt/--tty from the stored prefix, and for ssh insert -T right
   # after the `ssh` token if no -T is already present.
+  #
+  # tsh detection must handle absolute paths: the manager resolves transport
+  # binaries absolutely (ghostty_zmx_resolve_transport_path), so a stored
+  # prefix may be "/usr/local/bin/tsh ssh -t pier@host" rather than "tsh ssh".
+  # Use the basename (${bin:t}) so both forms are detected.
   local -a notty_argv=() rest=()
   local is_tsh=0 have_T=0 arg
-  if [[ "${transport_argv[1]:-}" == "tsh" && "${transport_argv[2]:-}" == "ssh" ]]; then
+  local _bin1="${transport_argv[1]:-}"
+  if [[ "${_bin1:t}" == "tsh" && "${transport_argv[2]:-}" == "ssh" ]]; then
     is_tsh=1
-    notty_argv=(tsh ssh)
+    notty_argv=("$_bin1" ssh)
   else
-    notty_argv=(ssh)
+    notty_argv=("$_bin1")
   fi
   for (( i=2; i<=${#transport_argv}; i++ )); do
     arg="${transport_argv[$i]}"
@@ -183,8 +199,8 @@ mode="${1:-}"
 case "$mode" in
   projection) shift ;;
   install-server) shift; _gzmx_install_server "$@"; exit $? ;;
-  install) shift; exec "${0:A:h}/install.sh" "$@" ;;
-  uninstall) shift; exec "${0:A:h}/uninstall.sh" "$@" ;;
+  install) shift; exec "$_GZMX_WRAPPER_DIR/install.sh" "$@" ;;
+  uninstall) shift; exec "$_GZMX_WRAPPER_DIR/uninstall.sh" "$@" ;;
   -h|--help|help)
     print "Usage: ghostty-zmx <mode> [options]"
     print ""
@@ -245,8 +261,23 @@ if [[ "$session" == gzr-* ]]; then
   local _pane="${_rest#*-}"
   local -a _notty=()
   local _have_t=0 _is_tsh=0 _arg
-  if [[ "${@[1]}" == "tsh" && "${@[2]:-}" == "ssh" ]]; then
+  # Strip the path prefix: the widget resolves tsh/ssh to absolute paths
+  # (ghostty_zmx_resolve_transport_path), so argv[1] may be /usr/local/bin/tsh
+  # rather than bare "tsh". ${1##*/} extracts the basename (like the :t
+  # modifier). Without this, _is_tsh stays 0 for a tsh invoked via absolute
+  # path, -T gets appended to the `tsh ssh ... add` call, tsh rejects -T, and
+  # the remote-layout row is never written — silently breaking Cmd-Q+reopen
+  # restore for every tsh host. See e2e/17-tsh-cmdq-restore.zsh.
+  if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
     _is_tsh=1
+    # Set TERM=dumb BEFORE the `add` call below: tsh gates its OSC 11 / CSI 6n
+    # probe on the LOCAL TERM, and the `add` is itself a `tsh ssh` invocation.
+    # If TERM is not dumb here, tsh emits the probe and (for the mock-tsh E2E
+    # fixture) the TERM=dumb assertion rejects the call with rc=2, so the
+    # remote-layout row is never written. The later `exec "$@"` re-affirms
+    # TERM=dumb for the attach; setting it here covers both paths.
+    export TERM=dumb
+    _gzmx_wdebug "projection: set TERM=dumb for tsh transport (before add + attach)"
   fi
   for _arg in "$@"; do
     case "$_arg" in
@@ -275,7 +306,7 @@ if [[ "$session" == gzr-* ]]; then
   # the present row. See changelog
   # 2026-07-01-v0-2-multiplication-root-cause-orphaned-poller-shells.)
   if [[ "$_dropped_cmd" -eq 1 ]]; then
-    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || true
+    "${_add_argv[@]}" '$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout' add "$_ws" "$_win" "$_tab" "$_pane" "$session" - root 1 present >/dev/null 2>&1 || _gzmx_wdebug "wrapper add FAILED rc=$? host=$host session=$session"
   fi
 fi
 
@@ -297,15 +328,31 @@ if [[ "$session" == gzr-* ]]; then
     # arg) so the injection ssh calls don't carry the attach command. ssh joins
     # trailing args into the remote command string, so inline the session name
     # directly (hex+dashes — shell-safe).
-    if ! "${_add_argv[@]}" "$_remote_zmx list --short 2>/dev/null | grep -qxF $session" 2>/dev/null; then
+    #
+    # CRITICAL: redirect stdin from /dev/null and pass -o BatchMode=yes so the
+    # ssh does not hang waiting for stdin/password input. Without </dev/null,
+    # `zmx list --short` over ssh -T can block on stdin reads (the remote
+    # pipeline's grep inherits the ssh stdin), causing the check to hang for
+    # the full ssh connect timeout. A hang makes the `!` branch fire falsely
+    # ("session missing"), which then clobbers a LIVE preserved session via
+    # `zmx run` (create) + scrollback injection — destroying a Cmd-Q-
+    # preserved session on reopen. BatchMode also fails fast on auth issues
+    # instead of prompting.
+    local _session_exists=0
+    if "${_add_argv[@]}" "$_remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
+      _session_exists=1
+    fi
+    if [[ "$_session_exists" -eq 0 ]]; then
       _gzmx_wdebug "reboot-restore session missing — creating fresh + injecting host=$host session=$session"
       # Session missing: create a fresh one, then inject banner + snapshot.
-      "${_add_argv[@]}" "$_remote_zmx run $session true >/dev/null 2>&1" 2>/dev/null || true
+      # zmx attach is idempotent (creates if missing), but we create explicitly
+      # with `zmx run` so the scrollback injection has a target session.
+      "${_add_argv[@]}" "$_remote_zmx run $session true >/dev/null 2>&1" </dev/null 2>/dev/null || true
       local _banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
       # zmx print requires \r\n line endings (plain \n does not render in the
       # session display). Convert the banner + snapshot before base64 encoding.
       { print -r -- "$_banner"; cat "$_hist_file"; } | sed 's/$/\r/' | base64 | tr -d '\n' | \
-        "${_add_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $_remote_zmx print $session" 2>/dev/null || true
+        "${_add_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $_remote_zmx print $session" </dev/null 2>/dev/null || true
       _gzmx_wdebug "reboot-restore injected host=$host session=$session"
       print -n $'\e]2;ghostty-zmx: restored '"$host"' ('"$session"')\a'
     else
@@ -327,4 +374,25 @@ fi
 # replaced by the transport, so the `--session <gzr>` marker leaves `ps args`, but
 # the descendant-walk scan still matches `zmx attach <gzr>` in the transport's
 # args and GHOSTTY_ZMX_PROJECTION_SESSION in its env.
+#
+# Suppress tsh's terminal-capability probing. The Teleport `tsh` client emits
+# an OSC 11 (foreground-color) and CSI 6n (cursor-position) query to the LOCAL
+# terminal on every SSH connection (confirmed: `tsh ssh -T host /bin/true`
+# emits both; plain OpenSSH emits neither). Ghostty answers; in a projection
+# pane the local pty IS the zmx pty, so the response echoes into scrollback as
+# stray `11;rgb:...1R` characters. tsh gates this probe on the LOCAL TERM:
+# with TERM=dumb it emits zero queries.
+#
+# tsh DOES forward the local TERM to the remote over a pty (-t), so the remote
+# interactive shell inherits TERM=dumb. That would break remote curses/tui
+# apps and oh-my-zsh's OSC 7 cwd emitter (its `case "$TERM"` gate rejects
+# `dumb`). The server installer's remote-env block (install-server.sh)
+# restores TERM=xterm-ghostty (or xterm-256color) in the remote ~/.zshrc,
+# gated on SSH_CONNECTION + TERM being dumb/empty, so the remote shell gets a
+# working TERM regardless. This keeps the local probe suppression effective
+# without crippling the remote shell. See Goldmine
+# 2026-07-04-osc-leak-live-verification-csi-6n-emitter-hunt.
+if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
+  export TERM=dumb
+fi
 exec "$@"

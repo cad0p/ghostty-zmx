@@ -4,3 +4,4 @@
 pi-session-*.html
 *.bak.*
 session-manager.zsh.bak*
+e2e/fixtures/sshd/id_ed25519.pub

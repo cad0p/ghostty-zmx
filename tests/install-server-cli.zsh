@@ -8,8 +8,9 @@
 #   4. install-server <known-host> resolves transport from remote-hosts
 #   5. install-server <unknown-host> falls back to ssh <host>
 #   6. install-server -- <transport...> uses the explicit transport
-#   7. install delegates to sibling install.sh
-#   8. uninstall delegates to sibling uninstall.sh
+#   7. install-server falls back to the wrapper's own install dir when env is unset
+#   8. install delegates to sibling install.sh
+#   9. uninstall delegates to sibling uninstall.sh
 #
 # Does NOT contact a real remote. The tar|ssh pipe is not exercised here;
 # that is covered by the manual e2e doc. These tests verify argument parsing,
@@ -95,6 +96,37 @@ rc=$?
 [[ "$out" == *"TSH_ARGV:ssh pier@pcad-dev"* ]] || { print -u2 "known-host: wrong transport argv: $out"; exit 1 }
 print "ok: known-host → tsh transport from remote-hosts"
 
+# --- Case 4b: install-server <known-host> with ABSOLUTE tsh path ---
+# Regression: the manager resolves transport binaries absolutely
+# (ghostty_zmx_resolve_transport_path), so a stored prefix may be
+# "/usr/local/bin/tsh ssh -t pier@host" rather than "tsh ssh". The
+# is_tsh detection must use the basename, not a literal == "tsh" compare,
+# or it falls into the plain-ssh branch and produces "ssh ssh pier@host"
+# ("Could not resolve hostname ssh").
+# Use a stub at an absolute path we control (the wrapper execs the absolute
+# path directly, so PATH shadowing doesn't work for absolute paths).
+# Name it 'tsh' so the basename detection (\${bin:t} == "tsh") works.
+stub_tsh_dir="$workdir/stub-bin"
+mkdir -p "$stub_tsh_dir"
+cat > "$stub_tsh_dir/tsh" <<'EOF'
+#!/bin/sh
+echo "TSH_ARGV:$@"
+exit 0
+EOF
+chmod +x "$stub_tsh_dir/tsh"
+stub_tsh="$stub_tsh_dir/tsh"
+print -r -- "pcad-dev-abs	tsh	0.6.0	active	$stub_tsh ssh -t pier@pcad-dev	/home/pier/.local/bin/zmx" \
+  > "$GHOSTTY_ZMX_DATA_HOME/remote-hosts"
+
+out="$(PATH="$stubbin:$PATH" "$wrapper" install-server pcad-dev-abs 2>&1)"
+rc=$?
+[[ $rc -eq 0 ]] || { print -u2 "known-host-abs: expected exit 0, got $rc ($out)"; exit 1 }
+# The absolute stub tsh must receive: ssh pier@pcad-dev <remote_script>.
+# The -t is dropped (no-pty). The basename detection means is_tsh=1, so no
+# -T is inserted and the "ssh" after tsh is consumed as the subcommand.
+[[ "$out" == *"TSH_ARGV:ssh pier@pcad-dev"* ]] || { print -u2 "known-host-abs: wrong transport argv: $out"; exit 1 }
+print "ok: known-host with absolute tsh path → tsh transport (basename detection)"
+
 # --- Case 5: install-server <unknown-host> falls back to ssh <host> ---
 # Stub ssh in the same stubbin.
 cat > "$stubbin/ssh" <<'EOF'
@@ -117,7 +149,21 @@ rc=$?
 [[ "$out" == *"TSH_ARGV:ssh -i /tmp/key pier@explicit-host"* ]] || { print -u2 "explicit: wrong transport argv: $out"; exit 1 }
 print "ok: explicit -- transport"
 
-# --- Case 7: install delegates to sibling install.sh ---
+# --- Case 7: install-server uses the wrapper's own install dir when env is unset ---
+alt_install="$workdir/alt-install"
+mkdir -p "$alt_install/terminfo"
+install -m 0755 "$repo_dir/ghostty-zmx" "$alt_install/ghostty-zmx"
+for f in install-server.sh session-manager.zsh session-manager-lib.zsh ghostty-zmx-remote-layout; do
+  : > "$alt_install/$f"
+done
+: > "$alt_install/terminfo/xterm-ghostty.terminfo"
+out="$(cd "$workdir"; unset GHOSTTY_ZMX_INSTALL_DIR; PATH="$stubbin:$PATH" "$alt_install/ghostty-zmx" install-server selfdir-host 2>&1)"
+rc=$?
+[[ $rc -eq 0 ]] || { print -u2 "self-dir: expected exit 0, got $rc ($out)"; exit 1 }
+[[ "$out" == *"SSH_ARGV:-T selfdir-host"* ]] || { print -u2 "self-dir: wrong transport argv: $out"; exit 1 }
+print "ok: install-server uses wrapper dir when install env is unset"
+
+# --- Case 8: install delegates to sibling install.sh ---
 # Stage install.sh + uninstall.sh as siblings of the wrapper so delegation finds them.
 cat > "$GHOSTTY_ZMX_INSTALL_DIR/install.sh" <<'EOF'
 #!/bin/zsh
@@ -131,7 +177,7 @@ rc=$?
 [[ "$out" == *"INSTALL_SH_CALLED with: --yes"* ]] || { print -u2 "install: wrong delegation: $out"; exit 1 }
 print "ok: install delegates to install.sh"
 
-# --- Case 8: uninstall delegates to sibling uninstall.sh ---
+# --- Case 9: uninstall delegates to sibling uninstall.sh ---
 cat > "$GHOSTTY_ZMX_INSTALL_DIR/uninstall.sh" <<'EOF'
 #!/bin/zsh
 echo "UNINSTALL_SH_CALLED with: $@"

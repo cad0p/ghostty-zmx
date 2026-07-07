@@ -12,6 +12,100 @@ MARKER="ghostty-zmx-e2e-$(date +%s)"
 
 Before testing, confirm the installed Ghostty config contains the managed production block with `confirm-close-surface = true` unless a scenario explicitly says to use a temporary automated-test override.
 
+## Automated E2E Harness
+
+The scripted E2E scenarios live under `e2e/` and should run against `Ghostty-tip`, not stable Ghostty. Stable Ghostty must not be replaced by Homebrew's `ghostty@tip` cask because that cask targets `/Applications/Ghostty.app`.
+
+The v0.2 SSH/projection scenarios require Ghostty 1.4.x AppleScript `tty`/`pid` support, which is currently available in Ghostty-tip but not stable Ghostty.
+
+Prepare an isolated app copy from an existing downloaded tip DMG:
+
+```sh
+GZMX_E2E_GHOSTTY_TIP_DMG=/tmp/Ghostty-tip.dmg \
+GZMX_E2E_GHOSTTY_TIP_SHA256=<sha256> \
+GZMX_E2E_GHOSTTY_TIP_REPLACE=1 \
+e2e/setup-ghostty-tip.zsh
+```
+
+Or, if `/Applications/Ghostty-tip.app` already exists, normalize only the copied app identity/signature:
+
+```sh
+e2e/setup-ghostty-tip.zsh
+```
+
+That script rewrites only `/Applications/Ghostty-tip.app` to AppleScript name `Ghostty-tip` and bundle id `com.mitchellh.ghostty.tip`, then ad-hoc signs it. It refuses to touch `/Applications/Ghostty.app`.
+
+If macOS asks for Accessibility permission, the dialog should name `Ghostty-tip`. System Settings may still display the row as `Ghostty` because the app executable and upstream product metadata are still Ghostty. Verify the isolated copy if needed:
+
+```sh
+plutil -extract CFBundleName raw /Applications/Ghostty-tip.app/Contents/Info.plist
+plutil -extract CFBundleIdentifier raw /Applications/Ghostty-tip.app/Contents/Info.plist
+```
+
+For manual testing of the live checkout on Ghostty-tip only, install the dev copy with:
+
+```sh
+e2e/setup-ghostty-tip.zsh --install-live
+```
+
+This installs the checkout under `~/.config/ghostty-zmx-tip` by default, writes an isolated Ghostty-tip config under `~/.config/ghostty-tip`, writes an isolated `ZDOTDIR` under `~/.config/ghostty-tip-zdotdir`, and keeps live tip state under `~/.local/share/ghostty-zmx-tip` / `~/.local/state/ghostty-zmx-tip`. It also stamps the copied Ghostty-tip bundle's `LSEnvironment` so launching Ghostty-tip from Spotlight gets the same isolated env. It does not edit stable Ghostty, stable Ghostty config, `~/.zshrc`, or `~/.zprofile`. The isolated config sets `GHOSTTY_ZMX_APP_NAME=Ghostty-tip` because copied tip bundles can still expose `GHOSTTY_RESOURCES_DIR` pointing at stable Ghostty. The generated `ZDOTDIR` sources user dotfiles with `GHOSTTY_ZMX_AUTO_ATTACH=0` first, then sources the tip install so an existing stable/default ghostty-zmx install stays dormant. While sourcing the user `.zshrc`, it also temporarily sets `POWERLEVEL9K_INSTANT_PROMPT=off`; Powerlevel10k instant prompt redirects terminal I/O during shell init, which can make startup `zmx attach` create a detached session and return to the outer shell before the prompt is finalized.
+
+Launch the isolated live copy with:
+
+```sh
+~/.config/ghostty-tip/open-ghostty-tip.zsh
+```
+
+The launcher intentionally uses `open -F -n -a Ghostty-tip --args ...`. `-F` prevents macOS from restoring stale Ghostty-tip windows without the isolated args. Do not use `open -na /Applications/Ghostty-tip.app`; `-a` is for app names, not bundle paths, and can leave Ghostty-tip running without a terminal window or the isolated config.
+
+Run all scenarios with the Docker sshd fixture:
+
+```sh
+e2e/run.zsh
+```
+
+Run against an existing SSH test host instead of Docker:
+
+```sh
+GZMX_E2E_EXTERNAL_FIXTURE=1 \
+GZMX_E2E_SSH_COMMAND='ssh yachunt-agentsdesk' \
+GZMX_E2E_FIXTURE_USER=yachunt \
+GZMX_E2E_FIXTURE_HOME=/home/yachunt \
+e2e/run.zsh
+```
+
+The external host should be disposable. The harness resets `~/.local/share/ghostty-zmx/remote-layout*` and kills `gzr-*` sessions on the fixture host. If the host needs custom SSH config, keep using `GZMX_E2E_SSH_COMMAND='ssh <alias>'` when `~/.ssh/config` already defines the alias, or append ssh_config lines:
+
+```sh
+GZMX_E2E_EXTERNAL_FIXTURE=1 \
+GZMX_E2E_FIXTURE_HOST=my-fixture \
+GZMX_E2E_EXTERNAL_HOST=example.internal \
+GZMX_E2E_EXTERNAL_SSH_CONFIG_APPEND=$'  User testuser\n  Port 2222\n  IdentityFile /tmp/key' \
+e2e/run.zsh
+```
+
+Run selected scenarios:
+
+```sh
+e2e/run.zsh e2e/01-ssh-handoff.zsh e2e/12-remote-split-multipane-cwd.zsh
+```
+
+Clean up after normal or interrupted runs:
+
+```sh
+e2e/cleanup.zsh
+```
+
+For an external host cleanup:
+
+```sh
+GZMX_E2E_EXTERNAL_FIXTURE=1 \
+GZMX_E2E_SSH_COMMAND='ssh yachunt-agentsdesk' \
+GZMX_E2E_FIXTURE_USER=yachunt \
+GZMX_E2E_FIXTURE_HOME=/home/yachunt \
+e2e/cleanup.zsh
+```
+
 ## Cmd-Q restore
 
 1. Open Ghostty with ghostty-zmx installed.
@@ -400,6 +494,12 @@ This verifies that a native Ghostty split from a remote projection window inheri
 **Simultaneous multi-client E2E** — True simultaneous two-Ghostty-client E2E is not possible with a single coinstalled `Ghostty-tip` bundle (same AppleScript app name). Sequential A/B testing is the accepted v0.2 procedure; see `changelog/2026-06-30-v0-2-simultaneous-multiclient-e2e-gap.md`.
 
 **Split axis fidelity** — Ghostty 1.4 AppleScript exposes terminal `pid`/`tty` but not per-terminal frame, parent, or split direction. Native remote-split inheritance therefore still records `axis=horizontal` for same-tab splits. The `.zprofile` early inherit hook fixes the local `.zshrc` terminal-query leak by execing before `.zshrc`, but exact horizontal-vs-vertical restore requires an upstream Ghostty action that can create `new_split` with a per-surface `command` argument.
+
+**Terminal-query-response leak (OSC 11 / CSI 6n)** — Remote shell startup (oh-my-zsh + zsh-autosuggestions + prompt-init) emits OSC 11 (foreground-color) and CSI 6n (cursor-position) queries whose responses leak into zmx scrollback as stray `11;rgb:...1R` characters. The complete fix is an upstream zmx feature that intercepts OSC/CSI queries the same way zmx already intercepts DA1/DA2 (see Goldmine `2026-07-03-zmx-terminal-query-interception-draft`). Until that ships, two best-effort mitigations that disable **no** terminal feature (the previous `osc-color-report-format = none` global patch was removed — it globally disabled OSC color reporting for the entire laptop, not just projection panes, and did not cover CSI 6n at all):
+  1. The server-side remote-env block sets `ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'` so zsh-autosuggestions skips its OSC 11 query (harmless source suppression, not a feature disable).
+  2. The remote-env block installs a self-disabling `precmd` hook that drains pending query-response bytes from the tty (`dd iflag=nonblock`) before each prompt draws, so the remote shell never echoes them and zmx never captures them. Covers the first 3 prompts (remote shell init window); no steady-state cost.
+
+  **Residual (honest):** over high-latency ssh, a response arriving after the 100 ms drain window can still leak. This is strictly better than the bad patch (which hid the leak by killing the feature globally and didn't cover CSI 6n) and strictly better than the removed 1.5 s `zmx print '\e[2J\e[H\r'` clear-screen hack (which only hid the visible display; scrollback stayed dirty). The complete fix is the upstream zmx change.
 
 ### Remote reboot scrollback restore
 

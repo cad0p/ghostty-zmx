@@ -194,6 +194,30 @@ else
   print "Left data directory in place. Pass --remove-data to delete it."
 fi
 
+# Always remove this install's shared registry file (cross-install managed-
+# sessions tracking). This is NOT under data_home/state_home (it's in the
+# shared ~/.local/state/ghostty-zmx/managed-sessions/ dir so all installs can
+# read each other's files). Removing it marks this install's tracked sessions
+# as untracked, so other installs' reapers can reap them.
+registry_dir="$HOME/.local/state/ghostty-zmx/managed-sessions"
+if [[ -d "$registry_dir" ]]; then
+  registry_hash="$(print -r -- "$data_home" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
+  [[ -n "$registry_hash" ]] || registry_hash="default"
+  registry_file="$registry_dir/${registry_hash}.tsv"
+  if [[ -f "$registry_file" ]]; then
+    rm -f "$registry_file" 2>/dev/null && print "Removed this install's managed-sessions registry file."
+    # Best-effort: remove the dir if now empty.
+    rmdir "$registry_dir" 2>/dev/null || true
+  fi
+fi
+
+# Always remove this install's instance lock (per-install single-Ghostty lock).
+# This allows a fresh Ghostty to take over the data-home after uninstall without
+# waiting for the stale lock's pid check. The lock is under data-home.
+if [[ -n "$data_home" && -f "$data_home/instance.lock" ]]; then
+  rm -f "$data_home/instance.lock" 2>/dev/null && print "Removed this install's instance lock."
+fi
+
 if [[ "$REMOVE_STATE" -eq 1 ]]; then
   safe_remove_tree "$state_home" "state" || exit 1
 else
