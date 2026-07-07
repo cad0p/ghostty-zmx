@@ -113,6 +113,52 @@ That early hook runs before `.zshrc` only for Ghostty surfaces, and only to repl
 
 The installer saves timestamped backups before editing shell or Ghostty config files.
 
+### Ghostty-tip dev install (`install-dev`)
+
+For developing `ghostty-zmx` against Ghostty-tip (the 1.4.0 prerelease), use `ghostty-zmx install-dev`. This is a one-command dev onboarding that installs the checkout into an isolated location, separate from your stable install:
+
+```sh
+git clone https://github.com/cad0p/ghostty-zmx.git
+cd ghostty-zmx
+ghostty-zmx install-dev
+```
+
+`install-dev` will:
+
+- Ensure a signed `Ghostty-tip.app` exists at `/Applications/Ghostty-tip.app`. If it's missing, or if you pass `--update-tip`, the latest tip is downloaded from the [official Ghostty appcast](https://tip.files.ghostty.org/appcast.xml) (TLS-verified, length-checked), copied, renamed to `Ghostty-tip`, ad-hoc signed, and registered with LaunchServices.
+- Install the checkout's files under `~/.config/ghostty-zmx-tip/`.
+- Write an isolated Ghostty-tip config under `~/.config/ghostty-tip/config.ghostty` with `GHOSTTY_ZMX_DEBUG=1` always baked in.
+- Write an isolated `ZDOTDIR` under `~/.config/ghostty-tip-zdotdir/` (sources your user `.zshrc`/`.zprofile` with `GHOSTTY_ZMX_AUTO_ATTACH=0` first, then sources the tip install so a stable install stays dormant).
+- Keep tip state under `~/.local/share/ghostty-zmx-tip/` and `~/.local/state/ghostty-zmx-tip/`.
+- Stamp the tip bundle's `LSEnvironment` so Spotlight/double-click launches get the isolated env.
+- Write a launcher at `~/.config/ghostty-tip/open-ghostty-tip.zsh`.
+
+It never touches stable Ghostty, stable Ghostty config, `~/.zshrc`, or `~/.zprofile`.
+
+Flags: `--yes` (non-interactive), `--update-tip` (replace the app with the latest from the appcast).
+
+Launch the tip with the launcher:
+
+```sh
+~/.config/ghostty-tip/open-ghostty-tip.zsh
+```
+
+or via Spotlight (the bundle's `LSEnvironment` carries the isolated env).
+
+### Ghostty config paths (macOS)
+
+Ghostty discovers its config from these locations, in order (later files override earlier):
+
+1. `$XDG_CONFIG_HOME/ghostty/config.ghostty` (if `XDG_CONFIG_HOME` set; defaults to `~/.config`)
+2. `$XDG_CONFIG_HOME/ghostty/config`
+3. `~/Library/Application Support/com.mitchellh.ghostty/config.ghostty` (macOS app-support)
+4. `~/Library/Application Support/com.mitchellh.ghostty/config`
+
+The macOS app-support path is **always** read, regardless of `XDG_CONFIG_HOME`. This is the file the Ghostty > Settings menu opens.
+
+- **Stable install** (`ghostty-zmx install`): writes the managed `# BEGIN/END ghostty-zmx` block to the **app-support** path (`~/Library/Application Support/com.mitchellh.ghostty/config.ghostty`), so it applies to every Ghostty surface.
+- **Dev install** (`ghostty-zmx install-dev`): writes its isolated config to `~/.config/ghostty-tip/config.ghostty` and stamps `LSEnvironment` on the tip bundle. It does **not** redirect `XDG_CONFIG_HOME` via `launchctl setenv` — the Ghostty maintainer's suggestion ([ghostty-org/ghostty#12408](https://github.com/ghostty-org/ghostty/issues/12408)) is global and would break stable Ghostty and every other GUI app that reads `XDG_CONFIG_HOME`. Instead, the isolated env is carried per-app by `LSEnvironment` (for Spotlight launches) and by `--config-file` (for launcher launches), both generated from a single shared env list to prevent drift.
+
 ## Remote server install
 
 Remote zmx panes require the ghostty-zmx server-side files on each remote host. The `ghostty-zmx install-server` subcommand bootstraps them in one shot over your existing ssh/tsh transport — no manual `scp`:
@@ -197,13 +243,22 @@ Other files under these directories and the per-user runtime directory are inter
 
 ## Debug logging
 
-Set `GHOSTTY_ZMX_DEBUG=1` in Ghostty's environment to write debug events to:
+Debug logging writes to `${GHOSTTY_ZMX_STATE_HOME}/debug.log` (default `~/.local/state/ghostty-zmx/debug.log`). The log is capped at 1 MB and rotated to `debug.log.1` (one backup) when it exceeds the cap; configure with `GHOSTTY_ZMX_DEBUG_LOG_MAX_BYTES`.
 
-```text
-${GHOSTTY_ZMX_STATE_HOME}/debug.log
+The `ghostty-zmx debug` subcommand manages debug logging and produces bug-report-ready output:
+
+```sh
+ghostty-zmx debug on       # enable debug in the managed Ghostty config (survives restart)
+ghostty-zmx debug off      # disable debug
+ghostty-zmx debug status   # show on/off + log path
+ghostty-zmx debug log --lines 200   # print versions + remotes + last 200 log lines
 ```
 
+`debug on` edits the managed `# BEGIN/END ghostty-zmx` block to add `env = GHOSTTY_ZMX_DEBUG=1`; restart Ghostty for it to take effect. `debug log` prints a pre-formatted context block (ghostty-zmx version via `git describe`, Ghostty version, macOS version, configured remotes with their stored zmx version, and the debug-log tail) suitable for pasting into a bug report.
+
 The log records shell initialization, path resolution, Ghostty PID detection, restore-driver election, grouping, queue operations, AppleScript timing, id-map writes, reaper decisions, scrollback snapshots, fresh-session detection, and zmx attach/print failures. It records event metadata and session names, not terminal history contents.
+
+To report a bug, run `ghostty-zmx debug on`, restart Ghostty, reproduce the issue, then run `ghostty-zmx debug log --lines 200` and paste the output into the [bug report template](https://github.com/cad0p/ghostty-zmx/issues/new?template=bug_report.yml). Run `ghostty-zmx debug off` when done.
 
 ## Close semantics
 

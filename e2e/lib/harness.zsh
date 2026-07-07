@@ -196,7 +196,7 @@ gzmx_e2e_fixture_install_server() {
   COPYFILE_DISABLE=1 tar --no-mac-metadata --format ustar -czf - \
     -C "$install_dir" \
     install-server.sh session-manager.zsh session-manager-lib.zsh \
-    ghostty-zmx-remote-layout terminfo/xterm-ghostty.terminfo 2>/dev/null \
+    cli/remote-layout terminfo/xterm-ghostty.terminfo 2>/dev/null \
     | ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" "${(j:;:)remote_cmd}" \
     || gzmx_e2e_fail "server install on fixture failed"
   gzmx_e2e_log "server files installed on fixture"
@@ -813,7 +813,7 @@ gzmx_e2e_assert_remote_cwd() {
 # Return the remote-layout row (TSV) for a session, or empty if not present.
 gzmx_e2e_remote_layout_row() {
   emulate -L zsh
-  local session="$1" helper="$GZMX_E2E_FIXTURE_HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout"
+  local session="$1" helper="$GZMX_E2E_FIXTURE_HOME/.config/ghostty-zmx/cli/remote-layout"
   ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
     "$helper read 2>/dev/null" 2>/dev/null | awk -F '\t' -v s="$session" '$5 == s { print }'
 }

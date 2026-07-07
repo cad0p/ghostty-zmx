@@ -89,7 +89,7 @@ exit \$rc
   install-server.sh \
   session-manager.zsh \
   session-manager-lib.zsh \
-  ghostty-zmx-remote-layout \
+  cli/remote-layout \
   terminfo/xterm-ghostty.terminfo 2>/dev/null)
 
 echo "==> Fixture ready."

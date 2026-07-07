@@ -26,9 +26,13 @@ export GHOSTTY_ZMX_DATA_HOME="$workdir/data/ghostty-zmx"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state/ghostty-zmx"
 mkdir -p "$HOME" "$GHOSTTY_ZMX_INSTALL_DIR/terminfo" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
 
-# Copy the wrapper under test.
-install -m 0755 "$repo_dir/ghostty-zmx" "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
-wrapper="$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
+# Copy the wrapper and its cli/ subcommand siblings under test (mirror install layout).
+mkdir -p "$GHOSTTY_ZMX_INSTALL_DIR/cli"
+install -m 0755 "$repo_dir/cli/ghostty-zmx" "$GHOSTTY_ZMX_INSTALL_DIR/cli/ghostty-zmx"
+install -m 0755 "$repo_dir/cli/install-server" "$GHOSTTY_ZMX_INSTALL_DIR/cli/install-server"
+install -m 0755 "$repo_dir/cli/debug" "$GHOSTTY_ZMX_INSTALL_DIR/cli/debug"
+install -m 0755 "$repo_dir/cli/remote-layout" "$GHOSTTY_ZMX_INSTALL_DIR/cli/remote-layout"
+wrapper="$GHOSTTY_ZMX_INSTALL_DIR/cli/ghostty-zmx"
 
 # --- Case 1: --help lists all modes ---
 out="$("$wrapper" --help 2>&1)"
@@ -58,9 +62,10 @@ print "ok: missing bundle → exit 1 with hint"
 
 # --- Case 4: install-server <known-host> resolves transport from remote-hosts ---
 # Stage the bundle files so we get past the missing-file guard.
-for f in install-server.sh session-manager.zsh session-manager-lib.zsh ghostty-zmx-remote-layout; do
+for f in install-server.sh session-manager.zsh session-manager-lib.zsh; do
   : > "$GHOSTTY_ZMX_INSTALL_DIR/$f"
 done
+: > "$GHOSTTY_ZMX_INSTALL_DIR/cli/remote-layout"
 : > "$GHOSTTY_ZMX_INSTALL_DIR/terminfo/xterm-ghostty.terminfo"
 
 # Record a known host with a tsh prefix + zmx path (6-field format).
@@ -151,13 +156,15 @@ print "ok: explicit -- transport"
 
 # --- Case 7: install-server uses the wrapper's own install dir when env is unset ---
 alt_install="$workdir/alt-install"
-mkdir -p "$alt_install/terminfo"
-install -m 0755 "$repo_dir/ghostty-zmx" "$alt_install/ghostty-zmx"
-for f in install-server.sh session-manager.zsh session-manager-lib.zsh ghostty-zmx-remote-layout; do
+mkdir -p "$alt_install/cli" "$alt_install/terminfo"
+install -m 0755 "$repo_dir/cli/ghostty-zmx" "$alt_install/cli/ghostty-zmx"
+install -m 0755 "$repo_dir/cli/install-server" "$alt_install/cli/install-server"
+for f in install-server.sh session-manager.zsh session-manager-lib.zsh; do
   : > "$alt_install/$f"
 done
+: > "$alt_install/cli/remote-layout"
 : > "$alt_install/terminfo/xterm-ghostty.terminfo"
-out="$(cd "$workdir"; unset GHOSTTY_ZMX_INSTALL_DIR; PATH="$stubbin:$PATH" "$alt_install/ghostty-zmx" install-server selfdir-host 2>&1)"
+out="$(cd "$workdir"; unset GHOSTTY_ZMX_INSTALL_DIR; PATH="$stubbin:$PATH" "$alt_install/cli/ghostty-zmx" install-server selfdir-host 2>&1)"
 rc=$?
 [[ $rc -eq 0 ]] || { print -u2 "self-dir: expected exit 0, got $rc ($out)"; exit 1 }
 [[ "$out" == *"SSH_ARGV:-T selfdir-host"* ]] || { print -u2 "self-dir: wrong transport argv: $out"; exit 1 }

@@ -42,12 +42,12 @@ repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
 source_lib="$repo_dir/session-manager-lib.zsh"
 source_terminfo="$repo_dir/terminfo/xterm-ghostty.terminfo"
-source_remote_layout="$repo_dir/ghostty-zmx-remote-layout"
+source_remote_layout="$repo_dir/cli/remote-layout"
 install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
 lib_dest="$install_dir/session-manager-lib.zsh"
 terminfo_dest="$install_dir/terminfo/xterm-ghostty.terminfo"
-remote_layout_dest="$install_dir/ghostty-zmx-remote-layout"
+remote_layout_dest="$install_dir/cli/remote-layout"
 zshrc="$HOME/.zshrc"
 source_line='[[ -r "$HOME/.config/ghostty-zmx/session-manager.zsh" ]] && source "$HOME/.config/ghostty-zmx/session-manager.zsh"'
 backup_counter=0
@@ -268,7 +268,7 @@ install_terminfo() {
 print_plan() {
   print "ghostty-zmx SERVER installer will:"
   print "  - verify zsh and zmx are installed (zmx is a prerequisite)"
-  print "  - install files under $install_dir (session-manager.zsh, session-manager-lib.zsh, terminfo, ghostty-zmx-remote-layout)"
+  print "  - install files under $install_dir (session-manager.zsh, session-manager-lib.zsh, terminfo, cli/remote-layout)"
   print "  - install the vendored Ghostty terminfo (xterm-ghostty) via tic (skipped if already present)"
   print "  - update $zshrc with one guarded source line (dormant on a headless host)"
   print "  - add a managed remote-env block to $zshrc (TERM_PROGRAM/COLORTERM for remote shells)"
@@ -307,7 +307,7 @@ backup_file "$zshrc"
 ensure_source_line "$zshrc" || exit 1
 ensure_remote_env_block "$zshrc" || exit 1
 
-mkdir -p "$install_dir/terminfo" || exit 1
+mkdir -p "$install_dir/terminfo" "$install_dir/cli" || exit 1
 if [[ -L "$install_dir" ]]; then
   print -u2 "Refusing to install into symlinked install directory: $install_dir"
   exit 1

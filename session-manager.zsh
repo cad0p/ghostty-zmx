@@ -517,7 +517,26 @@ history_file_for_session() {
 debug_log() {
   [[ "$debugEnabled" == "1" ]] || return 0
   mkdir -p "$stateHome" 2>/dev/null
+  _reaper_debug_rotate "$stateHome/debug.log"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') reaper $*" >> "$stateHome/debug.log"
+}
+
+# Inlined debug-log rotation (mirrors _ghostty_zmx_debug_rotate in the lib).
+# The reaper is standalone (nohup'd, can't source session-manager-lib.zsh), so
+# the rotation helper must be defined here. Keeps one .1 backup; sweeps .2+.
+_reaper_debug_rotate() {
+  local log="$1"
+  [[ -f "$log" ]] || return 0
+  local cap="${GHOSTTY_ZMX_DEBUG_LOG_MAX_BYTES:-1048576}"
+  [[ "$cap" == <-> ]] || cap=1048576
+  local size
+  size=$(stat -f %z "$log" 2>/dev/null || stat -c %s "$log" 2>/dev/null) || return 0
+  [[ "$size" -gt "$cap" ]] || return 0
+  mv -f "$log" "${log}.1" 2>/dev/null || return 0
+  local n
+  for (( n=2; n<=9; n++ )); do
+    [[ -f "${log}.${n}" ]] && rm -f "${log}.${n}" 2>/dev/null || true
+  done
 }
 
 parse_elapsed_seconds() {
@@ -1407,11 +1426,11 @@ ghostty_zmx_remove_remote_projection() {
 # not supported flags — tsh ssh is non-interactive when a command arg is
 # provided, so no flag is needed. Prints the argv as a space-joined string.
 
-# Path to the server-side ghostty-zmx-remote-layout helper, as invoked over
-# ssh. The helper is installed by install-server.sh to
-# ~/.config/ghostty-zmx/ on the remote host. We invoke it as a bare-word argv
-# ($HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout <sub> <args>) so the
-# ssh command is simple and carries no awk/printf/tabs/lock-loop
+# Path to the server-side remote-layout helper, as invoked over ssh. The
+# helper is installed by install-server.sh to
+# ~/.config/ghostty-zmx/cli/remote-layout on the remote host. We invoke it as
+# a bare-word argv ($HOME/.config/ghostty-zmx/cli/remote-layout <sub> <args>)
+# so the ssh command is simple and carries no awk/printf/tabs/lock-loop
 # metacharacters. (A prior theory blamed such command shapes for surface
 # multiplication; that was disproven — the cause was orphaned poller shells.
 # The bare-word argv is kept because it is simpler and correct.) See
@@ -1929,7 +1948,7 @@ ghostty_zmx_poll_once() {
 
     # 1. Read the server-authoritative remote-layout for this host.
     local notty="$(ghostty_zmx_notty_prefix "$prefix")"
-    local helper='$HOME/.config/ghostty-zmx/ghostty-zmx-remote-layout'
+    local helper="$(ghostty_zmx_remote_layout_helper_cmd)"
     local layout
     layout="$("${(z)notty}" "$helper" read 2>/dev/null)" || layout=""
 
@@ -2370,7 +2389,7 @@ ghostty_zmx_accept_line() {
   emulate -L zsh
   setopt local_options no_sh_word_split
   local _gzmx_widget_log="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/debug.log"
-  local _gzmx_widget_debug() { [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0; mkdir -p "${_gzmx_widget_log:h}" 2>/dev/null; print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') widget $*" >> "$_gzmx_widget_log"; }
+  local _gzmx_widget_debug() { [[ "${GHOSTTY_ZMX_DEBUG:-0}" == "1" ]] || return 0; mkdir -p "${_gzmx_widget_log:h}" 2>/dev/null; _ghostty_zmx_debug_rotate "$_gzmx_widget_log"; print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') widget $*" >> "$_gzmx_widget_log"; }
   local _gzmx_widget_accept_fallthrough() { zle .accept-line; }
   [[ -n "${BUFFER:-}" ]] || { zle .accept-line; return }
   [[ "${GHOSTTY_ZMX_AUTO_ATTACH:-}" == "1" && "${TERM_PROGRAM:-}" == "ghostty" && -n "${ZMX_SESSION:-}" ]] || { _gzmx_widget_debug "fallthrough reason=not-managed buffer=$BUFFER"; _gzmx_widget_accept_fallthrough; return }
