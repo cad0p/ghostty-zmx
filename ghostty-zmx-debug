@@ -1,0 +1,151 @@
+#!/bin/zsh
+# ghostty-zmx debug subcommand.
+#
+# Sourced by the ghostty-zmx wrapper (which runs under `zsh -f`) when invoked as
+# `ghostty-zmx debug`. Defines _gzmx_debug_subcommand + _gzmx_debug_report. Must
+# NOT be sourced from .zshrc/.zprofile — only by the wrapper's explicit `source`.
+#
+# Toggles GHOSTTY_ZMX_DEBUG in the managed Ghostty config block (survives app and
+# device restart), or prints a pre-formatted bug-report context block (versions,
+# remotes, OS, debug-log tail) for pasting into a GitHub issue.
+#
+# Reuses the shared managed-block editor from install-lib.sh (ensure_ghostty_block,
+# strip_managed_block, validate_managed_block_pairs). The debug line is added/
+# removed inside the managed block so a later `ghostty-zmx install` preserves it.
+
+_gzmx_debug_subcommand() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+  local sub="${1:-}"
+  [[ -n "$sub" ]] || { print -u2 "Usage: ghostty-zmx debug on|off|status|log [--lines N]"; return 2; }
+  shift
+  local debug_line='env = GHOSTTY_ZMX_DEBUG=1'
+  local ghostty_config="${GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}"
+
+  case "$sub" in
+    on|off)
+      [[ -r "${_GZMX_WRAPPER_DIR}/install-lib.sh" ]] || { print -u2 "install-lib.sh not found"; return 1; }
+      source "${_GZMX_WRAPPER_DIR}/install-lib.sh"
+      mkdir -p "${ghostty_config:h}" 2>/dev/null
+      backup_file "$ghostty_config" 2>/dev/null || true
+      validate_managed_block_pairs "$ghostty_config" 2>/dev/null || { print -u2 "Managed block malformed in $ghostty_config"; return 1; }
+      strip_managed_block "$ghostty_config" 2>/dev/null
+      # Re-add the managed block; if 'on', insert the debug line before # END.
+      local block_without_end="${managed_block%# END ghostty-zmx}"
+      # Trim trailing newline so the debug line sits directly under the last key.
+      block_without_end="${block_without_end%$'\n'}"
+      {
+        print ""
+        if [[ "$sub" == "on" ]]; then
+          print -r -- "$block_without_end"
+          print -r -- "$debug_line"
+          print "# END ghostty-zmx"
+        else
+          print -r -- "$managed_block"
+        fi
+      } >> "$ghostty_config"
+      print "ghostty-zmx debug $sub (restart Ghostty for it to take effect)"
+      [[ "$sub" == "on" ]] && print "Reproduce the issue, then run: ghostty-zmx debug log --lines 200"
+      [[ "$sub" == "on" ]] && print "When done, run: ghostty-zmx debug off"
+      return 0
+      ;;
+    status)
+      local state=off
+      grep -qxF "$debug_line" "$ghostty_config" 2>/dev/null && state=on
+      local log="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/debug.log"
+      print "debug: $state"
+      print "log:   $log"
+      return 0
+      ;;
+    log)
+      local lines=200
+      if [[ "${1:-}" == "--lines" ]]; then
+        if [[ $# -ge 2 ]]; then
+          lines="$2"; shift 2
+        else
+          shift 1
+        fi
+      fi
+      [[ "$lines" =~ '^[0-9]+$' ]] || { print -u2 "--lines expects a number"; return 2; }
+      _gzmx_debug_report "$lines"
+      return 0
+      ;;
+    *) print -u2 "unknown debug subcommand '$sub' (expected on|off|status|log)"; return 2 ;;
+  esac
+}
+
+_gzmx_debug_report() {
+  local lines="$1"
+  local data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
+  local state_home="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}"
+  local log="$state_home/debug.log"
+
+  # ghostty-zmx version: prefer git describe of the wrapper's dir (the checkout);
+  # fall back to package.json version with a warning if git is absent.
+  local gzmx_version="unknown" git_warning=""
+  local version_dir="$_GZMX_WRAPPER_DIR"
+  if command -v git >/dev/null 2>&1; then
+    gzmx_version="$(git -C "$version_dir" describe --tags 2>/dev/null || echo unknown)"
+    [[ "$gzmx_version" == "unknown" ]] && [[ -r "$version_dir/package.json" ]] && \
+      gzmx_version="$(grep -m1 '"version"' "$version_dir/package.json" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/')"
+  else
+    git_warning="  WARNING: git not found; version is from package.json and may be inaccurate."
+    git_warning+=" Install git (brew install git) and re-run for an accurate version."
+    [[ -r "$version_dir/package.json" ]] && \
+      gzmx_version="$(grep -m1 '"version"' "$version_dir/package.json" 2>/dev/null | sed 's/.*"version": *"\([^"]*\)".*/\1/')"
+  fi
+
+  # Ghostty version (from the running app's Info.plist, or the tip/stable bundle).
+  local ghostty_version="unknown"
+  local bundle
+  for bundle in "/Applications/Ghostty-tip.app" "/Applications/Ghostty.app"; do
+    [[ -d "$bundle" ]] || continue
+    local short="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$bundle/Contents/Info.plist" 2>/dev/null)"
+    local build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$bundle/Contents/Info.plist" 2>/dev/null)"
+    ghostty_version="$bundle $short (build $build)"
+    break
+  done
+
+  local macos_version="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+  local macos_build="$(sw_vers -buildVersion 2>/dev/null || echo unknown)"
+
+  # Remotes configured (from remote-hosts TSV: host, transport, version, mode, prefix, zmx_path).
+  local hosts_file="$data_home/remote-hosts"
+  local -a remote_lines=()
+  if [[ -f "$hosts_file" ]]; then
+    local h t v m p z
+    while IFS=$'\t' read -r h t v m p z; do
+      [[ -n "$h" ]] || continue
+      remote_lines+=("  $h  $t  zmx $v  $m  (stored at last handoff; refresh: ssh $h zmx version)")
+    done < "$hosts_file"
+  fi
+  (( ${#remote_lines[@]} == 0 )) && remote_lines=("  (none configured)")
+
+  local debug_state=off
+  grep -qxF 'env = GHOSTTY_ZMX_DEBUG=1' "${GHOSTTY_ZMX_INTERNAL_TEST_GHOSTTY_CONFIG:-$HOME/Library/Application Support/com.mitchellh.ghostty/config.ghostty}" 2>/dev/null && debug_state=on
+
+  print "## ghostty-zmx bug report context"
+  print "ghostty-zmx version: $gzmx_version"
+  [[ -n "$git_warning" ]] && print "$git_warning"
+  print "ghostty: $ghostty_version"
+  print "macOS: $macos_version ($macos_build)"
+  print "remotes configured:"
+  local rl
+  for rl in "${remote_lines[@]}"; do
+    print -r -- "$rl"
+  done
+  print "debug: $debug_state"
+  print "log:   $log"
+  print ""
+  print "## debug log (last $lines lines)"
+  if [[ -r "$log" ]]; then
+    tail -n "$lines" "$log"
+  else
+    print "(no debug log at $log — enable with: ghostty-zmx debug on)"
+  fi
+  print ""
+  print "## next steps"
+  print "Paste this block into the bug report template:"
+  print "  https://github.com/cad0p/ghostty-zmx/issues/new?template=bug_report.yml"
+  print "Then run: ghostty-zmx debug off"
+}

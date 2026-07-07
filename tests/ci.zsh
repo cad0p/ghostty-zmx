@@ -4,7 +4,7 @@ set -eu
 repo_dir="${0:A:h:h}"
 cd "$repo_dir"
 
-zsh -n session-manager-lib.zsh session-manager-early.zsh session-manager.zsh ghostty-zmx install.sh install-lib.sh install-dev.sh install-server.sh uninstall.sh tests/*.zsh
+zsh -n session-manager-lib.zsh session-manager-early.zsh session-manager.zsh ghostty-zmx ghostty-zmx-install-server ghostty-zmx-debug install.sh install-lib.sh install-dev.sh install-server.sh uninstall.sh tests/*.zsh
 sh -n ghostty-zmx-remote-layout
 
 for test in tests/*.zsh; do

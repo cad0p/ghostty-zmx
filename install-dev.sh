@@ -299,6 +299,8 @@ install_live_files() {
     session-manager-early.zsh
     session-manager-v0.1.zsh
     ghostty-zmx
+    ghostty-zmx-install-server
+    ghostty-zmx-debug
     uninstall.sh
     install-server.sh
     install-lib.sh
@@ -320,6 +322,8 @@ install_live_files() {
   install -m 0755 "$repo_dir/uninstall.sh" "$install_dir/uninstall.sh"
   install -m 0755 "$repo_dir/install-server.sh" "$install_dir/install-server.sh"
   install -m 0644 "$repo_dir/install-lib.sh" "$install_dir/install-lib.sh"
+  install -m 0755 "$repo_dir/ghostty-zmx-install-server" "$install_dir/ghostty-zmx-install-server"
+  install -m 0755 "$repo_dir/ghostty-zmx-debug" "$install_dir/ghostty-zmx-debug"
   install -m 0644 "$repo_dir/package.json" "$install_dir/package.json"
   install -m 0755 "$repo_dir/ghostty-zmx-remote-layout" "$install_dir/ghostty-zmx-remote-layout"
 

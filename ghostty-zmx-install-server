@@ -1,0 +1,167 @@
+#!/bin/zsh
+# ghostty-zmx install-server subcommand.
+#
+# Sourced by the ghostty-zmx wrapper (which runs under `zsh -f`) when invoked as
+# `ghostty-zmx install-server`. Defines _gzmx_install_server. Must NOT be sourced
+# from .zshrc/.zprofile — only by the wrapper's explicit `source` call.
+#
+# One-shot server-side bootstrap. Bundles the four files install-server.sh needs
+# as siblings (session-manager.zsh, session-manager-lib.zsh,
+# ghostty-zmx-remote-layout, terminfo/xterm-ghostty.terminfo) from the local
+# install dir, streams the tarball over the no-pty transport into a temp dir on
+# the remote, runs install-server.sh --yes there, and cleans up.
+#
+# Transport resolution:
+#   - Explicit form: `install-server -- tsh ssh -i key pier@host`
+#     Everything after `--` is the transport argv; the last token is the host.
+#   - Known host: `install-server pcad-dev` looks up the stored prefix in
+#     remote-hosts (so tsh vs ssh and any ssh options are reused). Falls back
+#     to `ssh <host>` if not found.
+#   - Bare host: `install-server pier@host` uses `ssh pier@host`.
+#
+# Streams the remote installer's stdout/stderr to the local terminal and exits
+# with the remote installer's exit status.
+
+_gzmx_install_server() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split extended_glob
+
+  local install_dir="${GHOSTTY_ZMX_INSTALL_DIR:-}"
+
+  if [[ -z "$install_dir" ]]; then
+    local self_dir="$_GZMX_WRAPPER_DIR"
+    if [[ -r "$self_dir/install-server.sh" ]]; then
+      install_dir="$self_dir"
+    else
+      install_dir="$HOME/.config/ghostty-zmx"
+    fi
+  fi
+  local data_home="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}"
+  local hosts_file="$data_home/remote-hosts"
+
+  local -a transport_argv host_target
+  local yes=0
+
+  if [[ "$#" -gt 0 && "$1" == "--" ]]; then
+    shift
+    (( $# > 0 )) || { print -u2 "ghostty-zmx install-server: transport command missing after --"; return 2 }
+    transport_argv=("$@")
+    host_target="${transport_argv[-1]}"
+  else
+    # Parse flags then host. Only --yes/-y is supported; everything else is the host.
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --yes|-y) yes=1; shift ;;
+        --) shift; (( $# > 0 )) || { print -u2 "ghostty-zmx install-server: host missing after --"; return 2 }; host_target="$1"; transport_argv=(ssh "$1"); shift ;;
+        -*) print -u2 "ghostty-zmx install-server: unknown option $1"; return 2 ;;
+        *) host_target="$1"; shift ;;
+      esac
+    done
+    [[ -n "$host_target" ]] || { print -u2 "ghostty-zmx install-server: host argument required"; return 2 }
+    # Look up stored prefix if the host is known, else plain ssh.
+    local stored_prefix=""
+    [[ -f "$hosts_file" ]] && stored_prefix="$(awk -F '\t' -v host="$host_target" '$1 == host { print $5; exit }' "$hosts_file" 2>/dev/null)"
+    if [[ -n "$stored_prefix" ]]; then
+      transport_argv=(${(z)stored_prefix})
+    else
+      transport_argv=(ssh "$host_target")
+    fi
+  fi
+
+  [[ -n "$host_target" ]] || { print -u2 "ghostty-zmx install-server: could not determine host from transport"; return 2 }
+
+  # Verify the local bundle files exist before contacting the remote.
+  local -a bundle=(
+    "$install_dir/install-server.sh"
+    "$install_dir/session-manager.zsh"
+    "$install_dir/session-manager-lib.zsh"
+    "$install_dir/ghostty-zmx-remote-layout"
+    "$install_dir/terminfo/xterm-ghostty.terminfo"
+  )
+  local f
+  for f in "${bundle[@]}"; do
+    [[ -r "$f" ]] || { print -u2 "ghostty-zmx install-server: missing local file $f"
+      print -u2 "Run ghostty-zmx-install --yes on this laptop first."; return 1 }
+  done
+
+  # Build a no-pty transport argv for the bootstrap. ssh needs -T before the
+  # host so it does not try to allocate a pty for the piped command; tsh ssh
+  # does not support -T/-t and is non-interactive when a command arg is present.
+  # Drop any -t/-tt/--tty from the stored prefix, and for ssh insert -T right
+  # after the `ssh` token if no -T is already present.
+  #
+  # tsh detection must handle absolute paths: the manager resolves transport
+  # binaries absolutely (ghostty_zmx_resolve_transport_path), so a stored
+  # prefix may be "/usr/local/bin/tsh ssh -t pier@host" rather than "tsh ssh".
+  # Use the basename (${bin:t}) so both forms are detected.
+  local -a notty_argv=() rest=()
+  local is_tsh=0 have_T=0 arg
+  local _bin1="${transport_argv[1]:-}"
+  if [[ "${_bin1:t}" == "tsh" && "${transport_argv[2]:-}" == "ssh" ]]; then
+    is_tsh=1
+    notty_argv=("$_bin1" ssh)
+  else
+    notty_argv=("$_bin1")
+  fi
+  for (( i=2; i<=${#transport_argv}; i++ )); do
+    arg="${transport_argv[$i]}"
+    [[ "$is_tsh" -eq 1 && "$i" -eq 2 ]] && continue  # skip the `ssh` after `tsh`
+    case "$arg" in
+      -t|-tt|--tty) ;;  # drop; we want no-pty
+      -T) [[ $is_tsh -eq 0 ]] && { have_T=1 } ;;
+      *) rest+=("$arg") ;;
+    esac
+  done
+  [[ $is_tsh -eq 0 && $have_T -eq 0 ]] && notty_argv+=(-T)
+  notty_argv+=("${rest[@]}")
+
+  # Strip a user@ prefix for display only.
+  local display_host="${host_target##*@}"
+  print "ghostty-zmx: bootstrapping server install on $display_host..."
+
+  # Bundle the four files into a tarball, stripping macOS metadata.
+  # Pipe to the remote: mktemp -d, extract, run install-server.sh --yes, cleanup.
+  # The remote command is a single quoted string so ssh passes it to the remote
+  # shell. We use a fixed temp dir name under /tmp to keep the remote command
+  # simple (mktemp -d output parsing over ssh is fragile).
+  local tmpdir="/tmp/ghostty-zmx-server-install.$$"
+  local -a remote_cmd=(
+    "set -e"
+    "tmpdir='$tmpdir'"
+    "rm -rf \"\$tmpdir\""
+    "mkdir -p \"\$tmpdir\""
+    "cd \"\$tmpdir\""
+    "tar xzf -"
+    "./install-server.sh --yes"
+    "rc=$?"
+    "cd /"
+    "rm -rf \"\$tmpdir\""
+    "exit \$rc"
+  )
+  local remote_script="${(j:;:)remote_cmd}"
+
+  _gzmx_wdebug "install-server host=$display_host tmpdir=$tmpdir transport=${notty_argv[*]}"
+
+  # Bundle the files into a tarball, stripping macOS metadata.
+  # install-server.sh resolves its siblings via repo_dir=${0:A:h}, so the tarball
+  # must lay out: install-server.sh, session-manager.zsh, session-manager-lib.zsh,
+  # ghostty-zmx-remote-layout, terminfo/xterm-ghostty.terminfo (with the subdir).
+  # --no-mac-metadata + --format ustar + COPYFILE_DISABLE avoid ._ AppleDouble
+  # files and LIBARCHIVE.xattr warnings that GNU tar on the remote would emit.
+  COPYFILE_DISABLE=1 tar --no-mac-metadata --format ustar -czf - \
+    -C "$install_dir" \
+    install-server.sh \
+    session-manager.zsh \
+    session-manager-lib.zsh \
+    ghostty-zmx-remote-layout \
+    terminfo/xterm-ghostty.terminfo 2>/dev/null \
+    | "${notty_argv[@]}" "$remote_script"
+  local rc=$?
+  if [[ $rc -eq 0 ]]; then
+    print "ghostty-zmx: server install complete on $display_host."
+    print "ghostty-zmx: remote panes from this laptop will now attach to zmx sessions on $display_host."
+  else
+    print -u2 "ghostty-zmx: server install failed on $display_host (exit $rc)."
+  fi
+  return $rc
+}

@@ -20,6 +20,8 @@ repo_dir="${0:A:h}"
 source_manager="$repo_dir/session-manager.zsh"
 source_lib="$repo_dir/session-manager-lib.zsh"
 source_install_lib="$repo_dir/install-lib.sh"
+source_install_server_sub="$repo_dir/ghostty-zmx-install-server"
+source_debug_sub="$repo_dir/ghostty-zmx-debug"
 source_package_json="$repo_dir/package.json"
 source_early_manager="$repo_dir/session-manager-early.zsh"
 source_v01_manager="$repo_dir/session-manager-v0.1.zsh"
@@ -32,6 +34,8 @@ install_dir="$HOME/.config/ghostty-zmx"
 manager_dest="$install_dir/session-manager.zsh"
 lib_dest="$install_dir/session-manager-lib.zsh"
 install_lib_dest="$install_dir/install-lib.sh"
+install_server_sub_dest="$install_dir/ghostty-zmx-install-server"
+debug_sub_dest="$install_dir/ghostty-zmx-debug"
 early_manager_dest="$install_dir/session-manager-early.zsh"
 v01_manager_dest="$install_dir/session-manager-v0.1.zsh"
 wrapper_dest="$install_dir/ghostty-zmx"
@@ -70,6 +74,8 @@ print_plan() {
 [[ -f "$source_manager" ]] || { print -u2 "Missing $source_manager"; exit 1; }
 [[ -f "$source_lib" ]] || { print -u2 "Missing $source_lib"; exit 1; }
 [[ -f "$source_install_lib" ]] || { print -u2 "Missing $source_install_lib"; exit 1; }
+[[ -f "$source_install_server_sub" ]] || { print -u2 "Missing $source_install_server_sub"; exit 1; }
+[[ -f "$source_debug_sub" ]] || { print -u2 "Missing $source_debug_sub"; exit 1; }
 [[ -f "$source_package_json" ]] || { print -u2 "Missing $source_package_json"; exit 1; }
 [[ -f "$source_early_manager" ]] || { print -u2 "Missing $source_early_manager"; exit 1; }
 [[ -f "$source_v01_manager" ]] || { print -u2 "Missing $source_v01_manager"; exit 1; }
@@ -108,6 +114,8 @@ validate_install_dir
 install -m 0644 "$source_manager" "$manager_dest" || exit 1
 install -m 0644 "$source_lib" "$lib_dest" || exit 1
 install -m 0644 "$source_install_lib" "$install_lib_dest" || exit 1
+install -m 0755 "$source_install_server_sub" "$install_server_sub_dest" || exit 1
+install -m 0755 "$source_debug_sub" "$debug_sub_dest" || exit 1
 install -m 0644 "$source_package_json" "$install_dir/package.json" || exit 1
 install -m 0644 "$source_early_manager" "$early_manager_dest" || exit 1
 install -m 0644 "$source_v01_manager" "$v01_manager_dest" || exit 1
@@ -123,6 +131,8 @@ refresh_vendored_terminfo "$terminfo_dest" "$source_terminfo" || exit 1
 print "Installed $manager_dest"
 print "Installed $lib_dest"
 print "Installed $install_lib_dest"
+print "Installed $install_server_sub_dest"
+print "Installed $debug_sub_dest"
 print "Installed $install_dir/package.json"
 print "Installed $early_manager_dest"
 print "Installed $v01_manager_dest"

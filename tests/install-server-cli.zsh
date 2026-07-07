@@ -26,8 +26,10 @@ export GHOSTTY_ZMX_DATA_HOME="$workdir/data/ghostty-zmx"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state/ghostty-zmx"
 mkdir -p "$HOME" "$GHOSTTY_ZMX_INSTALL_DIR/terminfo" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
 
-# Copy the wrapper under test.
+# Copy the wrapper and its sibling subcommand files under test.
 install -m 0755 "$repo_dir/ghostty-zmx" "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
+install -m 0755 "$repo_dir/ghostty-zmx-install-server" "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx-install-server"
+install -m 0755 "$repo_dir/ghostty-zmx-debug" "$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx-debug"
 wrapper="$GHOSTTY_ZMX_INSTALL_DIR/ghostty-zmx"
 
 # --- Case 1: --help lists all modes ---
@@ -153,6 +155,7 @@ print "ok: explicit -- transport"
 alt_install="$workdir/alt-install"
 mkdir -p "$alt_install/terminfo"
 install -m 0755 "$repo_dir/ghostty-zmx" "$alt_install/ghostty-zmx"
+install -m 0755 "$repo_dir/ghostty-zmx-install-server" "$alt_install/ghostty-zmx-install-server"
 for f in install-server.sh session-manager.zsh session-manager-lib.zsh ghostty-zmx-remote-layout; do
   : > "$alt_install/$f"
 done

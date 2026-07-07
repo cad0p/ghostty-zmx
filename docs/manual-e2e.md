@@ -22,7 +22,7 @@ Prepare an isolated Ghostty-tip app + dev install in one command:
 
 ```sh
 git clone https://github.com/cad0p/ghostty-zmx.git
-c ghostty-zmx
+cd ghostty-zmx
 ghostty-zmx install-dev
 ```
 
