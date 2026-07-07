@@ -125,10 +125,6 @@ _reaper_log="$_runtime/reaper-${fake_ghostty_pid}.log"
 sleep 1
 pkill -f "reaper-${fake_ghostty_pid}.zsh" 2>/dev/null || true
 sleep 0.3
-# Remove the flag + instance lock so test 4 can start a fresh reaper for
-# the same pid (the start-lock mkdir skips if the flag dir still exists).
-rmdir "$_runtime/reaper-${fake_ghostty_pid}.lock" 2>/dev/null || true
-rm -f "$GHOSTTY_ZMX_DATA_HOME/instance.lock" 2>/dev/null || true
 _debug_log="$GHOSTTY_ZMX_STATE_HOME/debug.log"
 # No undefined-function errors in the reaper log.
 if [[ -f "$_reaper_log" ]] && grep -qi "command not found\|undefined" "$_reaper_log"; then
@@ -138,25 +134,31 @@ elif [[ ! -f "$_debug_log" ]] || ! grep -q "reaper " "$_debug_log"; then
 else
   print "  ok: reaper ran, wrote debug lines, no undefined-function errors"; pass=$((pass+1))
 fi
+# Clean up everything test 3 created so test 4 starts from a clean slate:
+# - kill the reaper process (already done above, but be defensive)
+# - remove the reaper script (written with noclobber by _ghostty_zmx_start_reaper;
+#   a leftover would make a later start_reaper for the same pid silently return
+#   without generating a new script)
+# - remove the start-lock flag dir + instance lock (a leftover flag would make a
+#   later start_reaper skip via the mkdir guard)
+# - clear data/state homes + the cross-install registry so test 4's seeded
+#   session is not registry-tracked (managed_detached_sessions skips
+#   registry-tracked sessions, which would suppress the startup sweep)
+pkill -f "reaper-${fake_ghostty_pid}.zsh" 2>/dev/null || true
+rm -f "$_runtime/reaper-${fake_ghostty_pid}.zsh" 2>/dev/null || true
+rmdir "$_runtime/reaper-${fake_ghostty_pid}.lock" 2>/dev/null || true
+rm -f "$GHOSTTY_ZMX_DATA_HOME/instance.lock" 2>/dev/null || true
+rm -rf "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$HOME/.local/state/ghostty-zmx"
+mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
 
 # Test 4: the reaper actually reaps a detached session — snapshot → kill →
 # cleanup_log → forget_snapshot. Seed a managed detached session and verify
-# the startup orphan sweep cleans it up.
+# the startup orphan sweep cleans it up. Test 3 cleaned up after itself, so
+# this starts from a clean slate.
 print ""
 print "test 4: reaper startup sweep reaps a detached session"
-# Reset state for this test (the prior reaper may have consumed the stub).
-# Also clear the cross-install registry (under $HOME/.local/state) so the
-# session is not tracked by a prior test's heartbeat — managed_detached_sessions
-# skips registry-tracked sessions, which would suppress the startup sweep.
-# Also remove the stale reaper script + flag from test 3: _ghostty_zmx_start_reaper
-# writes the script with noclobber, so a leftover reaper-<pid>.zsh from a
-# prior test (same pid, since both use $$) makes the next start_reaper silently
-# return without generating a new script.
-rm -rf "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$HOME/.local/state/ghostty-zmx"
-rm -f "$_runtime/reaper-${fake_ghostty_pid}.zsh" 2>/dev/null || true
-rmdir "$_runtime/reaper-${fake_ghostty_pid}.lock" 2>/dev/null || true
-mkdir -p "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
-# Reuse $$ as the fake pid; test 3 removed its flag so start_reaper will run.
+# Reuse $$ as the fake pid; test 3 removed its script + flag so start_reaper
+# will generate a fresh script.
 fake_ghostty_pid2=$$
 SESSION="zmx-aaaaaaaaaaaa-bbbbbbbb-1234abcd"
 cat > "$workdir/bin/zmx" <<STUB
