@@ -3,24 +3,41 @@
 #
 # When Ghostty is killed (not cleanly exited), managed zmx sessions are left
 # detached (clients=0) forever. The reaper's startup sweep kills them. The
-# sweep uses managed_detached_sessions() which must ONLY return managed v0.1
-# sessions (zmx-<win>-<tab>-<term>) that are in the sessions log with
-# clients=0 — never user-created sessions, gzr-* remote sessions, or attached
-# sessions.
+# sweep uses _ghostty_zmx_managed_detached_sessions() which must ONLY return
+# managed v0.1 sessions (zmx-<win>-<tab>-<term>) that are in the sessions log
+# with clients=0 — never user-created sessions, gzr-* remote sessions, or
+# attached sessions.
+#
+# Before the issue #39 refactor the reaper inlined these helpers under
+# no-prefix names (managed_detached_sessions, valid_session_name,
+# registry_dir, registry_file, registry_tracked_sessions). The refactor
+# promoted them into the manager as _ghostty_zmx_* functions and the reaper
+# now sources the manager (GHOSTTY_ZMX_INTERNAL_REAPER=1 guard). These tests
+# source the manager the same way and exercise the prefixed names.
 
 repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 export HOME="$workdir/home"
 export GHOSTTY_ZMX_DATA_HOME="$workdir/data"
-mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME"
+export GHOSTTY_ZMX_STATE_HOME="$workdir/state"
+mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
 
 pass=0
 fail=0
 
-# Test 1: the startup sweep call is present in the reaper source.
+# Source the lib first, then stub the 1.4.0 tty/pid capability probe so the
+# manager's version-self-gate does not early-return. Same shape as
+# tests/reaper-stacking.zsh.
+source "$repo_dir/session-manager-lib.zsh"
+ghostty_zmx_has_tty_capability() { return 0; }
+source "$repo_dir/session-manager.zsh"
+
+# Test 1: the startup sweep call is present in the reaper source. The reaper
+# heredoc now calls _ghostty_zmx_cleanup_detached_session in a loop reading
+# _ghostty_zmx_managed_detached_sessions, tagged "startup-orphan-sweep".
 print "test 1: reaper source has startup orphan-sweep call"
-if grep -q 'cleanup_detached_sessions "startup-orphan-sweep"' "$repo_dir/session-manager.zsh"; then
+if grep -q 'startup-orphan-sweep' "$repo_dir/session-manager.zsh"; then
   print "  ok: sweep call present"
   pass=$((pass+1))
 else
@@ -34,7 +51,7 @@ print "test 2: sweep runs at startup (before the main while loop)"
 sweep_ok=0
 awk '
   /sleep "\$reaperStartupDelay"/ { found_sleep=1; next }
-  found_sleep && /cleanup_detached_sessions "startup-orphan-sweep"/ { found_sweep=1; next }
+  found_sleep && /startup-orphan-sweep/ { found_sweep=1; next }
   found_sweep && /while kill -0 "\$ghosttyPID"/ { print "ok"; exit }
 ' "$repo_dir/session-manager.zsh" | grep -q ok && sweep_ok=1
 if [[ "$sweep_ok" -eq 1 ]]; then
@@ -45,24 +62,11 @@ else
   fail=$((fail+1))
 fi
 
-# Test 3: extract ONLY valid_session_name + managed_detached_sessions (the
-# two functions the sweep relies on) and test their filtering. Extract each
-# function by its def line through its closing brace.
+# Test 3: _ghostty_zmx_managed_detached_sessions filters correctly. The
+# function is promoted into the manager; source the manager and call it
+# directly (stubbing zmx + osascript).
 print ""
-print "test 3: managed_detached_sessions filters correctly"
-extracted="$workdir/funcs.zsh"
-# Extract valid_session_name (a single short function).
-sed -n '/^valid_session_name() {/,/^}/p' "$repo_dir/session-manager.zsh" > "$extracted"
-# Append the inlined registry helpers (reaper is standalone; these are the
-# no-prefix versions: registry_dir, registry_file, registry_tracked_sessions,
-# registry_heartbeat).
-sed -n '/^registry_dir() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
-sed -n '/^registry_file() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
-sed -n '/^registry_tracked_sessions() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
-# Append managed_detached_sessions (also def-through-close-brace).
-sed -n '/^managed_detached_sessions() {/,/^}/p' "$repo_dir/session-manager.zsh" >> "$extracted"
-# debug_log stub (extracted code calls it).
-print 'debug_log() { :; }' >> "$extracted"
+print "test 3: _ghostty_zmx_managed_detached_sessions filters correctly"
 
 # Seed the sessions log: only managed sessions that ghostty-zmx recorded.
 cat > "$GHOSTTY_ZMX_DATA_HOME/sessions" <<EOF
@@ -73,10 +77,11 @@ cat > "$GHOSTTY_ZMX_DATA_HOME/tty-map" <<EOF
 S	zmx-6000035bc6c0-10b40f340-DEADBEEF	/dev/ttys777	12345
 EOF
 
-got="$(zsh -c '
-  log="'"$GHOSTTY_ZMX_DATA_HOME"'/sessions"
-  ttyMap="'"$GHOSTTY_ZMX_DATA_HOME"'/tty-map"
-  current_terminal_ttys() { print /dev/ttys777; }
+got="$(_GZMX_TEST_STUB=1 zsh -c '
+  source "'"$repo_dir"'/session-manager-lib.zsh"
+  ghostty_zmx_has_tty_capability() { return 0; }
+  source "'"$repo_dir"'/session-manager.zsh"
+  _ghostty_zmx_current_terminal_ttys() { print /dev/ttys777; }
   zmx() {
     case "$1" in
       list) cat <<ZMX
@@ -88,10 +93,9 @@ got="$(zsh -c '
   name=zmx-6000035bc6c0-10b40f340-DEADBEEF	pid=222	clients=0	created=1	start_dir=/h
 ZMX
     ;;
-  esac
+    esac
   }
-  source "'"$extracted"'" 2>/dev/null
-  managed_detached_sessions
+  _ghostty_zmx_managed_detached_sessions
 ' 2>/dev/null)"
 print "  returned: [$(print "$got" | tr '\n' ' ')]"
 
@@ -143,11 +147,12 @@ other_hash="$(print -r -- "/fake/other/install/data-home" | cksum 2>/dev/null | 
 cat > "$registry_dir/${other_hash}.tsv" <<EOF
 zmx-6000035bc6c0-10b40f340-REGISTRY	99999	$(date +%s)
 EOF
-# Re-run managed_detached_sessions; the REGISTRY session must now be excluded
-got2="$(zsh -c '
-  log="'"$GHOSTTY_ZMX_DATA_HOME"'/sessions"
-  ttyMap="'"$GHOSTTY_ZMX_DATA_HOME"'/tty-map"
-  current_terminal_ttys() { print /dev/ttys777; }
+# Re-run _ghostty_zmx_managed_detached_sessions; the REGISTRY session must now be excluded
+got2="$(_GZMX_TEST_STUB=1 zsh -c '
+  source "'"$repo_dir"'/session-manager-lib.zsh"
+  ghostty_zmx_has_tty_capability() { return 0; }
+  source "'"$repo_dir"'/session-manager.zsh"
+  _ghostty_zmx_current_terminal_ttys() { print /dev/ttys777; }
   zmx() {
     case "$1" in
       list) cat <<ZMX
@@ -157,8 +162,7 @@ ZMX
       ;;
     esac
   }
-  source "'"$extracted"'" 2>/dev/null
-  managed_detached_sessions
+  _ghostty_zmx_managed_detached_sessions
 ' 2>/dev/null)"
 print "  returned: [$(print "$got2" | tr '\n' ' ')]"
 # 85691562 (untracked) is still reaped
