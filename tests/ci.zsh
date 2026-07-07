@@ -9,6 +9,7 @@ sh -n ghostty-zmx-remote-layout
 
 for test in tests/*.zsh; do
   [[ "$test" == "tests/ci.zsh" ]] && continue
+  print -u2 "running $test"
   zsh "$test"
 done
 
