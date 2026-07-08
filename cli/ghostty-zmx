@@ -262,4 +262,14 @@ fi
 if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
   export TERM=dumb
 fi
-exec "$@"
+# Run the transport in a reconnect loop (autossh-inspired) so a dropped
+# ssh/tsh connection reattaches to the surviving remote zmx session instead
+# of leaving the pane at Ghostty's close prompt. TERM=dumb above persists
+# across loop iterations via env inheritance. GHOSTTY_ZMX_RECONNECT=0 is the
+# kill switch: it restores the original `exec "$@"` behavior (for bisection
+# or users who prefer manual reconnect). See cli/projection-loop.
+if [[ "${GHOSTTY_ZMX_RECONNECT:-1}" == "1" ]]; then
+  source "$_GZMX_WRAPPER_DIR/projection-loop"
+else
+  exec "$@"
+fi
