@@ -23,6 +23,8 @@ source_install_lib="$repo_dir/install-lib.sh"
 source_package_json="$repo_dir/package.json"
 source_early_manager="$repo_dir/session-manager-early.zsh"
 source_v01_manager="$repo_dir/session-manager-v0.1.zsh"
+source_reaper="$repo_dir/reaper.sh"
+source_poller="$repo_dir/poller.sh"
 source_wrapper="$repo_dir/cli/ghostty-zmx"
 source_uninstall="$repo_dir/uninstall.sh"
 source_server_install="$repo_dir/install-server.sh"
@@ -34,6 +36,8 @@ lib_dest="$install_dir/session-manager-lib.zsh"
 install_lib_dest="$install_dir/install-lib.sh"
 early_manager_dest="$install_dir/session-manager-early.zsh"
 v01_manager_dest="$install_dir/session-manager-v0.1.zsh"
+reaper_dest="$install_dir/reaper.sh"
+poller_dest="$install_dir/poller.sh"
 wrapper_dest="$install_dir/cli/ghostty-zmx"
 uninstall_dest="$install_dir/uninstall.sh"
 server_install_dest="$install_dir/install-server.sh"
@@ -73,6 +77,8 @@ print_plan() {
 [[ -f "$source_package_json" ]] || { print -u2 "Missing $source_package_json"; exit 1; }
 [[ -f "$source_early_manager" ]] || { print -u2 "Missing $source_early_manager"; exit 1; }
 [[ -f "$source_v01_manager" ]] || { print -u2 "Missing $source_v01_manager"; exit 1; }
+[[ -f "$source_reaper" ]] || { print -u2 "Missing $source_reaper"; exit 1; }
+[[ -f "$source_poller" ]] || { print -u2 "Missing $source_poller"; exit 1; }
 [[ -f "$source_wrapper" ]] || { print -u2 "Missing $source_wrapper"; exit 1; }
 [[ -f "$source_uninstall" ]] || { print -u2 "Missing $source_uninstall"; exit 1; }
 [[ -f "$source_server_install" ]] || { print -u2 "Missing $source_server_install"; exit 1; }
@@ -117,6 +123,8 @@ install -m 0644 "$source_install_lib" "$install_lib_dest" || exit 1
 install -m 0644 "$source_package_json" "$install_dir/package.json" || exit 1
 install -m 0644 "$source_early_manager" "$early_manager_dest" || exit 1
 install -m 0644 "$source_v01_manager" "$v01_manager_dest" || exit 1
+install -m 0755 "$source_reaper" "$reaper_dest" || exit 1
+install -m 0755 "$source_poller" "$poller_dest" || exit 1
 install -m 0755 "$source_wrapper" "$wrapper_dest" || exit 1
 install -m 0755 "$source_uninstall" "$uninstall_dest" || exit 1
 install -m 0755 "$source_server_install" "$server_install_dest" || exit 1
@@ -140,6 +148,8 @@ print "Installed $install_lib_dest"
 print "Installed $install_dir/package.json"
 print "Installed $early_manager_dest"
 print "Installed $v01_manager_dest"
+print "Installed $reaper_dest"
+print "Installed $poller_dest"
 print "Installed $wrapper_dest"
 print "Installed $uninstall_dest"
 print "Installed $server_install_dest"

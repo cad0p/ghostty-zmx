@@ -34,14 +34,15 @@ ghostty_zmx_has_tty_capability() { return 0; }
 source "$repo_dir/session-manager.zsh"
 
 # Test 1: the startup sweep call is present in the reaper source. The reaper
-# heredoc now calls _ghostty_zmx_cleanup_detached_session in a loop reading
-# _ghostty_zmx_managed_detached_sessions, tagged "startup-orphan-sweep".
+# is a real file (reaper.sh) that calls _ghostty_zmx_cleanup_detached_session
+# in a loop reading _ghostty_zmx_managed_detached_sessions, tagged
+# "startup-orphan-sweep".
 print "test 1: reaper source has startup orphan-sweep call"
-if grep -q 'startup-orphan-sweep' "$repo_dir/session-manager.zsh"; then
+if grep -q 'startup-orphan-sweep' "$repo_dir/reaper.sh"; then
   print "  ok: sweep call present"
   pass=$((pass+1))
 else
-  print -u2 "  FAIL: startup-orphan-sweep call not found in session-manager.zsh"
+  print -u2 "  FAIL: startup-orphan-sweep call not found in reaper.sh"
   fail=$((fail+1))
 fi
 
@@ -53,7 +54,7 @@ awk '
   /sleep "\$reaperStartupDelay"/ { found_sleep=1; next }
   found_sleep && /startup-orphan-sweep/ { found_sweep=1; next }
   found_sweep && /while kill -0 "\$ghosttyPID"/ { print "ok"; exit }
-' "$repo_dir/session-manager.zsh" | grep -q ok && sweep_ok=1
+' "$repo_dir/reaper.sh" | grep -q ok && sweep_ok=1
 if [[ "$sweep_ok" -eq 1 ]]; then
   print "  ok: sweep is between startup delay and main loop"
   pass=$((pass+1))

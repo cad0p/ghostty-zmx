@@ -175,6 +175,8 @@ else
         "$install_dir/package.json" \
         "$install_dir/session-manager-early.zsh" \
         "$install_dir/session-manager-v0.1.zsh" \
+        "$install_dir/reaper.sh" \
+        "$install_dir/poller.sh" \
         "$install_dir/uninstall.sh" \
         "$install_dir/install-server.sh" \
         "$install_dir/terminfo/xterm-ghostty.terminfo" 2>/dev/null || true

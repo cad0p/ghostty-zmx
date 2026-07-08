@@ -54,13 +54,11 @@ export GHOSTTY_ZMX_KEEP_HELPERS=1
 
 source "$repo_dir/session-manager.zsh"
 
-reaper_body="$(awk '
-  $0 == "  cat >> \"$script\" <<'"'"'EOS'"'"'" { in_body=1; next }
-  $0 == "EOS" && in_body { exit }
-  in_body { print }
-' "$repo_dir/session-manager.zsh")"
-print -r -- "$reaper_body" > "$workdir/generated-reaper.zsh"
-zsh -n "$workdir/generated-reaper.zsh" || { print -u2 "generated reaper script has invalid zsh syntax"; exit 1; }
+# The reaper is now a real file (reaper.sh), not a generated heredoc.
+# Syntax-check it directly. (Before the extraction, this test extracted the
+# reaper heredoc body and syntax-checked that.)
+zsh -n "$repo_dir/reaper.sh" || { print -u2 "reaper.sh has invalid zsh syntax"; exit 1; }
+zsh -n "$repo_dir/poller.sh" || { print -u2 "poller.sh has invalid zsh syntax"; exit 1; }
 # Before the issue #39 refactor the reaper inlined parse_elapsed_seconds and
 # this test asserted the inlined copy matched the manager's
 # _ghostty_zmx_parse_elapsed_seconds. The refactor replaced the inlined

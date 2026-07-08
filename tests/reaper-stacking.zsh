@@ -12,6 +12,10 @@ export GHOSTTY_ZMX_DATA_HOME="$workdir/data"
 export GHOSTTY_ZMX_STATE_HOME="$workdir/state"
 export XDG_RUNTIME_DIR="$workdir/runtime"
 export TERM_PROGRAM=ghostty
+# Point the install dir at the repo so _ghostty_zmx_start_reaper finds
+# reaper.sh (the real file it copies into the runtime dir instead of the
+# pre-extraction heredoc).
+export GHOSTTY_ZMX_INSTALL_DIR="$repo_dir"
 mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$XDG_RUNTIME_DIR"
 
 # Use a fake but live pid (our own $$) as the ghostty pid.
