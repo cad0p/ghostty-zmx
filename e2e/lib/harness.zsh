@@ -275,6 +275,7 @@ gzmx_e2e_ghostty_launch() {
     --env=GHOSTTY_ZMX_E2E_SSH_CONFIG="$GZMX_E2E_SSHCONFIG" \
     --env=GHOSTTY_ZMX_E2E_FIXTURE_USER="$GZMX_E2E_FIXTURE_USER" \
     --env=GHOSTTY_ZMX_E2E_FIXTURE_HOST="$GZMX_E2E_FIXTURE_HOST" \
+    --env=GHOSTTY_ZMX_RECONNECT_MAX_ATTEMPTS=3 \
     --window-save-state=never \
     --confirm-close-surface=false \
     >/dev/null 2>&1
