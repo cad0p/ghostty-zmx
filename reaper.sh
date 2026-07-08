@@ -198,4 +198,3 @@ fi
 _reaper_debug "stopped ghostty_pid=$ghosttyPID"
 rm -f "$attempted" 2>/dev/null
 rmdir "$flag" 2>/dev/null
-rm -f "$0" 2>/dev/null

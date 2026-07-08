@@ -13,8 +13,8 @@ export GHOSTTY_ZMX_STATE_HOME="$workdir/state"
 export XDG_RUNTIME_DIR="$workdir/runtime"
 export TERM_PROGRAM=ghostty
 # Point the install dir at the repo so _ghostty_zmx_start_reaper finds
-# reaper.sh (the real file it copies into the runtime dir instead of the
-# pre-extraction heredoc).
+# reaper.sh (the installed file it runs directly instead of the pre-extraction
+# heredoc).
 export GHOSTTY_ZMX_INSTALL_DIR="$repo_dir"
 mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME" "$XDG_RUNTIME_DIR"
 
@@ -79,7 +79,7 @@ else
 fi
 
 # Cleanup: kill any background reaper we spawned
-pkill -f "reaper-${fake_ghostty_pid}.zsh" 2>/dev/null || true
+pkill -f "reaper.sh $fake_ghostty_pid" 2>/dev/null || true
 
 print ""
 if [[ "$fail" -eq 0 ]]; then

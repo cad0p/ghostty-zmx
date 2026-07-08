@@ -661,14 +661,17 @@ _ghostty_zmx_start_reaper() {
   _ghostty_zmx_debug "reaper start ghostty_pid=$ghosttyPID flag=$flag"
   ghostty_zmx_acquire_instance_lock "$ghosttyPID" 2>/dev/null || true
 
-  typeset script="$runtime_dir/reaper-${ghosttyPID}.zsh"
+  # Run the installed reaper.sh directly. Unlike the poller (whose runtime
+  # copy at remote-poller-<pid>.zsh is globbed by ghostty_zmx_kill_orphaned_pollers
+  # to extract the owning pid), the reaper has no orphan-killer that globs its
+  # path, so there is no need to materialize a pid-named copy in the runtime
+  # dir. The stacking guard is mkdir "$flag" above.
+  typeset reaper_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/reaper.sh"
   typeset reaper_log="$runtime_dir/reaper-${ghosttyPID}.log"
   typeset ghosttyElapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghosttyPID")"
   [[ -n "$ghosttyElapsed" ]] || ghosttyElapsed=0
-  typeset reaper_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/reaper.sh"
-  cp "$reaper_src" "$script" 2>/dev/null || { rmdir "$flag" 2>/dev/null; return 0; }
   typeset manager_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh"
-  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" "$_ghostty_app_name" "$manager_src" >"$reaper_log" 2>&1 </dev/null &!
+  nohup /bin/zsh "$reaper_src" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" "$_ghostty_app_name" "$manager_src" >"$reaper_log" 2>&1 </dev/null &!
 }
 
 _ghostty_zmx_pop_restore_queue() {
@@ -1984,6 +1987,12 @@ ghostty_zmx_start_remote_poller() {
   local poller_log="$runtime/remote-poller-${ghostty_pid}.log"
   local manager_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh"
   local poller_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/poller.sh"
+  # Copy poller.sh into the runtime dir as remote-poller-<pid>.zsh. Unlike the
+  # reaper (which runs its installed file directly), the poller MUST be
+  # materialized at a pid-named path because ghostty_zmx_kill_orphaned_pollers
+  # globs $runtime/remote-poller-*.zsh, extracts the owning ghostty pid from
+  # the filename, and pgreps by that name to kill orphaned pollers whose
+  # owning Ghostty died. Running poller.sh directly would break orphan-killing.
   cp "$poller_src" "$script" 2>/dev/null || return 0
   # Re-parent the poller to launchd AND detach its controlling tty via
   # os.setsid(). Detaching the tty is hygiene: it keeps the poller from

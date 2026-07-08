@@ -118,12 +118,12 @@ source "$repo_dir/session-manager.zsh"
 _ghostty_zmx_reaper_startup_delay=0.2
 _ghostty_zmx_start_reaper "$fake_ghostty_pid" 2>/dev/null
 _runtime="$(_ghostty_zmx_runtime_dir 2>/dev/null)"
-_reaper_script="$_runtime/reaper-${fake_ghostty_pid}.zsh"
 _reaper_log="$_runtime/reaper-${fake_ghostty_pid}.log"
-[[ -f "$_reaper_script" ]] || { print -u2 "  FAIL: reaper script not generated"; fail=$((fail+1)); }
+# The reaper now runs the installed reaper.sh directly (no runtime copy), so
+# there is no generated script to check for. The reaper log still exists.
 # Let the reaper run ~1s (5 iterations at interval=0.2), then kill it.
 sleep 1
-pkill -f "reaper-${fake_ghostty_pid}.zsh" 2>/dev/null || true
+pkill -f "reaper.sh $fake_ghostty_pid" 2>/dev/null || true
 sleep 0.3
 _debug_log="$GHOSTTY_ZMX_STATE_HOME/debug.log"
 # No undefined-function errors in the reaper log.
@@ -178,7 +178,7 @@ _ghostty_zmx_reaper_startup_delay=0.2
 _ghostty_zmx_start_reaper "$fake_ghostty_pid2" 2>/dev/null
 # Let the reaper run ~1.5s so the startup sweep fires.
 sleep 1.5
-pkill -f "reaper-${fake_ghostty_pid2}.zsh" 2>/dev/null || true
+pkill -f "reaper.sh $fake_ghostty_pid2" 2>/dev/null || true
 sleep 0.3
 _debug_log="$GHOSTTY_ZMX_STATE_HOME/debug.log"
 _swept=0
@@ -200,7 +200,7 @@ if [[ -f "$GHOSTTY_ZMX_STATE_HOME/history/${SESSION}.txt" ]]; then
 else
   print "  ok: snapshot forgotten (forget_snapshot ran)"; pass=$((pass+1))
 fi
-pkill -f "reaper-${fake_ghostty_pid2}.zsh" 2>/dev/null || true
+pkill -f "reaper.sh $fake_ghostty_pid2" 2>/dev/null || true
 
 print ""
 if [[ "$fail" == "0" ]]; then
