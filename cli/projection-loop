@@ -124,7 +124,7 @@ _gzmx_snapshot_session() {
   mkdir -p "$dir" 2>/dev/null || return 1
   hist_file="$dir/${session}.txt"
   tmp="${hist_file}.tmp.$$"
-  if "${_gzmx_side_argv[@]}" "$remote_zmx history $session 2>/dev/null" | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
+  if "${_gzmx_side_argv[@]}" "$remote_zmx history $session 2>/dev/null" </dev/null | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
     [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     _gzmx_wdebug "projection: snapshot host=$host session=$session file=$hist_file"
   else
