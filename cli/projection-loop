@@ -134,7 +134,6 @@ _gzmx_snapshot_session() {
 
 # Reboot-restore: if the remote session is missing and a local scrollback
 # snapshot exists, create a fresh session and inject the saved scrollback.
-# Moved here from cli/ghostty-zmx's reboot-restore block (lines 180-230).
 # Uses $_add_argv from the enclosing wrapper scope. Idempotent: a no-op if
 # the session already exists (reattach, not reboot).
 _gzmx_reboot_restore_check() {
