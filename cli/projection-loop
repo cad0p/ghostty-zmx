@@ -206,10 +206,14 @@ _gzmx_session_state() {
   fi
 }
 
-# Sleep for up to \$1 seconds, but exit early if the close flag is set (a
-# trap fired during the sleep). zsh's builtin sleep is not preempted by
-# traps, so poll in small increments. The close flag is the process-global
-# _gzmx_closing set by the trap handler.
+# Sleep for up to \$1 seconds, but return early if the close flag is set (a
+# trap fired during the sleep) so the next loop iteration starts sooner.
+# zsh's builtin sleep is not preempted by traps, so poll in small
+# increments. The close flag is the process-global _gzmx_closing set by the
+# trap handler; it no longer drives an exit decision — the loop exits on
+# owner liveness, not the flag — but shortening the backoff after a trap
+# lets a Cmd-W-driven close reach the owner-dead check without waiting the
+# full backoff.
 _gzmx_interruptible_sleep() {
   emulate -L zsh
   local total="$1" elapsed=0 increment=0.2
@@ -247,7 +251,13 @@ _gzmx_run_projection_loop() {
   # lingers (zsh traps do not forward signals to the foreground child).
   # _gzmx_closing is a process-global (not local) so the trap closure and the
   # loop body share one flag, and so a foreground transport that wishes to
-  # signal a close (e.g. in tests) can set it.
+  # signal a close (e.g. in tests) can set it. The flag does NOT drive an
+  # exit decision: a real network drop sends SIGHUP to the process group
+  # when the ssh child dies, which fires this trap and sets the flag; the
+  # loop must keep reconnecting in that case. The flag only shortens the
+  # backoff sleep (see _gzmx_interruptible_sleep). The loop's exit decision
+  # is driven by owner liveness (_gzmx_owner_alive): the owner dies on
+  # Cmd-Q/Cmd-W but stays alive on a network drop.
   typeset -g _gzmx_closing=0
   local _gzmx_ssh_pid=""
   # Guard the trap's kill against pid reuse: after `wait` returns, the recorded
@@ -271,17 +281,17 @@ _gzmx_run_projection_loop() {
 
   while :; do
     # TOP-OF-LOOP CHECKS (before any new transport run):
-    # 1. Trap fired during sleep / previous iteration → exit immediately.
-    if [[ "$_gzmx_closing" -eq 1 ]]; then
-      _gzmx_wdebug "projection: exiting reason=intentional-close (trap) attempt=$_attempt"
-      exit 0
-    fi
-    # 2. Owning Ghostty dead (Cmd-Q / crash where the signal didn't arrive).
+    # 1. Owning Ghostty dead (Cmd-Q / Cmd-W / crash). The owner is the real
+    #    intentional-close signal: it dies on Cmd-Q/Cmd-W but stays alive on a
+    #    network drop, so this check distinguishes the two. The trap flag
+    #    (_gzmx_closing) is NOT checked here — a real network drop sends SIGHUP
+    #    to the process group when the ssh child dies, which fires the trap and
+    #    sets the flag; exiting on the flag alone would defeat the reconnect.
     if ! _gzmx_owner_alive "$_ghostty_pid" "$_ghostty_elapsed"; then
       _gzmx_wdebug "projection: exiting reason=owner-dead attempt=$_attempt"
       exit 1
     fi
-    # 3. Cross-client close: local projection row is `closing` → exit.
+    # 2. Cross-client close: local projection row is `closing` → exit.
     if _gzmx_projection_row_closing "$host" "$session"; then
       _gzmx_wdebug "projection: exiting reason=closing-row host=$host session=$session"
       exit 0
@@ -314,12 +324,13 @@ _gzmx_run_projection_loop() {
     _gzmx_wdebug "projection: transport exited rc=$_rc attempt=$_attempt closing=$_gzmx_closing"
 
     # POST-EXIT CHECKS:
-    # Trap fired during the transport run → exit (intentional close).
-    if [[ "$_gzmx_closing" -eq 1 ]]; then
-      _gzmx_wdebug "projection: exiting reason=intentional-close (trap during run) rc=$_rc"
-      exit 0
-    fi
-    # Owner died while the transport was running → exit.
+    # Owner died while the transport was running → exit. The trap flag
+    # (_gzmx_closing) is NOT checked here: a real network drop sends SIGHUP
+    # to the process group when the ssh child dies, firing the trap and
+    # setting the flag; exiting on the flag alone would make the loop exit
+    # instead of reconnecting. The trap still sets the flag and kills the ssh
+    # child (so a Cmd-W kills the foreground ssh promptly), but the loop's
+    # exit decision is driven by owner liveness, not the flag.
     if ! _gzmx_owner_alive "$_ghostty_pid" "$_ghostty_elapsed"; then
       _gzmx_wdebug "projection: exiting reason=owner-dead rc=$_rc"
       exit 1
@@ -366,10 +377,11 @@ _gzmx_run_projection_loop() {
       exit "$_rc"
     fi
 
-    # Backoff sleep (interruptible: a trap during sleep sets the close flag;
-    # the top-of-loop check on the next iteration exits without starting a
-    # new transport). zsh's sleep is not preempted by traps, so poll the close
-    # flag in small increments instead of blocking for the full backoff.
+    # Backoff sleep (interruptible: a trap during sleep sets the close flag,
+    # which short-circuits the remaining sleep so the next iteration starts
+    # sooner). zsh's sleep is not preempted by traps, so poll the close flag
+    # in small increments instead of blocking for the full backoff. The close
+    # flag no longer drives an exit decision — it only shortens the sleep.
     _gzmx_wdebug "projection: reconnecting backoff=$_backoff attempt=$_attempt"
     _gzmx_interruptible_sleep "$_backoff"
     _backoff=$(( _backoff * 2 ))

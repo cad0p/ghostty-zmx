@@ -3,13 +3,19 @@
 #
 # Sources cli/projection-loop (with auto-run guarded out) and asserts the
 # reconnect decision matrix from the design. The loop's decision logic is
-# pure: transport exit code + remote session state + trap flag + owner
-# liveness + projection-row state => reconnect or exit.
+# pure: transport exit code + remote session state + owner liveness +
+# projection-row state => reconnect or exit. The trap flag (set by HUP/TERM/INT)
+# does NOT drive an exit decision: a real network drop sends SIGHUP to the
+# process group when the ssh child dies, firing the trap; the owner stays
+# alive, so the loop must reconnect. The owner-dead check is the real
+# intentional-close signal (Cmd-Q/Cmd-W kills the owner).
 #
 # Each case runs in a fresh `zsh -c` subshell (sourced from this script via a
 # helper) so the loop's trap + exit() are isolated and $$ reliably identifies
 # the process the trap is installed on. The transport stub sends HUP to $$
-# to simulate a close signal during a run.
+# to simulate a close signal during a run; the owner-alive stub controls
+# whether the loop treats the trap as a real close (owner dead) or a
+# network drop (owner alive).
 
 repo_dir="${0:A:h:h}"
 workdir="$(mktemp -d)"
@@ -36,7 +42,17 @@ source "$GZMX_REPO_DIR/cli/projection-loop"
 _gzmx_wdebug() { :; }
 _gzmx_detect_ghostty_pid() { print -r -- "$$"; }
 _gzmx_ghostty_elapsed() { print -r -- "1000"; }
-_gzmx_owner_alive() { [[ "${_GZMX_TEST_OWNER_ALIVE:-1}" == "1" ]]; }
+_gzmx_owner_alive() {
+  # If _GZMX_TEST_OWNER_DEAD_AFTER_RUN is set, the owner is alive until the
+  # transport has run at least once, then dead (simulates Cmd-W: owner dies
+  # during the transport run, after the top-of-loop check passed).
+  if [[ "${_GZMX_TEST_OWNER_DEAD_AFTER_RUN:-0}" == "1" ]]; then
+    local _c
+    _c=$(cat "$GZMX_WORKDIR/counter" 2>/dev/null || echo 0)
+    (( _c >= 1 )) && return 1 || return 0
+  fi
+  [[ "${_GZMX_TEST_OWNER_ALIVE:-1}" == "1" ]]
+}
 _gzmx_projection_row_closing() {
   # If _GZMX_TEST_ROW_CLOSING_AFTER_RUN is set, return not-closing until the
   # transport has run at least once, then return closing (simulates a
@@ -73,7 +89,7 @@ WORKER
 # code (the loop calls exit, which propagates). The transport call count is
 # read from the counter file.
 _run_case() {
-  local session_state="$1" rc="$2" max_attempts="${3:-0}" trap_during_run="${4:-0}" trap_during_sleep="${5:-0}" owner_alive="${6:-1}" row_closing="${7:-0}" row_closing_after_run="${8:-0}"
+  local session_state="$1" rc="$2" max_attempts="${3:-0}" trap_during_run="${4:-0}" trap_during_sleep="${5:-0}" owner_alive="${6:-1}" row_closing="${7:-0}" row_closing_after_run="${8:-0}" owner_dead_after_run="${9:-0}"
   rm -f "$workdir/counter" "$workdir/reboot_counter"
   GZMX_REPO_DIR="$repo_dir" GZMX_WORKDIR="$workdir" \
   _GZMX_TEST_SESSION_STATE="$session_state" \
@@ -86,6 +102,7 @@ _run_case() {
   _GZMX_TEST_OWNER_ALIVE="$owner_alive" \
   _GZMX_TEST_ROW_CLOSING="$row_closing" \
   _GZMX_TEST_ROW_CLOSING_AFTER_RUN="$row_closing_after_run" \
+  _GZMX_TEST_OWNER_DEAD_AFTER_RUN="$owner_dead_after_run" \
   script -q /dev/null zsh "$_worker" >/dev/null 2>&1
   echo $?  # the worker's exit status = the loop's exit code
 }
@@ -139,14 +156,33 @@ _a=$(_attempts)
 (( _rc == 255 )) && _ok "exit code preserved (255)" || _bad "expected exit 255, got $_rc"
 
 # ---------------------------------------------------------------------------
-# Case 5: trap fired (during run) => exit 0 (trap wins)
+# Case 5: trap fired during run + owner alive => reconnect (not exit)
+# A real network drop sends SIGHUP to the process group when the ssh child
+# dies, firing the trap. The owner (Ghostty) stays alive, so the loop must
+# reconnect rather than exit on the trap flag alone. Bounded by max_attempts
+# so the test terminates.
 # ---------------------------------------------------------------------------
 print ""
-print "case 5: trap fired during run => exit 0"
-_rc=$(_run_case survived 255 0 1)
+print "case 5: trap fired during run + owner alive => reconnect"
+_rc=$(_run_case survived 255 2 1)
 _a=$(_attempts)
-(( _a == 1 )) && _ok "no reconnect after trap (1 call)" || _bad "expected 1 call, got $_a"
-(( _rc == 0 )) && _ok "exit 0 (trap wins)" || _bad "expected exit 0, got $_rc"
+(( _a == 2 )) && _ok "reconnected after trap (2 calls)" || _bad "expected 2 calls, got $_a"
+(( _rc == 255 )) && _ok "exit code preserved (255)" || _bad "expected exit 255, got $_rc"
+
+# ---------------------------------------------------------------------------
+# Case 5b: trap fired during run + owner dead => exit (owner-dead wins)
+# The trap fires (e.g. Cmd-W sends SIGHUP) AND the owner is dead — the loop
+# exits via the owner-dead check, not the trap flag. This is the real
+# intentional-close path: Cmd-W kills Ghostty (owner dead) and sends SIGHUP
+# (trap fires); the owner-dead check is what drives the exit.
+# ---------------------------------------------------------------------------
+print ""
+print "case 5b: trap fired during run + owner dead => exit (owner-dead)"
+# owner alive at top-of-loop, dead after the transport runs (9th arg).
+_rc=$(_run_case survived 255 0 1 0 1 0 0 1)
+_a=$(_attempts)
+(( _a == 1 )) && _ok "1 transport run (owner died during run)" || _bad "expected 1 call, got $_a"
+(( _rc != 0 )) && _ok "non-zero exit (owner-dead)" || _bad "expected non-zero exit, got $_rc"
 
 # ---------------------------------------------------------------------------
 # Case 6: owner dead => exit
@@ -201,16 +237,20 @@ _a=$(_attempts)
 (( _rc == 0 )) && _ok "exit 0 (post-exit closing-row)" || _bad "expected exit 0, got $_rc"
 
 # ---------------------------------------------------------------------------
-# Case 10: trap during sleep => exit 0 (no new transport started)
+# Case 10: trap during sleep + owner alive => reconnect (not exit)
+# A trap during the backoff sleep (e.g. SIGHUP from a dying ssh child on a
+# network drop) sets the close flag, which shortens the sleep, but the loop
+# must still reconnect because the owner is alive. Bounded by max_attempts.
 # ---------------------------------------------------------------------------
 print ""
-print "case 10: trap during sleep => exit 0 (no new transport)"
-# run(1) exits 255 + survived => reconnect => sleep sends HUP =>
-# top-of-loop check on next iteration exits 0 without a new transport.
-_rc=$(_run_case survived 255 0 0 1)
+print "case 10: trap during sleep + owner alive => reconnect"
+# run(1) exits 255 + survived => reconnect => sleep sends HUP (flag set) =>
+# sleep returns early => top-of-loop owner-alive check passes => run(2) =>
+# max reached => exit.
+_rc=$(_run_case survived 255 2 0 1)
 _a=$(_attempts)
-(( _a == 1 )) && _ok "only 1 transport run (trap during sleep stopped reconnect)" || _bad "expected 1 call, got $_a"
-(( _rc == 0 )) && _ok "exit 0 (trap during sleep)" || _bad "expected exit 0, got $_rc"
+(( _a == 2 )) && _ok "reconnected after trap during sleep (2 calls)" || _bad "expected 2 calls, got $_a"
+(( _rc == 255 )) && _ok "exit code preserved (255)" || _bad "expected exit 255, got $_rc"
 
 # ---------------------------------------------------------------------------
 # Case 1: rc 0 + survived => reconnect (no rc-0 special-case)
