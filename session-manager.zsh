@@ -661,219 +661,17 @@ _ghostty_zmx_start_reaper() {
   _ghostty_zmx_debug "reaper start ghostty_pid=$ghosttyPID flag=$flag"
   ghostty_zmx_acquire_instance_lock "$ghosttyPID" 2>/dev/null || true
 
-  typeset script="$runtime_dir/reaper-${ghosttyPID}.zsh"
+  # Run the installed reaper.sh directly. Unlike the poller (whose runtime
+  # copy at remote-poller-<pid>.zsh is globbed by ghostty_zmx_kill_orphaned_pollers
+  # to extract the owning pid), the reaper has no orphan-killer that globs its
+  # path, so there is no need to materialize a pid-named copy in the runtime
+  # dir. The stacking guard is mkdir "$flag" above.
+  typeset reaper_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/reaper.sh"
   typeset reaper_log="$runtime_dir/reaper-${ghosttyPID}.log"
   typeset ghosttyElapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghosttyPID")"
   [[ -n "$ghosttyElapsed" ]] || ghosttyElapsed=0
-  set -o noclobber
-  { print '#!/bin/zsh' > "$script"; } 2>/dev/null || { set +o noclobber; rmdir "$flag" 2>/dev/null; return 0; }
-  set +o noclobber
-  cat >> "$script" <<'EOS'
-#!/bin/zsh
-# ghostty-zmx local reaper. Sources the manager (GHOSTTY_ZMX_INTERNAL_REAPER=1
-# guard: defines all functions, returns before widget/auto-attach side effects)
-# then runs the PID-reuse-safe reap loop using the shared manager functions.
-#
-# Before this refactor the reaper inlined ~20 helper functions duplicating the
-# manager (valid_session_name, history_file_for_session, debug_log,
-# _reaper_debug_rotate, parse_elapsed_seconds, elapsed_seconds, cleanup_tty_map,
-# cleanup_log, snapshot_history, forget_snapshot, managed_sessions_from_log,
-# registry_dir, registry_file, registry_tracked_sessions, registry_heartbeat,
-# managed_detached_sessions, current_terminal_ttys, managed_disappeared_sessions,
-# managed_existing_sessions, snapshot_existing_sessions, cleanup_detached_session,
-# cleanup_detached_sessions, cleanup_seen_detached_sessions). That duplication
-# caused a real bug: the reaper's debug_log called _ghostty_zmx_debug_rotate (a
-# lib function) but the function was never defined in the reaper heredoc, so
-# debug-log rotation never fired for the reaper — the highest-volume debug-log
-# writer. Sourcing the manager makes that class of bug impossible by construction
-# and keeps the reaper consistent with the poller (which already sources the
-# manager via the GHOSTTY_ZMX_INTERNAL_POLLER guard). See issue #39 and the
-# poller refactor in PR #23.
-#
-# Args: ghosttyPID flag dataHome interval zeroWindowGrace stateHome debugEnabled
-#       scrollbackLines reaperStartupDelay runtimeDir ghosttyElapsed
-#       ghosttyAppName manager_src
-ghosttyPID="$1"
-flag="$2"
-dataHome="$3"
-interval="$4"
-zeroWindowGrace="$5"
-stateHome="$6"
-debugEnabled="$7"
-scrollbackLines="$8"
-reaperStartupDelay="$9"
-runtimeDir="${10}"
-ghosttyElapsed="${11}"
-ghosttyAppName="${12}"
-manager_src="${13:-${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh}"
-
-export GHOSTTY_ZMX_DATA_HOME="$dataHome"
-export GHOSTTY_ZMX_STATE_HOME="$stateHome"
-export GHOSTTY_ZMX_DEBUG="$debugEnabled"
-export GHOSTTY_ZMX_SCROLLBACK_LINES="$scrollbackLines"
-export _ghostty_app_name="$ghosttyAppName"
-
-# Source the manager: defines all _ghostty_zmx_* helpers (including the reaper
-# helpers promoted out of this heredoc) then returns early
-# (GHOSTTY_ZMX_INTERNAL_REAPER guard). The reaper reuses
-# _ghostty_zmx_snapshot_history, _ghostty_zmx_cleanup_log, _ghostty_zmx_forget_snapshot,
-# _ghostty_zmx_managed_detached_sessions, _ghostty_zmx_managed_disappeared_sessions,
-# _ghostty_zmx_managed_existing_sessions, _ghostty_zmx_snapshot_existing_sessions,
-# _ghostty_zmx_cleanup_detached_session, _ghostty_zmx_registry_heartbeat,
-# _ghostty_zmx_parse_elapsed_seconds, _ghostty_zmx_ghostty_elapsed_seconds,
-# _ghostty_zmx_debug, _ghostty_zmx_debug_rotate — the same functions the widget
-# and attach path use, so they cannot diverge.
-#
-# Unset TERM_PROGRAM so the manager's version-self-gate (which probes Ghostty
-# AppleScript tty capability and falls back to the v0.1 manager when the probe
-# fails) does not trigger. The reaper is launched from _ghostty_zmx_start_reaper,
-# which only runs after the manager's gate already passed at shell init (the
-# surface is v0.2-capable), so the reaper must take the v0.2 path unconditionally.
-# Without this, a background reaper whose osascript probe fails (e.g. Ghostty
-# just quit) would source the v0.1 fallback and run with none of the v0.2
-# reaper helpers defined — the same class of "lib helper undefined in reaper"
-# bug that motivated this refactor.
-unset TERM_PROGRAM
-GHOSTTY_ZMX_INTERNAL_REAPER=1 source "$manager_src" 2>/dev/null || exit 70
-# Defensive: if the manager source did not define the reaper helpers (corrupt
-# install, missing lib), exit rather than running a reaper with no functions.
-(( $+functions[_ghostty_zmx_managed_detached_sessions] )) || exit 71
-
-# Convenience locals bound to the data-home paths (the reaper loop reads these).
-log="$dataHome/sessions"
-ttyMap="$dataHome/tty-map"
-queue="$dataHome/restore-queue"
-firstFile="$dataHome/restore-first"
-restoring="$runtimeDir/restoring-${ghosttyPID}.lock"
-attempted="$runtimeDir/restore-attempted-${ghosttyPID}.done"
-
-# Reaper-local debug wrapper: tags lines with "reaper" so they are
-# distinguishable from widget/attach/poller lines in the shared debug log.
-# Delegates rotation to the manager's _ghostty_zmx_debug_rotate (now available
-# because the manager is sourced above — the bug that motivated this refactor).
-_reaper_debug() {
-  [[ "$debugEnabled" == "1" ]] || return 0
-  mkdir -p "$stateHome" 2>/dev/null
-  _ghostty_zmx_debug_rotate "$stateHome/debug.log"
-  print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') reaper $*" >> "$stateHome/debug.log"
-}
-
-_reaper_debug "started ghostty_pid=$ghosttyPID sessions_file=$log"
-
-sleep "$reaperStartupDelay"
-# Startup sweep: kill managed zmx sessions left detached (clients=0) by a
-# prior Ghostty instance that was killed (not cleanly exited). The reaper
-# only cleans up during its lifetime; a killed Ghostty leaves its managed
-# sessions detached forever. This runs once at startup.
-# _ghostty_zmx_managed_detached_sessions filters by the v0.1 managed naming
-# (zmx-<win>-<tab>-<term>) AND cross-references the sessions log, so
-# user-created sessions and gzr-* remote sessions are never touched. A
-# session the user intentionally detached (zmx detach) to reattach later
-# would be killed here; that is an accepted trade-off (documented as a
-# known limitation).
-while IFS= read -r orphan; do
-  _ghostty_zmx_cleanup_detached_session "$orphan" "startup-orphan-sweep"
-done < <(_ghostty_zmx_managed_detached_sessions)
-# Heartbeat this install's registry file before entering the loop, so the
-# cross-install tracked set is fresh even if the first loop iteration sleeps.
-# This marks all live zmx-* sessions as tracked by THIS install, so other
-# installs' reapers (or this one after a restart) will not reap them.
-_ghostty_zmx_registry_heartbeat 2>/dev/null || true
-zeroWindowsSeen=0
-lastAttached=0
-typeset -A detachedSeen
-while kill -0 "$ghosttyPID" 2>/dev/null; do
-  # Heartbeat every cycle: refresh this install's registry file so the tracked
-  # set reflects current live sessions. This is the cross-install persistence
-  # signal — closed Ghostty's file stays on disk (sessions survive), but a
-  # live Ghostty keeps its file fresh so other reapers know it's active.
-  _ghostty_zmx_registry_heartbeat 2>/dev/null || true
-  typeset currentElapsed
-  currentElapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghosttyPID")"
-  if [[ -n "$currentElapsed" && "$currentElapsed" -lt "$ghosttyElapsed" ]]; then
-    _ghostty_zmx_snapshot_existing_sessions "ghostty-pid-reuse"
-    _reaper_debug "stopped ghostty_pid=$ghosttyPID reason=pid-reuse"
-    break
-  fi
-  if [[ -z "$currentElapsed" ]]; then
-    _ghostty_zmx_snapshot_existing_sessions "ghostty-exit"
-    _reaper_debug "stopped ghostty_pid=$ghosttyPID reason=elapsed-check-failed"
-    break
-  fi
-
-  typeset windows
-  windows=$(osascript -e "tell application \"$ghosttyAppName\" to count of windows" 2>/dev/null)
-  [[ "$windows" =~ '^[0-9]+$' ]] || break
-
-  if [[ "$windows" -eq 0 ]]; then
-    zeroWindowsSeen=$((zeroWindowsSeen + interval))
-    if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
-      while IFS= read -r orphan; do
-        _ghostty_zmx_cleanup_detached_session "$orphan" "zero-window cleanup"
-      done < <(_ghostty_zmx_managed_detached_sessions)
-    fi
-    sleep "$interval"
-    continue
-  fi
-  zeroWindowsSeen=0
-
-  if [[ -f "$restoring" || -s "$queue" || -s "$firstFile" ]]; then
-    _reaper_debug "restore active; skipping cleanup"
-    sleep "$interval"
-    continue
-  fi
-
-  typeset attached=0 managed clients
-  while IFS= read -r managed; do
-    clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
-    [[ "$clients" == "1" ]] && attached=$((attached + 1))
-  done < <(_ghostty_zmx_managed_sessions_from_log)
-  lastAttached=$attached
-  if [[ "$attached" -eq 0 ]]; then
-    _ghostty_zmx_snapshot_existing_sessions "all-detached"
-    sleep "$interval"
-    continue
-  fi
-
-  typeset orphan
-  while IFS= read -r orphan; do
-    _ghostty_zmx_cleanup_detached_session "$orphan" "tty-disappeared cleanup"
-    unset "detachedSeen[$orphan]"
-  done < <(_ghostty_zmx_managed_disappeared_sessions)
-
-  while IFS= read -r orphan; do
-    detachedSeen[$orphan]=$(( ${detachedSeen[$orphan]:-0} + interval ))
-    if [[ "${detachedSeen[$orphan]}" -lt "$zeroWindowGrace" ]]; then
-      _ghostty_zmx_snapshot_history "$orphan"
-      _reaper_debug "detached pending session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
-      continue
-    fi
-    _ghostty_zmx_snapshot_history "$orphan"
-    _reaper_debug "detached cleanup session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
-    zmx kill "$orphan" >/dev/null 2>&1
-    _ghostty_zmx_cleanup_log "$orphan"
-    _ghostty_zmx_forget_snapshot "$orphan"
-    unset "detachedSeen[$orphan]"
-  done < <(_ghostty_zmx_managed_detached_sessions)
-  sleep "$interval"
-done
-if [[ "${#detachedSeen[@]}" -gt 0 && "$lastAttached" -gt 1 ]]; then
-  typeset orphan
-  for orphan in ${(k)detachedSeen}; do
-    _ghostty_zmx_cleanup_detached_session "$orphan" "detached exit cleanup"
-  done
-  _ghostty_zmx_snapshot_existing_sessions "ghostty-exit"
-else
-  _ghostty_zmx_snapshot_existing_sessions "ghostty-exit"
-fi
-_reaper_debug "stopped ghostty_pid=$ghosttyPID"
-rm -f "$attempted" 2>/dev/null
-rmdir "$flag" 2>/dev/null
-rm -f "$0" 2>/dev/null
-EOS
-  chmod +x "$script" 2>/dev/null
   typeset manager_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh"
-  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" "$_ghostty_app_name" "$manager_src" >"$reaper_log" 2>&1 </dev/null &!
+  nohup /bin/zsh "$reaper_src" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" "$_ghostty_app_name" "$manager_src" >"$reaper_log" 2>&1 </dev/null &!
 }
 
 _ghostty_zmx_pop_restore_queue() {
@@ -2188,94 +1986,14 @@ ghostty_zmx_start_remote_poller() {
   local script="$runtime/remote-poller-${ghostty_pid}.zsh"
   local poller_log="$runtime/remote-poller-${ghostty_pid}.log"
   local manager_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh"
-  set -o noclobber
-  { print '#!/bin/zsh' > "$script"; } 2>/dev/null || { set +o noclobber; return 0; }
-  set +o noclobber
-  cat >> "$script" <<'EOS'
-#!/bin/zsh
-# Remote projection poller. Sources the manager (GHOSTTY_ZMX_INTERNAL_POLLER=1
-# guard: defines all functions, returns before widget/auto-attach side effects)
-# then runs the PID-reuse-safe poll loop using the shared manager functions.
-# Args: ghostty_pid flag data_home state_home interval debug app_name
-#       install_dir ghostty_elapsed scrollback_lines manager_src
-ghostty_pid="$1"
-flag="$2"
-data_home="$3"
-state_home="$4"
-interval="$5"
-debug_enabled="$6"
-ghostty_app_name="$7"
-install_dir="$8"
-ghostty_elapsed="${9:-0}"
-manager_src="${11:-$install_dir/session-manager.zsh}"
-
-export GHOSTTY_ZMX_DATA_HOME="$data_home"
-export GHOSTTY_ZMX_STATE_HOME="$state_home"
-export GHOSTTY_ZMX_DEBUG="$debug_enabled"
-export _ghostty_app_name="$ghostty_app_name"
-
-# Paths used by the startup cleanup below and by poll_once (which re-derives
-# them, but defining them here makes the startup cleanup self-contained).
-hosts_file="$data_home/remote-hosts"
-projections_file="$data_home/remote-projections"
-
-# PID-reuse-safe token: the owning Ghostty's elapsed-seconds at startup.
-print -r -- "$$" > "$flag/pid" 2>/dev/null || true
-print -r -- "$ghostty_elapsed" > "$flag/elapsed" 2>/dev/null || true
-
-# Source the manager: defines all ghostty_zmx_* helpers then returns early
-# (GHOSTTY_ZMX_INTERNAL_POLLER guard). The poller reuses ghostty_zmx_poll_once,
-# ghostty_zmx_snapshot_remote_sessions, ghostty_zmx_find_live_projection, etc.
-# — the same functions the widget and reconcile path use, so they cannot diverge.
-GHOSTTY_ZMX_INTERNAL_POLLER=1 source "$manager_src" 2>/dev/null || exit 70
-
-# Startup cleanup: clear stale local projection rows whose recorded pid is
-# dead. After Cmd-Q+reopen, the local remote-projections file still has rows
-# from the prior session (pids that no longer exist). Without this cleanup,
-# (a) the grouped restore skips those sessions (projection_known returns true),
-# so they never re-project; and (b) the dead-pid cleanup runs close-txn on them,
-# killing the remote sessions that should survive for re-attach. Clearing
-# them here lets the grouped restore re-project fresh while preserving the
-# server-side `present` rows. This runs only once, before the first poll.
-if [[ -f "$projections_file" ]]; then
-  typeset _cleared=0 _h _ws _sess _tty _pid _st _up _w _t
-  typeset tmp="$projections_file.tmp.$$"
-  : > "$tmp" 2>/dev/null || true
-  while IFS=$'\t' read -r _h _ws _sess _tty _pid _st _up _w _t; do
-    if [[ "$_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$_pid" 2>/dev/null; then
-      _ghostty_zmx_debug "poller startup-cleared stale host=$_h session=$_sess pid=$_pid"
-      _cleared=$((_cleared + 1))
-    else
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_h" "$_ws" "$_sess" "$_tty" "$_pid" "$_st" "$_up" "$_w" "$_t" >> "$tmp"
-    fi
-  done < "$projections_file"
-  mv "$tmp" "$projections_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-  (( _cleared > 0 )) && _ghostty_zmx_debug "poller startup-cleared count=$_cleared"
-fi
-
-startup_grace=1
-sleep 1
-trap 'rm -rf "$flag" 2>/dev/null || true' EXIT INT TERM
-while :; do
-  cur_elapsed="$(ps -o etime= -p "$ghostty_pid" 2>/dev/null | tr -d ' ')"
-  cur_elapsed="$(_ghostty_zmx_parse_elapsed_seconds "$cur_elapsed" 2>/dev/null)" || cur_elapsed=""
-  if [[ -z "$cur_elapsed" ]]; then
-    ghostty_zmx_snapshot_remote_sessions
-    _ghostty_zmx_debug "poller stopped ghostty_pid=$ghostty_pid reason=ghostty-exit"
-    break
-  fi
-  if [[ -n "$ghostty_elapsed" && "$cur_elapsed" -lt "$ghostty_elapsed" ]]; then
-    ghostty_zmx_snapshot_remote_sessions
-    _ghostty_zmx_debug "poller stopped ghostty_pid=$ghostty_pid reason=pid-reuse saved=$ghostty_elapsed cur=$cur_elapsed"
-    break
-  fi
-  ghostty_zmx_poll_once "$startup_grace" "$ghostty_pid"
-  startup_grace=0
-  sleep "$interval"
-done
-rm -f "$0" 2>/dev/null
-EOS
-  chmod +x "$script" 2>/dev/null
+  local poller_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/poller.sh"
+  # Copy poller.sh into the runtime dir as remote-poller-<pid>.zsh. Unlike the
+  # reaper (which runs its installed file directly), the poller MUST be
+  # materialized at a pid-named path because ghostty_zmx_kill_orphaned_pollers
+  # globs $runtime/remote-poller-*.zsh, extracts the owning ghostty pid from
+  # the filename, and pgreps by that name to kill orphaned pollers whose
+  # owning Ghostty died. Running poller.sh directly would break orphan-killing.
+  cp "$poller_src" "$script" 2>/dev/null || return 0
   # Re-parent the poller to launchd AND detach its controlling tty via
   # os.setsid(). Detaching the tty is hygiene: it keeps the poller from
   # receiving terminal-driven signals (SIGHUP) if the originating surface

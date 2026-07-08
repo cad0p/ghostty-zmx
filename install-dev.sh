@@ -298,6 +298,8 @@ install_live_files() {
     session-manager-lib.zsh
     session-manager-early.zsh
     session-manager-v0.1.zsh
+    reaper.sh
+    poller.sh
     cli/ghostty-zmx
     cli/install-server
     cli/debug
@@ -318,6 +320,8 @@ install_live_files() {
   install -m 0644 "$repo_dir/session-manager-lib.zsh" "$install_dir/session-manager-lib.zsh"
   install -m 0644 "$repo_dir/session-manager-early.zsh" "$install_dir/session-manager-early.zsh"
   install -m 0644 "$repo_dir/session-manager-v0.1.zsh" "$install_dir/session-manager-v0.1.zsh"
+  install -m 0755 "$repo_dir/reaper.sh" "$install_dir/reaper.sh"
+  install -m 0755 "$repo_dir/poller.sh" "$install_dir/poller.sh"
   install -m 0755 "$repo_dir/cli/ghostty-zmx" "$install_dir/cli/ghostty-zmx"
   install -m 0755 "$repo_dir/cli/install-server" "$install_dir/cli/install-server"
   install -m 0755 "$repo_dir/cli/debug" "$install_dir/cli/debug"
