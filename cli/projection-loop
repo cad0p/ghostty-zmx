@@ -258,8 +258,12 @@ _gzmx_run_projection_loop() {
     # Re-enter the reboot-restore check (idempotent: no-op if session exists).
     _gzmx_reboot_restore_check "$host" "$session" "$_remote_zmx" "$_hist_file" 2>/dev/null || true
 
-    # Run the transport in the foreground, capturing its pid for the trap.
-    "$@" &
+    # Run the transport. Backgrounded so the trap can kill it on close, but
+    # stdin must come from /dev/tty: zsh sets a backgrounded job's stdin to
+    # /dev/null, which makes ssh -t refuse to allocate a pty ("Pseudo-terminal
+    # will not be allocated because stdin is not a terminal") and the remote
+    # `zmx attach` runs non-interactively and exits immediately.
+    "$@" </dev/tty &
     _gzmx_ssh_pid=$!
     wait "$_gzmx_ssh_pid" 2>/dev/null
     _rc=$?

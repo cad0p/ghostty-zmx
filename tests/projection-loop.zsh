@@ -70,7 +70,7 @@ _run_case() {
   _GZMX_TEST_TRAP_DURING_SLEEP="$trap_during_sleep" \
   _GZMX_TEST_OWNER_ALIVE="$owner_alive" \
   _GZMX_TEST_ROW_CLOSING="$row_closing" \
-  zsh "$_worker" 2>/dev/null
+  script -q /dev/null zsh "$_worker" >/dev/null 2>&1
   echo $?  # the worker's exit status = the loop's exit code
 }
 
