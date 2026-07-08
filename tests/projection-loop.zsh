@@ -39,10 +39,15 @@ _gzmx_ghostty_elapsed() { print -r -- "1000"; }
 _gzmx_owner_alive() { [[ "${_GZMX_TEST_OWNER_ALIVE:-1}" == "1" ]]; }
 _gzmx_projection_row_closing() { [[ "${_GZMX_TEST_ROW_CLOSING:-0}" == "1" ]]; }
 _gzmx_snapshot_session() { :; }
-_gzmx_reboot_restore_check() { :; }
+_gzmx_reboot_restore_check() {
+  local c
+  c=$(cat "$GZMX_WORKDIR/reboot_counter" 2>/dev/null || echo 0); c=$((c + 1))
+  echo "$c" > "$GZMX_WORKDIR/reboot_counter"
+}
 _gzmx_session_state() { print -r -- "${_GZMX_TEST_SESSION_STATE:-survived}"; }
 sleep() { [[ "${_GZMX_TEST_TRAP_DURING_SLEEP:-0}" == "1" ]] && kill -HUP $$ 2>/dev/null; }
 echo 0 > "$GZMX_WORKDIR/counter"
+echo 0 > "$GZMX_WORKDIR/reboot_counter"
 _gzmx_test_transport() {
   local c
   c=$(cat "$GZMX_WORKDIR/counter" 2>/dev/null || echo 0); c=$((c + 1))
@@ -59,7 +64,7 @@ WORKER
 # read from the counter file.
 _run_case() {
   local session_state="$1" rc="$2" max_attempts="${3:-0}" trap_during_run="${4:-0}" trap_during_sleep="${5:-0}" owner_alive="${6:-1}" row_closing="${7:-0}"
-  rm -f "$workdir/counter"
+  rm -f "$workdir/counter" "$workdir/reboot_counter"
   GZMX_REPO_DIR="$repo_dir" GZMX_WORKDIR="$workdir" \
   _GZMX_TEST_SESSION_STATE="$session_state" \
   _GZMX_TEST_TRANSPORT_RC="$rc" \
@@ -75,6 +80,7 @@ _run_case() {
 }
 
 _attempts() { cat "$workdir/counter" 2>/dev/null || echo 0; }
+_reboot_calls() { cat "$workdir/reboot_counter" 2>/dev/null || echo 0; }
 
 # ---------------------------------------------------------------------------
 # Case 2: ssh rc 255 + survived => reconnect (attempt counter increments)
@@ -94,6 +100,22 @@ print "case 3: ssh rc 255 + gone => reconnect (reboot-restore path)"
 _rc=$(_run_case gone 255 2)
 _a=$(_attempts)
 (( _a >= 2 )) && _ok "reconnected via reboot-restore path ($_a calls)" || _bad "expected >=2 calls, got $_a"
+
+# ---------------------------------------------------------------------------
+# Case 3b: ssh rc 255 + unknown (ssh check failed) => reconnect WITHOUT
+# reboot-restore on subsequent iterations (don't clobber a possibly-live
+# session on a transient failure). The first iteration's reboot-restore is
+# the cold-start path (runs before any transport); the skip applies to the
+# next iteration.
+# ---------------------------------------------------------------------------
+print ""
+print "case 3b: ssh rc 255 + unknown => reconnect without reboot-restore"
+_rc=$(_run_case unknown 255 2)
+_a=$(_attempts)
+_rb=$(_reboot_calls)
+(( _a >= 2 )) && _ok "reconnected ($_a calls)" || _bad "expected >=2 calls, got $_a"
+# 1 reboot-restore call = cold start only; NOT 2 (would mean it ran after unknown)
+(( _rb == 1 )) && _ok "reboot-restore only on cold start (1 call)" || _bad "expected 1 reboot-restore call, got $_rb"
 
 # ---------------------------------------------------------------------------
 # Case 4: ssh rc 255 + live => exit (duplicate)
@@ -236,6 +258,14 @@ _s=$(_run_state $'\u2192 name=gzr-test-1-1-1-1\tpid=123\tclients=0\tcreated=1\ts
 # start_dir containing 'clients=' does not skew the parse (column-based)
 _s=$(_run_state $'name=gzr-test-1-1-1-1\tpid=123\tclients=0\tcreated=1\tstart_dir=/home/user/clients=foo')
 [[ "$_s" == "survived" ]] && _ok "start_dir with clients= does not skew parse" || _bad "expected survived, got $_s"
+
+# ssh round-trip failed (non-zero rc) => unknown (don't clobber a live session)
+_s=$(_run_state "" 1)
+[[ "$_s" == "unknown" ]] && _ok "ssh failed (rc=1) => unknown" || _bad "expected unknown, got $_s"
+
+# ssh succeeded but empty output => unknown
+_s=$(_run_state "" 0)
+[[ "$_s" == "unknown" ]] && _ok "ssh ok but empty output => unknown" || _bad "expected unknown, got $_s"
 
 print ""
 if [[ "$fail" -eq 0 ]]; then

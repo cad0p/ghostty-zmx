@@ -167,15 +167,24 @@ _gzmx_reboot_restore_check() {
 
 # Check the remote zmx session's state after the transport exits. Returns
 # `survived` (exists, clients=0 — network drop), `live` (exists, clients=1 —
-# spurious duplicate), or `gone` (missing — remote reboot). Uses $_add_argv
-# from the enclosing wrapper scope. The decision is based on session state,
-# not the ssh exit code: ssh does not exit on user `exit` (zmx intercepts it
-# as a detach), so any ssh exit is a disconnect.
+# spurious duplicate), `gone` (ssh succeeded, session missing — remote
+# reboot), or `unknown` (ssh round-trip failed — network down, host
+# unreachable). Uses $_add_argv from the enclosing wrapper scope. The decision
+# is based on session state, not the ssh exit code: ssh does not exit on user
+# `exit` (zmx intercepts it as a detach), so any ssh exit is a disconnect.
 _gzmx_session_state() {
   emulate -L zsh
   local host="$1" session="$2" remote_zmx="$3"
-  local _raw _clients
-  _raw="$("${_add_argv[@]}" "$remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)" || _raw=""
+  local _raw _clients _ssh_rc
+  _raw="$("${_add_argv[@]}" "$remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)"; _ssh_rc=$?
+  # If the ssh round-trip itself failed (network down, host unreachable),
+  # we cannot tell whether the session survived. Return `unknown` so the
+  # loop reconnects without running reboot-restore — which would clobber a
+  # LIVE preserved session if the network recovers and the session survived.
+  if [[ "$_ssh_rc" -ne 0 || -z "$_raw" ]]; then
+    print -r -- "unknown"
+    return 0
+  fi
   # zmx list is tab-delimited: name=<session>\tpid=<n>\tclients=<n>\t...
   # The active session may be prefixed with a '→ ' marker. Parse by
   # column (mirrors session-manager.zsh _ghostty_zmx_session_clients) so a
@@ -226,6 +235,7 @@ _gzmx_run_projection_loop() {
   trap '_gzmx_closing=1; [[ -n "$_gzmx_ssh_pid" ]] && kill "$_gzmx_ssh_pid" 2>/dev/null' HUP TERM INT
 
   local _attempt=0 _rc=0 _state _backoff _max_backoff _max_attempts _hist_file
+  local _skip_reboot_restore=0
   _backoff="${GHOSTTY_ZMX_RECONNECT_INITIAL_BACKOFF:-1}"
   _max_backoff="${GHOSTTY_ZMX_RECONNECT_MAX_BACKOFF:-30}"
   _max_attempts="${GHOSTTY_ZMX_RECONNECT_MAX_ATTEMPTS:-0}"
@@ -254,7 +264,14 @@ _gzmx_run_projection_loop() {
       _gzmx_snapshot_session "$host" "$session" "$_remote_zmx" 2>/dev/null || true
     fi
     # Re-enter the reboot-restore check (idempotent: no-op if session exists).
-    _gzmx_reboot_restore_check "$host" "$session" "$_remote_zmx" "$_hist_file" 2>/dev/null || true
+    # Skip it when the previous session-state check failed (unknown) — the
+    # session may have survived, and reboot-restore would clobber a LIVE
+    # preserved session if the network recovers.
+    if [[ "$_skip_reboot_restore" -eq 0 ]]; then
+      _gzmx_reboot_restore_check "$host" "$session" "$_remote_zmx" "$_hist_file" 2>/dev/null || true
+    else
+      _skip_reboot_restore=0
+    fi
 
     # Run the transport. Backgrounded so the trap can kill it on close, but
     # stdin must come from /dev/tty: zsh sets a backgrounded job's stdin to
@@ -297,6 +314,14 @@ _gzmx_run_projection_loop() {
         # Session missing — remote reboot. Reconnect via reboot-restore on the
         # next iteration (creates fresh + injects snapshot).
         _gzmx_wdebug "projection: session gone (reboot?) — will reboot-restore on next iteration"
+        ;;
+      unknown)
+        # The session-state check itself failed (network down, host
+        # unreachable). Reconnect without reboot-restore — the session may
+        # have survived, and reboot-restore would clobber a LIVE preserved
+        # session if the network recovers.
+        _skip_reboot_restore=1
+        _gzmx_wdebug "projection: session-state check failed — reconnect without reboot-restore"
         ;;
     esac
 
