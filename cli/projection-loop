@@ -299,6 +299,13 @@ _gzmx_run_projection_loop() {
       _gzmx_wdebug "projection: exiting reason=owner-dead rc=$_rc"
       exit 1
     fi
+    # Cross-client close detected during the transport run → exit immediately,
+    # before the session-state check (avoids an unnecessary ssh round-trip
+    # against a session that was just killed).
+    if _gzmx_projection_row_closing "$host" "$session"; then
+      _gzmx_wdebug "projection: exiting reason=closing-row (post-exit) host=$host session=$session"
+      exit 0
+    fi
     # The transport exited. ssh does NOT exit on user `exit` (zmx intercepts it
     # as a detach), so any exit is a disconnect/abort. Run the session-state
     # check to decide whether to reconnect.

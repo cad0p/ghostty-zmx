@@ -37,7 +37,17 @@ _gzmx_wdebug() { :; }
 _gzmx_detect_ghostty_pid() { print -r -- "$$"; }
 _gzmx_ghostty_elapsed() { print -r -- "1000"; }
 _gzmx_owner_alive() { [[ "${_GZMX_TEST_OWNER_ALIVE:-1}" == "1" ]]; }
-_gzmx_projection_row_closing() { [[ "${_GZMX_TEST_ROW_CLOSING:-0}" == "1" ]]; }
+_gzmx_projection_row_closing() {
+  # If _GZMX_TEST_ROW_CLOSING_AFTER_RUN is set, return not-closing until the
+  # transport has run at least once, then return closing (simulates a
+  # cross-client close during the transport run).
+  if [[ "${_GZMX_TEST_ROW_CLOSING_AFTER_RUN:-0}" == "1" ]]; then
+    local _c
+    _c=$(cat "$GZMX_WORKDIR/counter" 2>/dev/null || echo 0)
+    (( _c >= 1 )) && return 0 || return 1
+  fi
+  [[ "${_GZMX_TEST_ROW_CLOSING:-0}" == "1" ]]
+}
 _gzmx_snapshot_session() { :; }
 _gzmx_reboot_restore_check() {
   local c
@@ -63,7 +73,7 @@ WORKER
 # code (the loop calls exit, which propagates). The transport call count is
 # read from the counter file.
 _run_case() {
-  local session_state="$1" rc="$2" max_attempts="${3:-0}" trap_during_run="${4:-0}" trap_during_sleep="${5:-0}" owner_alive="${6:-1}" row_closing="${7:-0}"
+  local session_state="$1" rc="$2" max_attempts="${3:-0}" trap_during_run="${4:-0}" trap_during_sleep="${5:-0}" owner_alive="${6:-1}" row_closing="${7:-0}" row_closing_after_run="${8:-0}"
   rm -f "$workdir/counter" "$workdir/reboot_counter"
   GZMX_REPO_DIR="$repo_dir" GZMX_WORKDIR="$workdir" \
   _GZMX_TEST_SESSION_STATE="$session_state" \
@@ -75,6 +85,7 @@ _run_case() {
   _GZMX_TEST_TRAP_DURING_SLEEP="$trap_during_sleep" \
   _GZMX_TEST_OWNER_ALIVE="$owner_alive" \
   _GZMX_TEST_ROW_CLOSING="$row_closing" \
+  _GZMX_TEST_ROW_CLOSING_AFTER_RUN="$row_closing_after_run" \
   script -q /dev/null zsh "$_worker" >/dev/null 2>&1
   echo $?  # the worker's exit status = the loop's exit code
 }
@@ -176,6 +187,18 @@ _rc=$(_run_case survived 255 0 0 0 1 1)
 _a=$(_attempts)
 (( _a == 0 )) && _ok "no transport run (closing row at top-of-loop)" || _bad "expected 0 calls, got $_a"
 (( _rc == 0 )) && _ok "exit 0 (cross-client close)" || _bad "expected exit 0, got $_rc"
+
+# ---------------------------------------------------------------------------
+# Case 9b: cross-client close during transport run => exit 0 (post-exit
+# closing-row check fires before session-state)
+# ---------------------------------------------------------------------------
+print ""
+print "case 9b: closing-row during run => exit 0 (post-exit check)"
+# row=present at startup, transport exits 255, row=closing after run => exit 0
+_rc=$(_run_case survived 255 0 0 0 1 0 1)
+_a=$(_attempts)
+(( _a == 1 )) && _ok "1 transport run (exited via post-exit closing-row)" || _bad "expected 1 call, got $_a"
+(( _rc == 0 )) && _ok "exit 0 (post-exit closing-row)" || _bad "expected exit 0, got $_rc"
 
 # ---------------------------------------------------------------------------
 # Case 10: trap during sleep => exit 0 (no new transport started)
