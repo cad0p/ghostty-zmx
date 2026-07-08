@@ -16,9 +16,10 @@
 # header). _gzmx_wdebug is defined by the wrapper before this file is sourced.
 #
 # The wrapper sets these before sourcing: $host, $session (the gzr-* name),
-# $_add_argv (transport argv without the 'zmx attach' remote command, used
-# for no-pty ssh side-channels), $_remote_zmx (probed remote zmx binary
-# path), and $@ (the full transport argv including the attach command).
+# $_add_argv (transport argv without the 'zmx attach' remote command; used
+# for the layout-row add call and as the base for the loop's side-channel
+# argv), $_remote_zmx (probed remote zmx binary path), and $@ (the full
+# transport argv including the attach command).
 # TERM=dumb for tsh is exported by the wrapper before this file and persists
 # across loop iterations via env inheritance — do not move or remove it.
 
@@ -145,9 +146,9 @@ _gzmx_reboot_restore_check() {
   [[ -s "$hist_file" ]] || return 0
   _gzmx_wdebug "projection: reboot-restore check host=$host session=$session snapshot=$hist_file"
   # CRITICAL: redirect stdin from /dev/null so the ssh does not hang waiting
-  # for stdin/password input (would make the check falsely report "missing"
-  # and clobber a LIVE preserved session). See cli/ghostty-zmx reboot-restore
-  # block comment for the full rationale.
+  # for stdin/password input. A hang on stdin makes the check falsely report
+  # "missing", which then clobbers a LIVE Cmd-Q-preserved session via the
+  # zmx run + zmx print injection below.
   if "${_gzmx_side_argv[@]}" "$remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
     _session_exists=1
   fi
@@ -171,9 +172,10 @@ _gzmx_reboot_restore_check() {
 # `survived` (exists, clients=0 — network drop), `live` (exists, clients=1 —
 # spurious duplicate), `gone` (ssh succeeded, session missing — remote
 # reboot), or `unknown` (ssh round-trip failed — network down, host
-# unreachable). Uses $_add_argv from the enclosing wrapper scope. The decision
-# is based on session state, not the ssh exit code: ssh does not exit on user
-# `exit` (zmx intercepts it as a detach), so any ssh exit is a disconnect.
+# unreachable). Uses $_gzmx_side_argv from the enclosing wrapper scope. The
+# decision is based on session state, not the ssh exit code: ssh does not
+# exit on user `exit` (zmx intercepts it as a detach), so any ssh exit is a
+# disconnect.
 _gzmx_session_state() {
   emulate -L zsh
   local host="$1" session="$2" remote_zmx="$3"
