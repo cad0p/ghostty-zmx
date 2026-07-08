@@ -216,9 +216,12 @@ fi
 # of leaving the pane at Ghostty's close prompt. TERM=dumb above persists
 # across loop iterations via env inheritance. GHOSTTY_ZMX_RECONNECT=0 is the
 # kill switch: it restores the original `exec "$@"` behavior (for bisection
-# or users who prefer manual reconnect). See cli/projection-loop.
+# or users who prefer manual reconnect) while still running the cold-start
+# reboot-restore check so the Cmd-Q/reopen scrollback-restore feature is
+# preserved. See cli/projection-loop.
 if [[ "${GHOSTTY_ZMX_RECONNECT:-1}" == "1" ]]; then
   source "$_GZMX_WRAPPER_DIR/projection-loop"
 else
-  exec "$@"
+  typeset _GZMX_PROJECTION_COLD_START_ONLY=1
+  source "$_GZMX_WRAPPER_DIR/projection-loop"
 fi

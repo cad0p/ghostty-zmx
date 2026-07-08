@@ -322,6 +322,60 @@ _elapsed=$(cat "$workdir/sleep_elapsed" 2>/dev/null || echo 0)
 # for CI scheduling.
 (( _elapsed < 1.5 )) && _ok "sleep exited early (${_elapsed}s, not 5s)" || _bad "sleep took ${_elapsed}s (expected < 1.5s)"
 
+# ---------------------------------------------------------------------------
+# Kill switch (GHOSTTY_ZMX_RECONNECT=0): the cold-start-only path runs the
+# reboot-restore check once, then execs the transport. Verifies the kill
+# switch preserves the reboot-restore step that existed before the loop was
+# introduced (design locked decision #8).
+# ---------------------------------------------------------------------------
+print ""
+print "kill switch: reboot-restore runs before exec when loop is disabled"
+_kill_worker="$workdir/kill-worker.zsh"
+cat > "$_kill_worker" <<'KILLWORKER'
+export HOME="$GZMX_WORKDIR/home"
+export GHOSTTY_ZMX_DATA_HOME="$GZMX_WORKDIR/data"
+export GHOSTTY_ZMX_STATE_HOME="$GZMX_WORKDIR/state"
+export GHOSTTY_ZMX_DEBUG=0
+mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
+# Stub the transport argv: a script that writes a marker when called (proving
+# the reboot-restore check ran its side-channel ssh) and exits 0 so the
+# check reports "session exists" and skips injection.
+_marker="$GZMX_WORKDIR/side_channel_ran"
+cat > "$GZMX_WORKDIR/side-channel-stub" <<'STUB'
+print -r -- "ran" > "$GZMX_SIDE_MARKER"
+exit 0
+STUB
+chmod +x "$GZMX_WORKDIR/side-channel-stub" 2>/dev/null || true
+typeset -ga _add_argv; _add_argv=(zsh "$GZMX_WORKDIR/side-channel-stub")
+typeset _remote_zmx="zmx"
+host="test-host"; session="gzr-test-1-1-1-1"
+# Create a scrollback snapshot so _gzmx_reboot_restore_check proceeds past
+# its `[[ -s "$hist_file" ]] || return 0` guard and runs the side-channel
+# ssh check (which our stub captures).
+_hist_dir="$GHOSTTY_ZMX_STATE_HOME/history/$host"
+mkdir -p "$_hist_dir"
+print -r -- "saved scrollback line" > "$_hist_dir/${session}.txt"
+# The transport: a script that exits 42 so we can confirm exec ran it.
+_transport="$GZMX_WORKDIR/transport"
+cat > "$_transport" <<'TRANSPORT'
+exit 42
+TRANSPORT
+chmod +x "$_transport" 2>/dev/null || true
+typeset _GZMX_PROJECTION_COLD_START_ONLY=1
+# Capture the transport argv so the auto-run can exec it.
+set -- "$_transport"
+source "$GZMX_REPO_DIR/cli/projection-loop"
+KILLWORKER
+
+rm -f "$workdir/reboot_ran" "$workdir/side_channel_ran"
+GZMX_REPO_DIR="$repo_dir" GZMX_WORKDIR="$workdir" \
+  GZMX_SIDE_MARKER="$workdir/side_channel_ran" \
+  script -q /dev/null zsh "$_kill_worker" >/dev/null 2>&1
+_krc=$?
+_rb=$(cat "$workdir/side_channel_ran" 2>/dev/null || echo "")
+[[ "$_rb" == "ran" ]] && _ok "reboot-restore ran before exec" || _bad "reboot-restore did not run (got '$_rb')"
+(( _krc == 42 )) && _ok "transport exec'd (exit 42)" || _bad "expected exec to run transport (exit 42), got $_krc"
+
 print ""
 if [[ "$fail" -eq 0 ]]; then
   print "all projection-loop tests passed ($pass/$pass)"

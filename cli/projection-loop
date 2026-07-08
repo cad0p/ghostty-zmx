@@ -375,7 +375,31 @@ _gzmx_run_projection_loop() {
   done
 }
 
+# Cold-start-only path: run the reboot-restore check once (the cold-start
+# step the loop runs on its first iteration), then exec the transport so
+# the wrapper is replaced by ssh as in the original behavior. Used when the
+# reconnect loop is disabled (GHOSTTY_ZMX_RECONNECT=0) so the kill switch
+# still restores the Cmd-Q/reopen scrollback-restore feature that existed
+# before the loop was introduced. The reboot-restore check is self-contained
+# and idempotent (a no-op if the session already exists).
+_gzmx_cold_start_then_exec() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+  local _hist_file
+  local -a _gzmx_side_argv
+  _gzmx_side_argv=("${_add_argv[@]}" -o BatchMode=yes -o ConnectTimeout=10)
+  _hist_file="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/history/$host/${session}.txt"
+  _gzmx_reboot_restore_check "$host" "$session" "$_remote_zmx" "$_hist_file" 2>/dev/null || true
+  exec "$@"
+}
+
 # Auto-run the loop unless the caller (unit tests) opts out by setting
 # _GZMX_PROJECTION_LOOP_NO_AUTO_RUN. Tests source this file with the guard
 # set, override the helper stubs, then call _gzmx_run_projection_loop directly.
-(( ${+_GZMX_PROJECTION_LOOP_NO_AUTO_RUN} )) || _gzmx_run_projection_loop "${_GZMX_PROJECTION_TRANSPORT[@]}"
+# _GZMX_PROJECTION_COLD_START_ONLY runs only the cold-start reboot-restore
+# check then execs the transport (used by the wrapper's kill-switch branch).
+if (( ${+_GZMX_PROJECTION_COLD_START_ONLY} )); then
+  _gzmx_cold_start_then_exec "${_GZMX_PROJECTION_TRANSPORT[@]}"
+elif (( ! ${+_GZMX_PROJECTION_LOOP_NO_AUTO_RUN} )); then
+  _gzmx_run_projection_loop "${_GZMX_PROJECTION_TRANSPORT[@]}"
+fi
