@@ -220,8 +220,8 @@ fi
 # reboot-restore check so the Cmd-Q/reopen scrollback-restore feature is
 # preserved. See cli/projection-loop.
 if [[ "${GHOSTTY_ZMX_RECONNECT:-1}" == "1" ]]; then
-  source "$_GZMX_WRAPPER_DIR/projection-loop"
+  source "$_GZMX_WRAPPER_DIR/projection-loop" || { print -u2 "ghostty-zmx: projection-loop not found in $_GZMX_WRAPPER_DIR (incomplete install)"; exit 127; }
 else
   typeset _GZMX_PROJECTION_COLD_START_ONLY=1
-  source "$_GZMX_WRAPPER_DIR/projection-loop"
+  source "$_GZMX_WRAPPER_DIR/projection-loop" || { print -u2 "ghostty-zmx: projection-loop not found in $_GZMX_WRAPPER_DIR (incomplete install)"; exit 127; }
 fi
