@@ -54,14 +54,27 @@ gzmx_e2e_assert_remote_history_contains "$GZMX_E2E_SESSION" "$MARKER"
 gzmx_e2e_pass "marker injected into remote scrollback before drop"
 
 # 3. Simulate a network drop: kill the ssh client process attached to the
-#    session. The projection wrapper's ssh runs with 'zmx attach <session>' in
-#    its args, so pkill -f "ssh.*<session>" targets it. The reconnect loop
-#    sees the ssh exit (255), checks the session state (survived, clients=0),
-#    and reattaches within backoff.
-gzmx_e2e_log "simulating network drop (killing ssh client for $GZMX_E2E_SESSION)..."
-# Avoid matching our own harness ssh calls: match the attach command shape.
-pkill -f "ssh.*zmx attach $GZMX_E2E_SESSION" 2>/dev/null || \
-  pkill -f "ssh.*$GZMX_E2E_SESSION" 2>/dev/null || true
+#    session. We must target ONLY the ssh child, not the wrapper parent —
+#    the wrapper's ps args contain the full transport argv (including
+#    'ssh ... zmx attach <session>'), so pkill -f "ssh.*<session>" would
+#    SIGTERM the wrapper too, triggering its trap (intentional-close) and
+#    making the loop exit instead of reconnecting. Kill by pid: find the
+#    wrapper pid from remote-projections, then kill its ssh child via
+#    pgrep -P.
+_wrapper_pid="$(awk -F '\t' -v h="$GZMX_E2E_FIXTURE_HOST" -v s="$GZMX_E2E_SESSION" '$1==h && $3==s { print $5; exit }' "$GZMX_E2E_DATA_HOME/remote-projections" 2>/dev/null)"
+if [[ "$_wrapper_pid" =~ ^[0-9]+$ ]]; then
+  _ssh_child="$(pgrep -P "$_wrapper_pid" 2>/dev/null | head -1)"
+  if [[ "$_ssh_child" =~ ^[0-9]+$ ]]; then
+    gzmx_e2e_log "simulating network drop (killing ssh child pid=$_ssh_child of wrapper pid=$_wrapper_pid for $GZMX_E2E_SESSION)..."
+    kill -TERM "$_ssh_child" 2>/dev/null || true
+  else
+    gzmx_e2e_log "no ssh child found under wrapper pid=$_wrapper_pid; falling back to pkill"
+    pkill -f "ssh.*zmx attach $GZMX_E2E_SESSION" 2>/dev/null || true
+  fi
+else
+  gzmx_e2e_log "wrapper pid not found in remote-projections; falling back to pkill"
+  pkill -f "ssh.*zmx attach $GZMX_E2E_SESSION" 2>/dev/null || true
+fi
 
 # 4. Assert the pane reconnects within backoff: window count stays 2 (the pane
 #    did not close), clients returns to 1 (reattached), same session name.
