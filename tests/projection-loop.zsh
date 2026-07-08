@@ -178,6 +178,65 @@ _rc=$(_run_case survived 0 2)
 _a=$(_attempts)
 (( _a == 2 )) && _ok "reconnected on rc 0 (2 calls)" || _bad "expected 2 calls, got $_a"
 
+# ---------------------------------------------------------------------------
+# Session-state parse tests: feed real tab-delimited zmx list output through
+# the un-stubbed _gzmx_session_state. A separate worker stubs _add_argv (the
+# transport argv) to emit the fixture string instead of running ssh.
+# ---------------------------------------------------------------------------
+print ""
+print "session-state parse: tab-delimited zmx list output"
+
+_state_worker="$workdir/state-worker.zsh"
+cat > "$_state_worker" <<'STATEWORKER'
+export HOME="$GZMX_WORKDIR/home"
+export GHOSTTY_ZMX_DATA_HOME="$GZMX_WORKDIR/data"
+export GHOSTTY_ZMX_STATE_HOME="$GZMX_WORKDIR/state"
+export GHOSTTY_ZMX_DEBUG=0
+mkdir -p "$HOME" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_STATE_HOME"
+typeset _GZMX_PROJECTION_LOOP_NO_AUTO_RUN=1
+host="test-host"; session="gzr-test-1-1-1-1"
+source "$GZMX_REPO_DIR/cli/projection-loop"
+_gzmx_wdebug() { :; }
+# Stub the transport argv: a script that emits the fixture zmx list output
+# (and returns the simulated ssh rc) instead of running real ssh.
+_emit="$GZMX_WORKDIR/emit-list"
+cat > "$_emit" <<'EMIT'
+print -r -- "$GZMX_TEST_ZMX_LIST"
+return "${GZMX_TEST_SSH_RC:-0}"
+EMIT
+chmod +x "$_emit" 2>/dev/null || true
+typeset -ga _add_argv; _add_argv=(zsh "$_emit")
+_gzmx_session_state "$host" "$session" "zmx"
+STATEWORKER
+
+_run_state() {
+  local zmx_list="$1" ssh_rc="${2:-0}"
+  GZMX_REPO_DIR="$repo_dir" GZMX_WORKDIR="$workdir" \
+  GZMX_TEST_ZMX_LIST="$zmx_list" \
+  GZMX_TEST_SSH_RC="$ssh_rc" \
+  zsh "$_state_worker" 2>/dev/null
+}
+
+# clients=0 => survived (network drop, session alive)
+_s=$(_run_state $'name=gzr-test-1-1-1-1\tpid=123\tclients=0\tcreated=1\tstart_dir=/h')
+[[ "$_s" == "survived" ]] && _ok "clients=0 => survived" || _bad "expected survived, got $_s"
+
+# clients=1 => live (spurious duplicate)
+_s=$(_run_state $'name=gzr-test-1-1-1-1\tpid=123\tclients=1\tcreated=1\tstart_dir=/h')
+[[ "$_s" == "live" ]] && _ok "clients=1 => live" || _bad "expected live, got $_s"
+
+# session missing => gone
+_s=$(_run_state $'name=gzr-other\tpid=456\tclients=0\tcreated=1\tstart_dir=/h')
+[[ "$_s" == "gone" ]] && _ok "session missing => gone" || _bad "expected gone, got $_s"
+
+# active-session marker prefix (→) is stripped before matching
+_s=$(_run_state $'\u2192 name=gzr-test-1-1-1-1\tpid=123\tclients=0\tcreated=1\tstart_dir=/h')
+[[ "$_s" == "survived" ]] && _ok "active-session marker (→) stripped" || _bad "expected survived with → prefix, got $_s"
+
+# start_dir containing 'clients=' does not skew the parse (column-based)
+_s=$(_run_state $'name=gzr-test-1-1-1-1\tpid=123\tclients=0\tcreated=1\tstart_dir=/home/user/clients=foo')
+[[ "$_s" == "survived" ]] && _ok "start_dir with clients= does not skew parse" || _bad "expected survived, got $_s"
+
 print ""
 if [[ "$fail" -eq 0 ]]; then
   print "all projection-loop tests passed ($pass/$pass)"

@@ -174,18 +174,17 @@ _gzmx_reboot_restore_check() {
 _gzmx_session_state() {
   emulate -L zsh
   local host="$1" session="$2" remote_zmx="$3"
-  local _raw _line _clients="" _found=0
+  local _raw _clients
   _raw="$("${_add_argv[@]}" "$remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)" || _raw=""
-  while IFS= read -r _line; do
-    [[ "$_line" == *"name=$session "* ]] || continue
-    _found=1
-    if [[ "$_line" == *"clients="* ]]; then
-      _clients="${_line##*clients=}"
-      _clients="${_clients%%[^0-9]*}"
-    fi
-    break
-  done <<< "$_raw"
-  if [[ "$_found" -eq 0 ]]; then
+  # zmx list is tab-delimited: name=<session>\tpid=<n>\tclients=<n>\t...
+  # The active session may be prefixed with a '→ ' marker. Parse by
+  # column (mirrors session-manager.zsh _ghostty_zmx_session_clients) so a
+  # start_dir containing 'clients=' cannot skew the field.
+  _clients="$(print -r -- "$_raw" | awk -F '\t' -v s="$session" '
+    { sub(/^[→ ]*name=/, "", $1) }
+    $1 == s { sub(/^clients=/, "", $3); print $3; exit }
+  ' 2>/dev/null)"
+  if [[ -z "$_clients" ]]; then
     print -r -- "gone"
   elif [[ "$_clients" =~ ^[0-9]+$ && "$_clients" -ge 1 ]]; then
     print -r -- "live"
