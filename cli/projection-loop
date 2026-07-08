@@ -232,7 +232,10 @@ _gzmx_run_projection_loop() {
   # signal a close (e.g. in tests) can set it.
   typeset -g _gzmx_closing=0
   local _gzmx_ssh_pid=""
-  trap '_gzmx_closing=1; [[ -n "$_gzmx_ssh_pid" ]] && kill "$_gzmx_ssh_pid" 2>/dev/null' HUP TERM INT
+  # Guard the trap's kill against pid reuse: after `wait` returns, the recorded
+  # pid may have been recycled for an unrelated process. Re-verify the pid is
+  # still a direct child of this process before sending the signal.
+  trap '_gzmx_closing=1; [[ -n "$_gzmx_ssh_pid" ]] && [[ "$(ps -o ppid= -p "$_gzmx_ssh_pid" 2>/dev/null | tr -d " ")" == "$$" ]] && kill "$_gzmx_ssh_pid" 2>/dev/null' HUP TERM INT
 
   local _attempt=0 _rc=0 _state _backoff _max_backoff _max_attempts _hist_file
   local _skip_reboot_restore=0
