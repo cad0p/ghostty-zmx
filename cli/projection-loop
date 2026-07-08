@@ -220,7 +220,11 @@ _gzmx_run_projection_loop() {
   # Trap: set the close flag AND kill the foreground ssh child so it dies
   # promptly. Without killing ssh, the wrapper blocks in `wait` and the pane
   # lingers (zsh traps do not forward signals to the foreground child).
-  local _gzmx_ssh_pid="" _gzmx_closing=0
+  # _gzmx_closing is a process-global (not local) so the trap closure and the
+  # loop body share one flag, and so a foreground transport that wishes to
+  # signal a close (e.g. in tests) can set it.
+  typeset -g _gzmx_closing=0
+  local _gzmx_ssh_pid=""
   trap '_gzmx_closing=1; [[ -n "$_gzmx_ssh_pid" ]] && kill "$_gzmx_ssh_pid" 2>/dev/null' HUP TERM INT
 
   local _attempt=0 _rc=0 _state _backoff _max_backoff _max_attempts _hist_file
