@@ -1,0 +1,316 @@
+#!/bin/zsh
+# cli/projection-loop — autossh-inspired reconnect loop for remote projections.
+#
+# Sourced by cli/ghostty-zmx (which runs under `zsh -f`) at the point where
+# `exec "$@"` previously was. When the ssh/tsh transport exits, this loop
+# re-runs it (with exponential backoff) to reattach to the surviving remote
+# zmx session — unless the pane was intentionally closed (Cmd-W / window
+# close / Cmd-Q), in which case it exits cleanly so the reaper/poller can run
+# the close transaction as before.
+#
+# Self-contained: inlines the small helpers it needs (ppid-chain walk for
+# ghostty-pid discovery, elapsed-seconds parse, session-state check,
+# projection-row closing check, scrollback snapshot, reboot-restore) rather
+# than sourcing session-manager.zsh. The wrapper runs `zsh -f` and must not
+# source the manager (that isolation is load-bearing — see cli/ghostty-zmx
+# header). _gzmx_wdebug is defined by the wrapper before this file is sourced.
+#
+# The wrapper sets these before sourcing: $host, $session (the gzr-* name),
+# $_add_argv (transport argv without the 'zmx attach' remote command, used
+# for no-pty ssh side-channels), $_remote_zmx (probed remote zmx binary
+# path), and $@ (the full transport argv including the attach command).
+# TERM=dumb for tsh is exported by the wrapper before this file and persists
+# across loop iterations via env inheritance — do not move or remove it.
+
+emulate -L zsh
+setopt no_sh_word_split
+
+# The transport argv (ssh -t host 'zmx attach ...'), captured at source time.
+# The auto-run at the bottom of this file passes it to the loop function.
+typeset -ga _GZMX_PROJECTION_TRANSPORT
+_GZMX_PROJECTION_TRANSPORT=("$@")
+
+# Parse a ps(1) etime token ([[dd-]hh:]mm:ss) into seconds. Inlined from
+# session-manager.zsh _ghostty_zmx_parse_elapsed_seconds because the wrapper
+# runs under `zsh -f` and must not source the manager.
+_gzmx_parse_elapsed_seconds() {
+  emulate -L zsh
+  local elapsed="$1" days=0 hours=0 minutes seconds
+  local -a parts
+  [[ -n "$elapsed" ]] || return 1
+  if [[ "$elapsed" == *-* ]]; then
+    days="${elapsed%%-*}"
+    elapsed="${elapsed#*-}"
+    [[ "$days" =~ ^[0-9]+$ ]] || return 1
+  fi
+  parts=("${(@s/:/)elapsed}")
+  case ${#parts} in
+    2) minutes="${parts[1]}"; seconds="${parts[2]}" ;;
+    3) hours="${parts[1]}"; minutes="${parts[2]}"; seconds="${parts[3]}" ;;
+    *) return 1 ;;
+  esac
+  [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
+  print -r -- $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
+}
+
+# Print the elapsed-seconds token for a pid (ps -o etime=). Inlined from
+# session-manager.zsh _ghostty_zmx_ghostty_elapsed_seconds.
+_gzmx_ghostty_elapsed() {
+  emulate -L zsh
+  local pid="$1" elapsed
+  elapsed="$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')" || return 1
+  _gzmx_parse_elapsed_seconds "$elapsed"
+}
+
+# Return 0 if the owning Ghostty pid is alive and its elapsed-seconds is >=
+# the saved token (the process has not died and been reused). Inlines the
+# poller's owner-liveness pattern (poller.sh: cur_elapsed vs saved). A dead
+# pid (empty etime) or a younger pid (reused) returns 1.
+_gzmx_owner_alive() {
+  emulate -L zsh
+  local ghostty_pid="$1" saved_elapsed="$2" cur_elapsed
+  [[ "$ghostty_pid" =~ ^[0-9]+$ ]] || return 1
+  cur_elapsed="$(ps -o etime= -p "$ghostty_pid" 2>/dev/null | tr -d ' ')"
+  [[ -n "$cur_elapsed" ]] || return 1
+  cur_elapsed="$(_gzmx_parse_elapsed_seconds "$cur_elapsed" 2>/dev/null)" || return 1
+  [[ -n "$saved_elapsed" ]] || return 0
+  (( cur_elapsed >= saved_elapsed ))
+}
+
+# Walk the ppid chain from $$ until a process whose comm matches *ghostty*.
+# Inlined from session-manager.zsh ghostty_zmx_detect_ghostty_pid. Prints the
+# pid; returns 1 if not found. The wrapper is launched by AppleScript
+# `command of cfg`, so it does not receive the ghostty pid as an argument
+# (unlike the reaper/poller) and must discover it via its own process tree.
+_gzmx_detect_ghostty_pid() {
+  emulate -L zsh
+  local p=$$ cmd
+  while [[ $p -gt 1 ]]; do
+    cmd="$(ps -o comm= -p $p 2>/dev/null)"
+    if [[ "${cmd:l}" == *ghostty* ]]; then
+      print -r -- "$p"
+      return 0
+    fi
+    p=$(ps -o ppid= -p $p 2>/dev/null | tr -d ' ')
+  done
+  return 1
+}
+
+# Return 0 if the local projection row for <host,session> is in `closing`
+# state (a cross-client close is in progress). Inlined from
+# session-manager.zsh ghostty_zmx_projection_closing — the awk parse of the
+# remote-projections TSV. Prevents the loop from fighting a cross-client close.
+_gzmx_projection_row_closing() {
+  emulate -L zsh
+  local host="$1" session="$2"
+  local projection_file="${GHOSTTY_ZMX_DATA_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/ghostty-zmx}/remote-projections"
+  [[ -f "$projection_file" ]] || return 1
+  awk -F '\t' -v host="$host" -v session="$session" \
+    '$1 == host && $3 == session && $6 == "closing" { found=1 } END { exit(found ? 0 : 1) }' \
+    "$projection_file" 2>/dev/null
+}
+
+# Snapshot a remote session's scrollback over ssh into the lazy history
+# store (~/.local/state/ghostty-zmx/history/<host>/<session>.txt). Inlined
+# from session-manager.zsh ghostty_zmx_snapshot_remote_session. Uses
+# $_add_argv (the no-pty transport argv) from the enclosing wrapper scope.
+# Best-effort: a failure (host down, session gone) leaves the prior snapshot.
+_gzmx_snapshot_session() {
+  emulate -L zsh
+  local host="$1" session="$2" remote_zmx="$3"
+  local dir hist_file tmp scrollback="${GHOSTTY_ZMX_SCROLLBACK_LINES:-1000}"
+  dir="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/history/$host"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  hist_file="$dir/${session}.txt"
+  tmp="${hist_file}.tmp.$$"
+  if "${_add_argv[@]}" "$remote_zmx history $session 2>/dev/null" | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
+    [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    _gzmx_wdebug "projection: snapshot host=$host session=$session file=$hist_file"
+  else
+    rm -f "$tmp" 2>/dev/null
+    _gzmx_wdebug "projection: snapshot failed host=$host session=$session (left prior)"
+  fi
+}
+
+# Reboot-restore: if the remote session is missing and a local scrollback
+# snapshot exists, create a fresh session and inject the saved scrollback.
+# Moved here from cli/ghostty-zmx's reboot-restore block (lines 180-230).
+# Uses $_add_argv from the enclosing wrapper scope. Idempotent: a no-op if
+# the session already exists (reattach, not reboot).
+_gzmx_reboot_restore_check() {
+  emulate -L zsh
+  local host="$1" session="$2" remote_zmx="$3" hist_file="$4"
+  local _session_exists=0
+  [[ -s "$hist_file" ]] || return 0
+  _gzmx_wdebug "projection: reboot-restore check host=$host session=$session snapshot=$hist_file"
+  # CRITICAL: redirect stdin from /dev/null so the ssh does not hang waiting
+  # for stdin/password input (would make the check falsely report "missing"
+  # and clobber a LIVE preserved session). See cli/ghostty-zmx reboot-restore
+  # block comment for the full rationale.
+  if "${_add_argv[@]}" "$remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
+    _session_exists=1
+  fi
+  if [[ "$_session_exists" -eq 0 ]]; then
+    _gzmx_wdebug "projection: reboot-restore session missing — creating fresh + injecting host=$host session=$session"
+    "${_add_argv[@]}" "$remote_zmx run $session true >/dev/null 2>&1" </dev/null 2>/dev/null || true
+    local _banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
+    # zmx print requires \r\n line endings; convert before base64 encoding so
+    # multi-line text / special chars survive the local-zsh -> ssh -> remote
+    # -> zmx hop without shell-expansion issues.
+    { print -r -- "$_banner"; cat "$hist_file"; } | sed 's/$/\r/' | base64 | tr -d '\n' | \
+      "${_add_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $remote_zmx print $session" </dev/null 2>/dev/null || true
+    _gzmx_wdebug "projection: reboot-restore injected host=$host session=$session"
+    print -n $'\e]2;ghostty-zmx: restored '"$host"' ('"$session"')\a'
+  else
+    _gzmx_wdebug "projection: reboot-restore session exists — reattach host=$host session=$session"
+  fi
+}
+
+# Check the remote zmx session's state after the transport exits. Returns
+# `survived` (exists, clients=0 — network drop), `live` (exists, clients=1 —
+# spurious duplicate), or `gone` (missing — remote reboot). Uses $_add_argv
+# from the enclosing wrapper scope. The decision is based on session state,
+# not the ssh exit code: ssh does not exit on user `exit` (zmx intercepts it
+# as a detach), so any ssh exit is a disconnect.
+_gzmx_session_state() {
+  emulate -L zsh
+  local host="$1" session="$2" remote_zmx="$3"
+  local _raw _line _clients="" _found=0
+  _raw="$("${_add_argv[@]}" "$remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)" || _raw=""
+  while IFS= read -r _line; do
+    [[ "$_line" == *"name=$session "* ]] || continue
+    _found=1
+    if [[ "$_line" == *"clients="* ]]; then
+      _clients="${_line##*clients=}"
+      _clients="${_clients%%[^0-9]*}"
+    fi
+    break
+  done <<< "$_raw"
+  if [[ "$_found" -eq 0 ]]; then
+    print -r -- "gone"
+  elif [[ "$_clients" =~ ^[0-9]+$ && "$_clients" -ge 1 ]]; then
+    print -r -- "live"
+  else
+    print -r -- "survived"
+  fi
+}
+
+# The reconnect loop. $@ is the transport argv (ssh -t host 'zmx attach ...').
+# Runs the transport in the foreground, catches its exit, classifies it, and
+# either reconnects (with backoff) or exits. Exits the process on intentional
+# close / owner-dead / duplicate / max-attempts — the reaper/poller observe
+# the dead wrapper pid and run the close transaction as before.
+_gzmx_run_projection_loop() {
+  emulate -L zsh
+  setopt local_options no_sh_word_split
+
+  # Discover owning Ghostty pid + elapsed (ppid-chain walk, cached). Retry
+  # briefly in case the process tree is not yet settled at wrapper startup.
+  local _ghostty_pid="" _ghostty_elapsed="" _i
+  for (( _i=0; _i<20; _i++ )); do
+    _ghostty_pid="$(_gzmx_detect_ghostty_pid)"
+    [[ -n "$_ghostty_pid" ]] && break
+    sleep 0.25
+  done
+  if [[ -n "$_ghostty_pid" ]]; then
+    _ghostty_elapsed="$(_gzmx_ghostty_elapsed "$_ghostty_pid" 2>/dev/null)" || _ghostty_elapsed=""
+  fi
+  _gzmx_wdebug "projection: loop start ghostty_pid=$_ghostty_pid elapsed=$_ghostty_elapsed host=$host session=$session"
+
+  # Trap: set the close flag AND kill the foreground ssh child so it dies
+  # promptly. Without killing ssh, the wrapper blocks in `wait` and the pane
+  # lingers (zsh traps do not forward signals to the foreground child).
+  local _gzmx_ssh_pid="" _gzmx_closing=0
+  trap '_gzmx_closing=1; [[ -n "$_gzmx_ssh_pid" ]] && kill "$_gzmx_ssh_pid" 2>/dev/null' HUP TERM INT
+
+  local _attempt=0 _rc=0 _state _backoff _max_backoff _max_attempts _hist_file
+  _backoff="${GHOSTTY_ZMX_RECONNECT_INITIAL_BACKOFF:-1}"
+  _max_backoff="${GHOSTTY_ZMX_RECONNECT_MAX_BACKOFF:-30}"
+  _max_attempts="${GHOSTTY_ZMX_RECONNECT_MAX_ATTEMPTS:-0}"
+  _hist_file="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/history/$host/${session}.txt"
+
+  while :; do
+    # TOP-OF-LOOP CHECKS (before any new transport run):
+    # 1. Trap fired during sleep / previous iteration → exit immediately.
+    if [[ "$_gzmx_closing" -eq 1 ]]; then
+      _gzmx_wdebug "projection: exiting reason=intentional-close (trap) attempt=$_attempt"
+      exit 0
+    fi
+    # 2. Owning Ghostty dead (Cmd-Q / crash where the signal didn't arrive).
+    if ! _gzmx_owner_alive "$_ghostty_pid" "$_ghostty_elapsed"; then
+      _gzmx_wdebug "projection: exiting reason=owner-dead attempt=$_attempt"
+      exit 1
+    fi
+    # 3. Cross-client close: local projection row is `closing` → exit.
+    if _gzmx_projection_row_closing "$host" "$session"; then
+      _gzmx_wdebug "projection: exiting reason=closing-row host=$host session=$session"
+      exit 0
+    fi
+
+    # Pre-reconnect snapshot (best-effort; fails silently if network is down).
+    if (( _attempt > 0 )) && [[ "${GHOSTTY_ZMX_RECONNECT_PRE_SNAPSHOT:-1}" == 1 ]]; then
+      _gzmx_snapshot_session "$host" "$session" "$_remote_zmx" 2>/dev/null || true
+    fi
+    # Re-enter the reboot-restore check (idempotent: no-op if session exists).
+    _gzmx_reboot_restore_check "$host" "$session" "$_remote_zmx" "$_hist_file" 2>/dev/null || true
+
+    # Run the transport in the foreground, capturing its pid for the trap.
+    "$@" &
+    _gzmx_ssh_pid=$!
+    wait "$_gzmx_ssh_pid" 2>/dev/null
+    _rc=$?
+    _gzmx_ssh_pid=""
+    _gzmx_wdebug "projection: transport exited rc=$_rc attempt=$_attempt closing=$_gzmx_closing"
+
+    # POST-EXIT CHECKS:
+    # Trap fired during the transport run → exit (intentional close).
+    if [[ "$_gzmx_closing" -eq 1 ]]; then
+      _gzmx_wdebug "projection: exiting reason=intentional-close (trap during run) rc=$_rc"
+      exit 0
+    fi
+    # Owner died while the transport was running → exit.
+    if ! _gzmx_owner_alive "$_ghostty_pid" "$_ghostty_elapsed"; then
+      _gzmx_wdebug "projection: exiting reason=owner-dead rc=$_rc"
+      exit 1
+    fi
+    # The transport exited. ssh does NOT exit on user `exit` (zmx intercepts it
+    # as a detach), so any exit is a disconnect/abort. Run the session-state
+    # check to decide whether to reconnect.
+    _state="$(_gzmx_session_state "$host" "$session" "$_remote_zmx")"
+    _gzmx_wdebug "projection: session-state=$_state host=$host session=$session rc=$_rc"
+    case "$_state" in
+      survived)
+        # clients=0 — network drop. Reconnect (reattach to the surviving session).
+        ;;
+      live)
+        # clients=1 — a duplicate attach is already live. Exit (don't reconnect).
+        _gzmx_wdebug "projection: exiting reason=session-live-duplicate rc=$_rc"
+        exit "$_rc"
+        ;;
+      gone)
+        # Session missing — remote reboot. Reconnect via reboot-restore on the
+        # next iteration (creates fresh + injects snapshot).
+        _gzmx_wdebug "projection: session gone (reboot?) — will reboot-restore on next iteration"
+        ;;
+    esac
+
+    _attempt=$((_attempt + 1))
+    if [[ "$_max_attempts" -gt 0 && "$_attempt" -ge "$_max_attempts" ]]; then
+      _gzmx_wdebug "projection: exiting reason=max-attempts attempt=$_attempt rc=$_rc"
+      exit "$_rc"
+    fi
+
+    # Backoff sleep (interruptible: a trap during sleep sets the close flag;
+    # the top-of-loop check on the next iteration exits without starting a
+    # new transport).
+    _gzmx_wdebug "projection: reconnecting backoff=$_backoff attempt=$_attempt"
+    sleep "$_backoff"
+    _backoff=$(( _backoff * 2 ))
+    (( _backoff > _max_backoff )) && _backoff="$_max_backoff"
+  done
+}
+
+# Auto-run the loop unless the caller (unit tests) opts out by setting
+# _GZMX_PROJECTION_LOOP_NO_AUTO_RUN. Tests source this file with the guard
+# set, override the helper stubs, then call _gzmx_run_projection_loop directly.
+(( ${+_GZMX_PROJECTION_LOOP_NO_AUTO_RUN} )) || _gzmx_run_projection_loop "${_GZMX_PROJECTION_TRANSPORT[@]}"
