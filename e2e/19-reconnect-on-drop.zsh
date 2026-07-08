@@ -57,16 +57,17 @@ gzmx_e2e_pass "marker injected into remote scrollback before drop"
 #    session. We must target ONLY the ssh child, not the wrapper parent —
 #    the wrapper's ps args contain the full transport argv (including
 #    'ssh ... zmx attach <session>'), so pkill -f "ssh.*<session>" would
-#    SIGTERM the wrapper too, triggering its trap (intentional-close) and
-#    making the loop exit instead of reconnecting. Kill by pid: find the
-#    wrapper pid from remote-projections, then kill its ssh child via
-#    pgrep -P.
+#    signal the wrapper too. Kill by pid: find the wrapper pid from
+#    remote-projections, then kill its ssh child via pgrep -P. SIGTERM is
+#    correct here: the wrapper's trap fires and sets _gzmx_closing, but the
+#    loop no longer exits on the trap flag alone — it exits on owner
+#    liveness, which stays alive on a network drop — so the loop reconnects.
 _wrapper_pid="$(awk -F '\t' -v h="$GZMX_E2E_FIXTURE_HOST" -v s="$GZMX_E2E_SESSION" '$1==h && $3==s { print $5; exit }' "$GZMX_E2E_DATA_HOME/remote-projections" 2>/dev/null)"
 if [[ "$_wrapper_pid" =~ ^[0-9]+$ ]]; then
   _ssh_child="$(pgrep -P "$_wrapper_pid" 2>/dev/null | head -1)"
   if [[ "$_ssh_child" =~ ^[0-9]+$ ]]; then
     gzmx_e2e_log "simulating network drop (killing ssh child pid=$_ssh_child of wrapper pid=$_wrapper_pid for $GZMX_E2E_SESSION)..."
-    kill -KILL "$_ssh_child" 2>/dev/null || true
+    kill -TERM "$_ssh_child" 2>/dev/null || true
   else
     gzmx_e2e_log "no ssh child found under wrapper pid=$_wrapper_pid; falling back to pkill"
     pkill -f "ssh.*zmx attach $GZMX_E2E_SESSION" 2>/dev/null || true
