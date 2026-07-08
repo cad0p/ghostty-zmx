@@ -291,6 +291,37 @@ _s=$(_run_state "" 1)
 _s=$(_run_state "" 0)
 [[ "$_s" == "unknown" ]] && _ok "ssh ok but empty output => unknown" || _bad "expected unknown, got $_s"
 
+# ---------------------------------------------------------------------------
+# Interruptible sleep: _gzmx_interruptible_sleep exits early when the close
+# flag is set mid-sleep (a trap fired). Verify it returns before the full
+# duration when _gzmx_closing is flipped during the sleep.
+# ---------------------------------------------------------------------------
+print ""
+print "interruptible sleep: exits early on close flag"
+_sleep_worker="$workdir/sleep-worker.zsh"
+cat > "$_sleep_worker" <<'SLEEPWORKER'
+export HOME="$GZMX_WORKDIR/home"
+export GHOSTTY_ZMX_DATA_HOME="$GZMX_WORKDIR/data"
+export GHOSTTY_ZMX_STATE_HOME="$GZMX_WORKDIR/state"
+zmodload zsh/datetime
+typeset _GZMX_PROJECTION_LOOP_NO_AUTO_RUN=1
+source "$GZMX_REPO_DIR/cli/projection-loop"
+typeset -g _gzmx_closing=0
+# Send HUP to ourselves after 0.3s — the trap sets _gzmx_closing=1.
+trap '_gzmx_closing=1' HUP
+( sleep 0.3; kill -HUP $$ ) &
+_start=$EPOCHREALTIME
+_gzmx_interruptible_sleep 5
+_end=$EPOCHREALTIME
+print -r -- "$(( _end - _start ))" > "$GZMX_WORKDIR/sleep_elapsed"
+SLEEPWORKER
+
+GZMX_REPO_DIR="$repo_dir" GZMX_WORKDIR="$workdir" zsh "$_sleep_worker" 2>/dev/null
+_elapsed=$(cat "$workdir/sleep_elapsed" 2>/dev/null || echo 0)
+# Should be ~0.3s (flag flip), not ~5s (full sleep). Allow up to 1.5s margin
+# for CI scheduling.
+(( _elapsed < 1.5 )) && _ok "sleep exited early (${_elapsed}s, not 5s)" || _bad "sleep took ${_elapsed}s (expected < 1.5s)"
+
 print ""
 if [[ "$fail" -eq 0 ]]; then
   print "all projection-loop tests passed ($pass/$pass)"

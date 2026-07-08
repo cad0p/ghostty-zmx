@@ -204,6 +204,20 @@ _gzmx_session_state() {
   fi
 }
 
+# Sleep for up to \$1 seconds, but exit early if the close flag is set (a
+# trap fired during the sleep). zsh's builtin sleep is not preempted by
+# traps, so poll in small increments. The close flag is the process-global
+# _gzmx_closing set by the trap handler.
+_gzmx_interruptible_sleep() {
+  emulate -L zsh
+  local total="$1" elapsed=0 increment=0.2
+  while (( elapsed < total )); do
+    [[ "$_gzmx_closing" -eq 1 ]] && return 0
+    sleep "$increment"
+    elapsed=$(( elapsed + increment ))
+  done
+}
+
 # The reconnect loop. $@ is the transport argv (ssh -t host 'zmx attach ...').
 # Runs the transport in the foreground, catches its exit, classifies it, and
 # either reconnects (with backoff) or exits. Exits the process on intentional
@@ -352,9 +366,10 @@ _gzmx_run_projection_loop() {
 
     # Backoff sleep (interruptible: a trap during sleep sets the close flag;
     # the top-of-loop check on the next iteration exits without starting a
-    # new transport).
+    # new transport). zsh's sleep is not preempted by traps, so poll the close
+    # flag in small increments instead of blocking for the full backoff.
     _gzmx_wdebug "projection: reconnecting backoff=$_backoff attempt=$_attempt"
-    sleep "$_backoff"
+    _gzmx_interruptible_sleep "$_backoff"
     _backoff=$(( _backoff * 2 ))
     (( _backoff > _max_backoff )) && _backoff="$_max_backoff"
   done
