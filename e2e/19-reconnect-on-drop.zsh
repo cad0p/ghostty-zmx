@@ -66,7 +66,7 @@ if [[ "$_wrapper_pid" =~ ^[0-9]+$ ]]; then
   _ssh_child="$(pgrep -P "$_wrapper_pid" 2>/dev/null | head -1)"
   if [[ "$_ssh_child" =~ ^[0-9]+$ ]]; then
     gzmx_e2e_log "simulating network drop (killing ssh child pid=$_ssh_child of wrapper pid=$_wrapper_pid for $GZMX_E2E_SESSION)..."
-    kill -TERM "$_ssh_child" 2>/dev/null || true
+    kill -KILL "$_ssh_child" 2>/dev/null || true
   else
     gzmx_e2e_log "no ssh child found under wrapper pid=$_wrapper_pid; falling back to pkill"
     pkill -f "ssh.*zmx attach $GZMX_E2E_SESSION" 2>/dev/null || true
