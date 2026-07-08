@@ -229,6 +229,188 @@ _ghostty_zmx_registry_heartbeat() {
 
 
 
+# --- reaper helpers (shared with the standalone reaper via GHOSTTY_ZMX_INTERNAL_REAPER) ---
+#
+# These mirror the helpers the pre-refactor reaper inlined in its generated
+# heredoc. Promoting them into the manager means the reaper sources the
+# manager (GHOSTTY_ZMX_INTERNAL_REAPER=1 guard) and reuses the same function
+# definitions as the widget / attach / restore paths — they cannot diverge.
+# The bug that motivated this refactor (the reaper's debug_log called
+# _ghostty_zmx_debug_rotate, which was undefined in the reaper heredoc, so
+# debug-log rotation never fired for the reaper) is impossible by
+# construction once the reaper sources the manager.
+
+_ghostty_zmx_history_file_for_session() {
+  typeset session="$1"
+  _ghostty_zmx_valid_session_name "$session" || return 1
+  print -r -- "$GHOSTTY_ZMX_STATE_HOME/history/${session}.txt"
+}
+
+# Remove every tty-map row for a session. Mirrors the reaper's cleanup_tty_map.
+_ghostty_zmx_cleanup_tty_map() {
+  typeset session="$1" map="$(_ghostty_zmx_tty_map_file)" tmp
+  [[ -f "$map" ]] || return 0
+  tmp="${map}.tmp.$$"
+  awk -F '\t' -v session="$session" '$2 != session { print }' "$map" > "$tmp" 2>/dev/null || true
+  mv "$tmp" "$map" 2>/dev/null
+}
+
+# Remove a session from the sessions log + its tty-map row. Mirrors the
+# reaper's cleanup_log (unconditional tty-map unmap).
+_ghostty_zmx_cleanup_log() {
+  typeset session="$1" log="$(_ghostty_zmx_sessions_file)"
+  if ! _ghostty_zmx_valid_session_name "$session"; then
+    _ghostty_zmx_debug "invalid session skipped action=cleanup-log session=$session"
+    return 1
+  fi
+  if [[ -f "$log" ]]; then
+    grep -vxF "$session" "$log" > "${log}.tmp.$$" 2>/dev/null || true
+    mv "${log}.tmp.$$" "$log" 2>/dev/null
+  fi
+  _ghostty_zmx_cleanup_tty_map "$session"
+}
+
+# Delete the saved scrollback snapshot for a session. Mirrors forget_snapshot.
+_ghostty_zmx_forget_snapshot() {
+  typeset session="$1" history_file
+  if ! _ghostty_zmx_valid_session_name "$session"; then
+    _ghostty_zmx_debug "invalid session skipped action=forget-snapshot session=$session"
+    return 1
+  fi
+  history_file="$(_ghostty_zmx_history_file_for_session "$session")" || return 1
+  rm -f "$history_file" 2>/dev/null
+  _ghostty_zmx_debug "scrollback snapshot deleted session=$session"
+}
+
+# Iterate the sessions log, yielding valid managed session names.
+# Mirrors managed_sessions_from_log.
+_ghostty_zmx_managed_sessions_from_log() {
+  typeset log="$(_ghostty_zmx_sessions_file)" managed
+  [[ -f "$log" ]] || return 0
+  while IFS= read -r managed; do
+    [[ -n "$managed" ]] || continue
+    if ! _ghostty_zmx_valid_session_name "$managed"; then
+      _ghostty_zmx_debug "invalid session skipped action=managed-log session=$managed"
+      continue
+    fi
+    print -r -- "$managed"
+  done < "$log"
+}
+
+# ttys of every live Ghostty terminal. Mirrors current_terminal_ttys.
+# _ghostty_app_name is lib-derived.
+_ghostty_zmx_current_terminal_ttys() {
+  osascript <<SCRIPT 2>/dev/null
+tell application "$_ghostty_app_name"
+  set out to ""
+  repeat with w in windows
+    repeat with tb in tabs of w
+      repeat with tm in terminals of tb
+        try
+          set out to out & (tty of tm as string) & linefeed
+        end try
+      end repeat
+    end repeat
+  end repeat
+  return out
+end tell
+SCRIPT
+}
+
+# Managed sessions whose mapped tty disappeared (Cmd+W on a pane). Mirrors
+# managed_disappeared_sessions. Uses the cross-install registry (union of all
+# installs' tracked sets) so a session tracked by any install is not reported
+# as disappeared just because this install's log lacks it.
+_ghostty_zmx_managed_disappeared_sessions() {
+  typeset tty_map="$(_ghostty_zmx_tty_map_file)"
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)"
+  [[ -f "$tty_map" ]] || return 0
+  typeset live_file="$runtime_dir/terminal-ttys.$$" live_clean="$runtime_dir/terminal-ttys.clean.$$"
+  _ghostty_zmx_current_terminal_ttys > "$live_file" 2>/dev/null || { rm -f "$live_file" "$live_clean" 2>/dev/null; return 0; }
+  grep '^/dev/' "$live_file" > "$live_clean" 2>/dev/null || true
+  # If no live terminals remain, this is Cmd-Q / close-all shaped. Preserve.
+  [[ -s "$live_clean" ]] || { rm -f "$live_file" "$live_clean" 2>/dev/null; return 0; }
+  typeset kind session tty_path mapped_pid
+  while IFS=$'\t' read -r kind session tty_path mapped_pid; do
+    [[ "$kind" == "S" && -n "$session" && -n "$tty_path" ]] || continue
+    _ghostty_zmx_valid_session_name "$session" || continue
+    _ghostty_zmx_registry_tracked_sessions 2>/dev/null | grep -qxF "$session" 2>/dev/null || continue
+    if ! grep -qxF "$tty_path" "$live_clean" 2>/dev/null; then
+      _ghostty_zmx_debug "tty disappeared session=$session tty=$tty_path pid=$mapped_pid"
+      print -r -- "$session"
+    fi
+  done < "$tty_map"
+  rm -f "$live_file" "$live_clean" 2>/dev/null
+}
+
+# Managed sessions that are live in zmx and attached (clients=1). Mirrors
+# managed_existing_sessions.
+_ghostty_zmx_managed_existing_sessions() {
+  typeset runtime_dir="$(_ghostty_zmx_runtime_dir)" managed list_file
+  while IFS= read -r managed; do
+    list_file="$runtime_dir/list.short.${managed}.$$"
+    if ! zmx list --short > "$list_file" 2>/dev/null; then
+      rm -f "$list_file" 2>/dev/null
+      _ghostty_zmx_debug "zmx list --short failed action=managed-existing session=$managed"
+      continue
+    fi
+    if grep -qxF "$managed" "$list_file"; then
+      print -r -- "$managed"
+    fi
+    rm -f "$list_file" 2>/dev/null
+  done < <(_ghostty_zmx_managed_sessions_from_log)
+}
+
+# Snapshot scrollback for every live attached managed session. Mirrors
+# snapshot_existing_sessions.
+_ghostty_zmx_snapshot_existing_sessions() {
+  typeset reason="$1" preserved
+  while IFS= read -r preserved; do
+    _ghostty_zmx_snapshot_history "$preserved"
+    _ghostty_zmx_debug "preserving session=$preserved reason=$reason"
+  done < <(_ghostty_zmx_managed_existing_sessions)
+}
+
+# Kill + clean up a single detached session. Mirrors cleanup_detached_session.
+_ghostty_zmx_cleanup_detached_session() {
+  typeset orphan="$1" reason="$2"
+  _ghostty_zmx_valid_session_name "$orphan" || return 0
+  _ghostty_zmx_snapshot_history "$orphan"
+  _ghostty_zmx_debug "$reason session=$orphan"
+  zmx kill "$orphan" >/dev/null 2>&1
+  _ghostty_zmx_cleanup_log "$orphan"
+  _ghostty_zmx_forget_snapshot "$orphan"
+}
+
+# Managed zmx-* sessions that are detached (clients=0), minus cross-install
+# registry-tracked sessions and minus sessions whose mapped Ghostty terminal
+# tty is still live. Mirrors managed_detached_sessions.
+_ghostty_zmx_managed_detached_sessions() {
+  typeset live_ttys="" tracked="" orphan mapped_tty
+  live_ttys="$(_ghostty_zmx_current_terminal_ttys 2>/dev/null | grep '^/dev/' 2>/dev/null || true)"
+  tracked="$(_ghostty_zmx_registry_tracked_sessions 2>/dev/null)"
+  zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ && $3=="clients=0" { sub(/^[→ ]*name=/, "", $1); print $1 }' |
+  while IFS= read -r orphan; do
+    [[ -n "$orphan" ]] || continue
+    if ! _ghostty_zmx_valid_session_name "$orphan"; then
+      _ghostty_zmx_debug "invalid session skipped action=managed-detached session=$orphan"
+      continue
+    fi
+    if [[ -n "$tracked" ]] && print -r -- "$tracked" | grep -qxF "$orphan" 2>/dev/null; then
+      _ghostty_zmx_debug "managed-detached skipped reason=registry-tracked session=$orphan"
+      continue
+    fi
+    if [[ -n "$live_ttys" ]]; then
+      mapped_tty="$(awk -F '\t' -v s="$orphan" '$1 == "S" && $2 == s { print $3; exit }' "$(_ghostty_zmx_tty_map_file)" 2>/dev/null)"
+      if [[ -n "$mapped_tty" ]] && print -r -- "$live_ttys" | grep -qxF "$mapped_tty" 2>/dev/null; then
+        _ghostty_zmx_debug "managed-detached skipped reason=terminal-live session=$orphan tty=$mapped_tty"
+        continue
+      fi
+    fi
+    print -r -- "$orphan"
+  done
+}
+
 _ghostty_zmx_record_tty_map() {
   typeset session="$1" identity="$2" map tmp pid tty_path
   _ghostty_zmx_valid_session_name "$session" || { _ghostty_zmx_debug "invalid session skipped action=record-tty session=$session"; return 1; }
@@ -380,9 +562,15 @@ _ghostty_zmx_reserve_session_name() {
 _ghostty_zmx_unlog_session() {
   typeset session="$1" log="$(_ghostty_zmx_sessions_file)"
   _ghostty_zmx_valid_session_name "$session" || { _ghostty_zmx_debug "invalid session skipped action=unlog session=$session"; return 1; }
-  [[ -f "$log" ]] || return 0
-  grep -vxF "$session" "$log" > "${log}.tmp.$$" 2>/dev/null || true
-  mv "${log}.tmp.$$" "$log" 2>/dev/null
+  if [[ -f "$log" ]]; then
+    grep -vxF "$session" "$log" > "${log}.tmp.$$" 2>/dev/null || true
+    mv "${log}.tmp.$$" "$log" 2>/dev/null
+  fi
+  # Always unmap the tty, even when the sessions log is absent or does not
+  # contain this session: _ghostty_zmx_cleanup_log() (the reaper's cleanup_log
+  # promoted into the manager) unmaps unconditionally so a stale tty-map row
+  # for a reaped session does not survive. The pre-refactor reaper inlined
+  # this same unconditional-unmap behavior in its cleanup_log.
   _ghostty_zmx_unmap_session_tty "$session"
 }
 
@@ -482,6 +670,29 @@ _ghostty_zmx_start_reaper() {
   set +o noclobber
   cat >> "$script" <<'EOS'
 #!/bin/zsh
+# ghostty-zmx local reaper. Sources the manager (GHOSTTY_ZMX_INTERNAL_REAPER=1
+# guard: defines all functions, returns before widget/auto-attach side effects)
+# then runs the PID-reuse-safe reap loop using the shared manager functions.
+#
+# Before this refactor the reaper inlined ~20 helper functions duplicating the
+# manager (valid_session_name, history_file_for_session, debug_log,
+# _reaper_debug_rotate, parse_elapsed_seconds, elapsed_seconds, cleanup_tty_map,
+# cleanup_log, snapshot_history, forget_snapshot, managed_sessions_from_log,
+# registry_dir, registry_file, registry_tracked_sessions, registry_heartbeat,
+# managed_detached_sessions, current_terminal_ttys, managed_disappeared_sessions,
+# managed_existing_sessions, snapshot_existing_sessions, cleanup_detached_session,
+# cleanup_detached_sessions, cleanup_seen_detached_sessions). That duplication
+# caused a real bug: the reaper's debug_log called _ghostty_zmx_debug_rotate (a
+# lib function) but the function was never defined in the reaper heredoc, so
+# debug-log rotation never fired for the reaper — the highest-volume debug-log
+# writer. Sourcing the manager makes that class of bug impossible by construction
+# and keeps the reaper consistent with the poller (which already sources the
+# manager via the GHOSTTY_ZMX_INTERNAL_POLLER guard). See issue #39 and the
+# poller refactor in PR #23.
+#
+# Args: ghosttyPID flag dataHome interval zeroWindowGrace stateHome debugEnabled
+#       scrollbackLines reaperStartupDelay runtimeDir ghosttyElapsed
+#       ghosttyAppName manager_src
 ghosttyPID="$1"
 flag="$2"
 dataHome="$3"
@@ -494,6 +705,41 @@ reaperStartupDelay="$9"
 runtimeDir="${10}"
 ghosttyElapsed="${11}"
 ghosttyAppName="${12}"
+manager_src="${13:-${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh}"
+
+export GHOSTTY_ZMX_DATA_HOME="$dataHome"
+export GHOSTTY_ZMX_STATE_HOME="$stateHome"
+export GHOSTTY_ZMX_DEBUG="$debugEnabled"
+export GHOSTTY_ZMX_SCROLLBACK_LINES="$scrollbackLines"
+export _ghostty_app_name="$ghosttyAppName"
+
+# Source the manager: defines all _ghostty_zmx_* helpers (including the reaper
+# helpers promoted out of this heredoc) then returns early
+# (GHOSTTY_ZMX_INTERNAL_REAPER guard). The reaper reuses
+# _ghostty_zmx_snapshot_history, _ghostty_zmx_cleanup_log, _ghostty_zmx_forget_snapshot,
+# _ghostty_zmx_managed_detached_sessions, _ghostty_zmx_managed_disappeared_sessions,
+# _ghostty_zmx_managed_existing_sessions, _ghostty_zmx_snapshot_existing_sessions,
+# _ghostty_zmx_cleanup_detached_session, _ghostty_zmx_registry_heartbeat,
+# _ghostty_zmx_parse_elapsed_seconds, _ghostty_zmx_ghostty_elapsed_seconds,
+# _ghostty_zmx_debug, _ghostty_zmx_debug_rotate — the same functions the widget
+# and attach path use, so they cannot diverge.
+#
+# Unset TERM_PROGRAM so the manager's version-self-gate (which probes Ghostty
+# AppleScript tty capability and falls back to the v0.1 manager when the probe
+# fails) does not trigger. The reaper is launched from _ghostty_zmx_start_reaper,
+# which only runs after the manager's gate already passed at shell init (the
+# surface is v0.2-capable), so the reaper must take the v0.2 path unconditionally.
+# Without this, a background reaper whose osascript probe fails (e.g. Ghostty
+# just quit) would source the v0.1 fallback and run with none of the v0.2
+# reaper helpers defined — the same class of "lib helper undefined in reaper"
+# bug that motivated this refactor.
+unset TERM_PROGRAM
+GHOSTTY_ZMX_INTERNAL_REAPER=1 source "$manager_src" 2>/dev/null || exit 70
+# Defensive: if the manager source did not define the reaper helpers (corrupt
+# install, missing lib), exit rather than running a reaper with no functions.
+(( $+functions[_ghostty_zmx_managed_detached_sessions] )) || exit 71
+
+# Convenience locals bound to the data-home paths (the reaper loop reads these).
 log="$dataHome/sessions"
 ttyMap="$dataHome/tty-map"
 queue="$dataHome/restore-queue"
@@ -501,325 +747,38 @@ firstFile="$dataHome/restore-first"
 restoring="$runtimeDir/restoring-${ghosttyPID}.lock"
 attempted="$runtimeDir/restore-attempted-${ghosttyPID}.done"
 
-# The generated reaper is standalone because it is executed by nohup after the
-# attaching shell may have exited. Keep its helpers private and mirrored here.
-valid_session_name() {
-  local session="$1"
-  [[ ${#session} -le 46 && "$session" =~ ^zmx-[A-Fa-f0-9]+-[A-Fa-f0-9]+-[A-Fa-f0-9]{8,}$ ]]
-}
-
-history_file_for_session() {
-  local session="$1"
-  valid_session_name "$session" || return 1
-  print -r -- "$stateHome/history/${session}.txt"
-}
-
-debug_log() {
+# Reaper-local debug wrapper: tags lines with "reaper" so they are
+# distinguishable from widget/attach/poller lines in the shared debug log.
+# Delegates rotation to the manager's _ghostty_zmx_debug_rotate (now available
+# because the manager is sourced above — the bug that motivated this refactor).
+_reaper_debug() {
   [[ "$debugEnabled" == "1" ]] || return 0
   mkdir -p "$stateHome" 2>/dev/null
-  _reaper_debug_rotate "$stateHome/debug.log"
+  _ghostty_zmx_debug_rotate "$stateHome/debug.log"
   print -r -- "$(date -u '+%Y-%m-%dT%H:%M:%SZ') reaper $*" >> "$stateHome/debug.log"
 }
 
-# Inlined debug-log rotation (mirrors _ghostty_zmx_debug_rotate in the lib).
-# The reaper is standalone (nohup'd, can't source session-manager-lib.zsh), so
-# the rotation helper must be defined here. Keeps one .1 backup; sweeps .2+.
-_reaper_debug_rotate() {
-  local log="$1"
-  [[ -f "$log" ]] || return 0
-  local cap="${GHOSTTY_ZMX_DEBUG_LOG_MAX_BYTES:-1048576}"
-  [[ "$cap" == <-> ]] || cap=1048576
-  local size
-  size=$(stat -f %z "$log" 2>/dev/null || stat -c %s "$log" 2>/dev/null) || return 0
-  [[ "$size" -gt "$cap" ]] || return 0
-  mv -f "$log" "${log}.1" 2>/dev/null || return 0
-  local n
-  for (( n=2; n<=9; n++ )); do
-    [[ -f "${log}.${n}" ]] && rm -f "${log}.${n}" 2>/dev/null || true
-  done
-}
-
-parse_elapsed_seconds() {
-  local elapsed="$1" days=0 hours=0 minutes seconds
-  local -a parts
-  [[ -n "$elapsed" ]] || return 1
-  if [[ "$elapsed" == *-* ]]; then
-    days="${elapsed%%-*}"
-    elapsed="${elapsed#*-}"
-    [[ "$days" =~ ^[0-9]+$ ]] || return 1
-  fi
-  parts=("${(@s/:/)elapsed}")
-  case ${#parts} in
-    2)
-      minutes="${parts[1]}"
-      seconds="${parts[2]}"
-      ;;
-    3)
-      hours="${parts[1]}"
-      minutes="${parts[2]}"
-      seconds="${parts[3]}"
-      ;;
-    *) return 1 ;;
-  esac
-  [[ "$hours" =~ ^[0-9]+$ && "$minutes" =~ ^[0-9]+$ && "$seconds" =~ ^[0-9]+$ ]] || return 1
-  print $(( days * 86400 + 10#$hours * 3600 + 10#$minutes * 60 + 10#$seconds ))
-}
-
-elapsed_seconds() {
-  local elapsed
-  elapsed="$(ps -o etime= -p "$ghosttyPID" 2>/dev/null | tr -d ' ')" || return 1
-  parse_elapsed_seconds "$elapsed"
-}
-
-debug_log "started ghostty_pid=$ghosttyPID sessions_file=$log"
-
-cleanup_tty_map() {
-  local session="$1"
-  [[ -f "$ttyMap" ]] || return 0
-  awk -F '\t' -v session="$session" '$2 != session { print }' "$ttyMap" > "${ttyMap}.tmp" 2>/dev/null || true
-  mv "${ttyMap}.tmp" "$ttyMap" 2>/dev/null
-}
-
-cleanup_log() {
-  local session="$1"
-  if ! valid_session_name "$session"; then
-    debug_log "invalid session skipped action=cleanup-log session=$session"
-    return 1
-  fi
-  [[ -f "$log" ]] || { cleanup_tty_map "$session"; return 0; }
-  grep -vxF "$session" "$log" > "${log}.tmp" 2>/dev/null || true
-  mv "${log}.tmp" "$log" 2>/dev/null
-  cleanup_tty_map "$session"
-}
-
-snapshot_history() {
-  local session="$1"
-  if ! valid_session_name "$session"; then
-    debug_log "invalid session skipped action=snapshot session=$session"
-    return 1
-  fi
-  mkdir -p "$stateHome/history" 2>/dev/null
-  local historyFile="$(history_file_for_session "$session")" || return 1
-  local tmpFile="${historyFile}.tmp.$$"
-  local finalFile="${historyFile}.tmp.final.$$"
-  rm -f "$tmpFile" "$finalFile" 2>/dev/null
-  if zmx history "$session" > "$tmpFile" 2>/dev/null; then
-    if tail -n "$scrollbackLines" "$tmpFile" > "$finalFile"; then
-      mv "$finalFile" "$historyFile"
-      debug_log "scrollback snapshot session=$session file=$historyFile lines=$scrollbackLines"
-    else
-      rm -f "$finalFile" 2>/dev/null
-      debug_log "scrollback snapshot tail failed session=$session"
-    fi
-  else
-    debug_log "scrollback snapshot failed session=$session"
-  fi
-  rm -f "$tmpFile" 2>/dev/null
-}
-
-forget_snapshot() {
-  local session="$1"
-  if ! valid_session_name "$session"; then
-    debug_log "invalid session skipped action=forget-snapshot session=$session"
-    return 1
-  fi
-  local historyFile="$(history_file_for_session "$session")" || return 1
-  rm -f "$historyFile" 2>/dev/null
-  debug_log "scrollback snapshot deleted session=$session"
-}
-
-managed_sessions_from_log() {
-  [[ -f "$log" ]] || return 0
-  while IFS= read -r managed; do
-    [[ -n "$managed" ]] || continue
-    if ! valid_session_name "$managed"; then
-      debug_log "invalid session skipped action=managed-log session=$managed"
-      continue
-    fi
-    print -r -- "$managed"
-  done < "$log"
-}
-
-# --- inlined registry helpers (reaper is standalone, can't source manager) ---
-# Mirrors _ghostty_zmx_managed_sessions_dir/_file/_tracked_sessions/_heartbeat
-# in the manager body. Keep in sync.
-registry_dir() {
-  print -r -- "${HOME:-/tmp}/.local/state/ghostty-zmx/managed-sessions"
-}
-registry_file() {
-  local dir hash
-  dir="$(registry_dir 2>/dev/null)" || return 1
-  # Bail if dataHome is empty — an empty dataHome produces a spurious
-  # "empty" hash file that shadows real installs' tracking.
-  [[ -n "$dataHome" ]] || return 1
-  hash="$(print -r -- "$dataHome" | cksum 2>/dev/null | tr -d ' ' | cut -c1-16)"
-  [[ -n "$hash" ]] || hash="default"
-  print -r -- "$dir/${hash}.tsv"
-}
-registry_tracked_sessions() {
-  local dir f name
-  dir="$(registry_dir 2>/dev/null)" || return 0
-  [[ -d "$dir" ]] || return 0
-  for f in "$dir"/*.tsv(N); do
-    while IFS=$'\t' read -r name _gp _up; do
-      [[ -n "$name" ]] && print -r -- "$name"
-    done < "$f" 2>/dev/null
-  done
-}
-registry_heartbeat() {
-  local now tmp file dir name
-  dir="$(registry_dir 2>/dev/null)" || return 0
-  file="$(registry_file 2>/dev/null)" || return 0
-  mkdir -p "$dir" 2>/dev/null || return 0
-  now="$(date +%s)"
-  tmp="${file}.tmp.$$"
-  : > "$tmp" 2>/dev/null || return 0
-  zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ { sub(/^[→ ]*name=/, "", $1); print $1 }' |
-    while IFS= read -r name; do
-      valid_session_name "$name" 2>/dev/null || continue
-      print -r -- "${name}\t${now}" >> "$tmp" 2>/dev/null
-    done
-  mv "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
-}
-
-managed_detached_sessions() {
-  local liveTtys=""
-  if (( $+functions[current_terminal_ttys] )); then
-    liveTtys="$(current_terminal_ttys 2>/dev/null | grep '^/dev/' 2>/dev/null || true)"
-  fi
-  # Build the set of sessions tracked by ANY install (stable, tip, ...) from the
-  # shared registry. A session tracked by any install must not be reaped even if
-  # that install's Ghostty is currently closed — it may reopen and reattach
-  # (persistence is the core product goal). Only truly untracked sessions
-  # (test orphans, prior-version leftovers) are reapable.
-  local tracked=""
-  tracked="$(registry_tracked_sessions 2>/dev/null)"
-  zmx list 2>/dev/null | awk -F '\t' '$1 ~ /name=zmx-/ && $3=="clients=0" { sub(/^[→ ]*name=/, "", $1); print $1 }' |
-  while IFS= read -r orphan; do
-    [[ -n "$orphan" ]] || continue
-    if ! valid_session_name "$orphan"; then
-      debug_log "invalid session skipped action=managed-detached session=$orphan"
-      continue
-    fi
-    # Skip if ANY install tracks this session (cross-install safety).
-    if [[ -n "$tracked" ]] && print -r -- "$tracked" | grep -qxF "$orphan" 2>/dev/null; then
-      debug_log "managed-detached skipped reason=registry-tracked session=$orphan"
-      continue
-    fi
-    if [[ -n "$liveTtys" && -n "${ttyMap:-}" && -f "$ttyMap" ]]; then
-      local mappedTty=""
-      mappedTty="$(awk -F '\t' -v s="$orphan" '$1 == "S" && $2 == s { print $3; exit }' "$ttyMap" 2>/dev/null)"
-      if [[ -n "$mappedTty" ]] && print -r -- "$liveTtys" | grep -qxF "$mappedTty" 2>/dev/null; then
-        debug_log "managed-detached skipped reason=terminal-live session=$orphan tty=$mappedTty"
-        continue
-      fi
-    fi
-    print -r -- "$orphan"
-  done
-}
-
-current_terminal_ttys() {
-  osascript <<SCRIPT 2>/dev/null
-tell application "$ghosttyAppName"
-  set out to ""
-  repeat with w in windows
-    repeat with tb in tabs of w
-      repeat with tm in terminals of tb
-        try
-          set out to out & (tty of tm as string) & linefeed
-        end try
-      end repeat
-    end repeat
-  end repeat
-  return out
-end tell
-SCRIPT
-}
-
-managed_disappeared_sessions() {
-  [[ -f "$ttyMap" ]] || return 0
-  local liveFile="$runtimeDir/terminal-ttys.$$" liveClean="$runtimeDir/terminal-ttys.clean.$$"
-  current_terminal_ttys > "$liveFile" 2>/dev/null || { rm -f "$liveFile" "$liveClean" 2>/dev/null; return 0; }
-  grep '^/dev/' "$liveFile" > "$liveClean" 2>/dev/null || true
-  # If no live terminals remain, this is Cmd-Q / close-all shaped. Preserve.
-  [[ -s "$liveClean" ]] || { rm -f "$liveFile" "$liveClean" 2>/dev/null; return 0; }
-  while IFS=$'\t' read -r kind session ttyPath mappedPid; do
-    [[ "$kind" == "S" && -n "$session" && -n "$ttyPath" ]] || continue
-    valid_session_name "$session" || continue
-    # Use the registry (cross-install tracked set) instead of the per-install
-    # sessions log, so a session tracked by any install is not reported as
-    # disappeared just because this install's log doesn't have it.
-    registry_tracked_sessions 2>/dev/null | grep -qxF "$session" 2>/dev/null || continue
-    if ! grep -qxF "$ttyPath" "$liveClean" 2>/dev/null; then
-      debug_log "tty disappeared session=$session tty=$ttyPath pid=$mappedPid"
-      print -r -- "$session"
-    fi
-  done < "$ttyMap"
-  rm -f "$liveFile" "$liveClean" 2>/dev/null
-}
-
-managed_existing_sessions() {
-  while IFS= read -r managed; do
-    local listFile="$runtimeDir/list.short.${managed}.$$"
-    if ! zmx list --short > "$listFile" 2>/dev/null; then
-      rm -f "$listFile" 2>/dev/null
-      debug_log "zmx list --short failed action=managed-existing session=$managed"
-      continue
-    fi
-    if grep -qxF "$managed" "$listFile"; then
-      print -r -- "$managed"
-    fi
-    rm -f "$listFile" 2>/dev/null
-  done < <(managed_sessions_from_log)
-}
-
-snapshot_existing_sessions() {
-  while IFS= read -r preserved; do
-    snapshot_history "$preserved"
-    debug_log "preserving session=$preserved reason=$1"
-  done < <(managed_existing_sessions)
-}
-
-cleanup_detached_session() {
-  local orphan="$1" reason="$2"
-  valid_session_name "$orphan" || return 0
-  snapshot_history "$orphan"
-  debug_log "$reason session=$orphan"
-  zmx kill "$orphan" >/dev/null 2>&1
-  cleanup_log "$orphan"
-  forget_snapshot "$orphan"
-}
-
-cleanup_detached_sessions() {
-  local reason="$1"
-  while IFS= read -r orphan; do
-    cleanup_detached_session "$orphan" "$reason"
-  done < <(managed_detached_sessions)
-}
-
-cleanup_seen_detached_sessions() {
-  local reason="$1" orphan
-  for orphan in ${(k)detachedSeen}; do
-    cleanup_detached_session "$orphan" "$reason"
-  done
-}
+_reaper_debug "started ghostty_pid=$ghosttyPID sessions_file=$log"
 
 sleep "$reaperStartupDelay"
 # Startup sweep: kill managed zmx sessions left detached (clients=0) by a
 # prior Ghostty instance that was killed (not cleanly exited). The reaper
 # only cleans up during its lifetime; a killed Ghostty leaves its managed
-# sessions detached forever. This runs once at startup. managed_detached_
-# sessions() filters by the v0.1 managed naming (zmx-<win>-<tab>-<term>) AND
-# cross-references the sessions log, so user-created sessions and gzr-* remote
-# sessions are never touched. A session the user intentionally detached
-# (zmx detach) to reattach later would be killed here; that is an accepted
-# trade-off (documented as a known limitation).
-cleanup_detached_sessions "startup-orphan-sweep"
+# sessions detached forever. This runs once at startup.
+# _ghostty_zmx_managed_detached_sessions filters by the v0.1 managed naming
+# (zmx-<win>-<tab>-<term>) AND cross-references the sessions log, so
+# user-created sessions and gzr-* remote sessions are never touched. A
+# session the user intentionally detached (zmx detach) to reattach later
+# would be killed here; that is an accepted trade-off (documented as a
+# known limitation).
+while IFS= read -r orphan; do
+  _ghostty_zmx_cleanup_detached_session "$orphan" "startup-orphan-sweep"
+done < <(_ghostty_zmx_managed_detached_sessions)
 # Heartbeat this install's registry file before entering the loop, so the
 # cross-install tracked set is fresh even if the first loop iteration sleeps.
 # This marks all live zmx-* sessions as tracked by THIS install, so other
 # installs' reapers (or this one after a restart) will not reap them.
-registry_heartbeat 2>/dev/null || true
+_ghostty_zmx_registry_heartbeat 2>/dev/null || true
 zeroWindowsSeen=0
 lastAttached=0
 typeset -A detachedSeen
@@ -828,27 +787,30 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   # set reflects current live sessions. This is the cross-install persistence
   # signal — closed Ghostty's file stays on disk (sessions survive), but a
   # live Ghostty keeps its file fresh so other reapers know it's active.
-  registry_heartbeat 2>/dev/null || true
+  _ghostty_zmx_registry_heartbeat 2>/dev/null || true
   typeset currentElapsed
-  currentElapsed="$(elapsed_seconds "$ghosttyPID")"
+  currentElapsed="$(_ghostty_zmx_ghostty_elapsed_seconds "$ghosttyPID")"
   if [[ -n "$currentElapsed" && "$currentElapsed" -lt "$ghosttyElapsed" ]]; then
-    snapshot_existing_sessions "ghostty-pid-reuse"
-    debug_log "stopped ghostty_pid=$ghosttyPID reason=pid-reuse"
+    _ghostty_zmx_snapshot_existing_sessions "ghostty-pid-reuse"
+    _reaper_debug "stopped ghostty_pid=$ghosttyPID reason=pid-reuse"
     break
   fi
   if [[ -z "$currentElapsed" ]]; then
-    snapshot_existing_sessions "ghostty-exit"
-    debug_log "stopped ghostty_pid=$ghosttyPID reason=elapsed-check-failed"
+    _ghostty_zmx_snapshot_existing_sessions "ghostty-exit"
+    _reaper_debug "stopped ghostty_pid=$ghosttyPID reason=elapsed-check-failed"
     break
   fi
 
+  typeset windows
   windows=$(osascript -e "tell application \"$ghosttyAppName\" to count of windows" 2>/dev/null)
   [[ "$windows" =~ '^[0-9]+$' ]] || break
 
   if [[ "$windows" -eq 0 ]]; then
     zeroWindowsSeen=$((zeroWindowsSeen + interval))
     if [[ "$zeroWindowsSeen" -ge "$zeroWindowGrace" ]]; then
-      cleanup_detached_sessions "zero-window cleanup"
+      while IFS= read -r orphan; do
+        _ghostty_zmx_cleanup_detached_session "$orphan" "zero-window cleanup"
+      done < <(_ghostty_zmx_managed_detached_sessions)
     fi
     sleep "$interval"
     continue
@@ -856,57 +818,62 @@ while kill -0 "$ghosttyPID" 2>/dev/null; do
   zeroWindowsSeen=0
 
   if [[ -f "$restoring" || -s "$queue" || -s "$firstFile" ]]; then
-    debug_log "restore active; skipping cleanup"
+    _reaper_debug "restore active; skipping cleanup"
     sleep "$interval"
     continue
   fi
 
-  attached=0
+  typeset attached=0 managed clients
   while IFS= read -r managed; do
     clients=$(zmx list 2>/dev/null | awk -F '\t' -v name="$managed" '$1 ~ "name="name"$" { sub(/^clients=/, "", $3); print $3; exit }')
     [[ "$clients" == "1" ]] && attached=$((attached + 1))
-  done < <(managed_sessions_from_log)
+  done < <(_ghostty_zmx_managed_sessions_from_log)
   lastAttached=$attached
   if [[ "$attached" -eq 0 ]]; then
-    snapshot_existing_sessions "all-detached"
+    _ghostty_zmx_snapshot_existing_sessions "all-detached"
     sleep "$interval"
     continue
   fi
 
+  typeset orphan
   while IFS= read -r orphan; do
-    cleanup_detached_session "$orphan" "tty-disappeared cleanup"
+    _ghostty_zmx_cleanup_detached_session "$orphan" "tty-disappeared cleanup"
     unset "detachedSeen[$orphan]"
-  done < <(managed_disappeared_sessions)
+  done < <(_ghostty_zmx_managed_disappeared_sessions)
 
   while IFS= read -r orphan; do
     detachedSeen[$orphan]=$(( ${detachedSeen[$orphan]:-0} + interval ))
     if [[ "${detachedSeen[$orphan]}" -lt "$zeroWindowGrace" ]]; then
-      snapshot_history "$orphan"
-      debug_log "detached pending session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
+      _ghostty_zmx_snapshot_history "$orphan"
+      _reaper_debug "detached pending session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
       continue
     fi
-    snapshot_history "$orphan"
-    debug_log "detached cleanup session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
+    _ghostty_zmx_snapshot_history "$orphan"
+    _reaper_debug "detached cleanup session=$orphan attached_managed=$attached stable_for=${detachedSeen[$orphan]}"
     zmx kill "$orphan" >/dev/null 2>&1
-    cleanup_log "$orphan"
-    forget_snapshot "$orphan"
+    _ghostty_zmx_cleanup_log "$orphan"
+    _ghostty_zmx_forget_snapshot "$orphan"
     unset "detachedSeen[$orphan]"
-  done < <(managed_detached_sessions)
+  done < <(_ghostty_zmx_managed_detached_sessions)
   sleep "$interval"
 done
 if [[ "${#detachedSeen[@]}" -gt 0 && "$lastAttached" -gt 1 ]]; then
-  cleanup_seen_detached_sessions "detached exit cleanup"
-  snapshot_existing_sessions "ghostty-exit"
+  typeset orphan
+  for orphan in ${(k)detachedSeen}; do
+    _ghostty_zmx_cleanup_detached_session "$orphan" "detached exit cleanup"
+  done
+  _ghostty_zmx_snapshot_existing_sessions "ghostty-exit"
 else
-  snapshot_existing_sessions "ghostty-exit"
+  _ghostty_zmx_snapshot_existing_sessions "ghostty-exit"
 fi
-debug_log "stopped ghostty_pid=$ghosttyPID"
+_reaper_debug "stopped ghostty_pid=$ghosttyPID"
 rm -f "$attempted" 2>/dev/null
 rmdir "$flag" 2>/dev/null
 rm -f "$0" 2>/dev/null
 EOS
   chmod +x "$script" 2>/dev/null
-  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" "$_ghostty_app_name" >"$reaper_log" 2>&1 </dev/null &!
+  typeset manager_src="${GHOSTTY_ZMX_INSTALL_DIR:-$HOME/.config/ghostty-zmx}/session-manager.zsh"
+  nohup /bin/zsh "$script" "$ghosttyPID" "$flag" "$GHOSTTY_ZMX_DATA_HOME" "$GHOSTTY_ZMX_REAPER_INTERVAL" "$GHOSTTY_ZMX_ZERO_WINDOWS_GRACE" "$GHOSTTY_ZMX_STATE_HOME" "${GHOSTTY_ZMX_DEBUG:-0}" "$GHOSTTY_ZMX_SCROLLBACK_LINES" "$_ghostty_zmx_reaper_startup_delay" "$runtime_dir" "$ghosttyElapsed" "$_ghostty_app_name" "$manager_src" >"$reaper_log" 2>&1 </dev/null &!
 }
 
 _ghostty_zmx_pop_restore_queue() {
@@ -2850,10 +2817,15 @@ _ghostty_zmx_auto_attach() {
   fi
 }
 
-# When sourced by the standalone remote poller (GHOSTTY_ZMX_INTERNAL_POLLER=1),
-# define all functions then return: no widget install, no auto-attach, no
-# nested poller start, no unfunction. The poller script drives the loop itself.
-if [[ "${GHOSTTY_ZMX_INTERNAL_POLLER:-0}" == "1" ]]; then
+# When sourced by a standalone background helper (the remote poller or the
+# local reaper), define all functions then return: no widget install, no
+# auto-attach, no nested poller/reaper start, no unfunction. The helper
+# script drives its own loop. The GHOSTTY_ZMX_INTERNAL_POLLER and
+# GHOSTTY_ZMX_INTERNAL_REAPER guards mirror each other; both source the
+# manager so the helper reuses the same function definitions as the widget /
+# attach / restore paths and cannot diverge (see PR #23 for the poller and
+# issue #39 for the reaper).
+if [[ "${GHOSTTY_ZMX_INTERNAL_POLLER:-0}" == "1" || "${GHOSTTY_ZMX_INTERNAL_REAPER:-0}" == "1" ]]; then
   return 0
 fi
 
