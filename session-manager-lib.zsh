@@ -253,7 +253,16 @@ ghostty_zmx_descendants_matching() {
   emulate -L zsh
   local root="$1" needle="$2" depth=0 maxdepth=6 queue=() p args
   [[ "$root" =~ ^[0-9]+$ && -n "$needle" ]] || return 1
-  queue=("$root")
+  # The root is the Ghostty-reported terminal pid, which (when a surface
+  # command is set) is the `login` process. login's own `ps args` contain the
+  # full command string — including `--session <gzr>` — because it is all
+  # passed as the `-c` argument. Checking the root at depth 0 would therefore
+  # falsely match login itself and return the login pid as match_pid,
+  # instead of descending to the actual wrapper or ssh child. Start the queue
+  # with the root's children and only check descendants, so match_pid is
+  # always a process below the terminal (the zsh -f wrapper or the ssh
+  # transport), never the terminal/login process itself.
+  queue=($(pgrep -P "$root" 2>/dev/null))
   while (( ${#queue} > 0 )) && (( depth < maxdepth )); do
     local next=()
     for p in "${queue[@]}"; do
