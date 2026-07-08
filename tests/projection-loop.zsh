@@ -251,6 +251,7 @@ return "${GZMX_TEST_SSH_RC:-0}"
 EMIT
 chmod +x "$_emit" 2>/dev/null || true
 typeset -ga _add_argv; _add_argv=(zsh "$_emit")
+typeset -ga _gzmx_side_argv; _gzmx_side_argv=(zsh "$_emit")
 _gzmx_session_state "$host" "$session" "zmx"
 STATEWORKER
 

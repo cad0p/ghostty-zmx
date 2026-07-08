@@ -113,7 +113,8 @@ _gzmx_projection_row_closing() {
 # Snapshot a remote session's scrollback over ssh into the lazy history
 # store (~/.local/state/ghostty-zmx/history/<host>/<session>.txt). Inlined
 # from session-manager.zsh ghostty_zmx_snapshot_remote_session. Uses
-# $_add_argv (the no-pty transport argv) from the enclosing wrapper scope.
+# $_gzmx_side_argv (the no-pty transport argv with BatchMode + ConnectTimeout)
+# from the enclosing wrapper scope.
 # Best-effort: a failure (host down, session gone) leaves the prior snapshot.
 _gzmx_snapshot_session() {
   emulate -L zsh
@@ -123,7 +124,7 @@ _gzmx_snapshot_session() {
   mkdir -p "$dir" 2>/dev/null || return 1
   hist_file="$dir/${session}.txt"
   tmp="${hist_file}.tmp.$$"
-  if "${_add_argv[@]}" "$remote_zmx history $session 2>/dev/null" | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
+  if "${_gzmx_side_argv[@]}" "$remote_zmx history $session 2>/dev/null" | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
     [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     _gzmx_wdebug "projection: snapshot host=$host session=$session file=$hist_file"
   else
@@ -134,7 +135,8 @@ _gzmx_snapshot_session() {
 
 # Reboot-restore: if the remote session is missing and a local scrollback
 # snapshot exists, create a fresh session and inject the saved scrollback.
-# Uses $_add_argv from the enclosing wrapper scope. Idempotent: a no-op if
+# Uses $_gzmx_side_argv (the no-pty transport argv with BatchMode +
+# ConnectTimeout) from the enclosing wrapper scope. Idempotent: a no-op if
 # the session already exists (reattach, not reboot).
 _gzmx_reboot_restore_check() {
   emulate -L zsh
@@ -146,18 +148,18 @@ _gzmx_reboot_restore_check() {
   # for stdin/password input (would make the check falsely report "missing"
   # and clobber a LIVE preserved session). See cli/ghostty-zmx reboot-restore
   # block comment for the full rationale.
-  if "${_add_argv[@]}" "$remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
+  if "${_gzmx_side_argv[@]}" "$remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
     _session_exists=1
   fi
   if [[ "$_session_exists" -eq 0 ]]; then
     _gzmx_wdebug "projection: reboot-restore session missing — creating fresh + injecting host=$host session=$session"
-    "${_add_argv[@]}" "$remote_zmx run $session true >/dev/null 2>&1" </dev/null 2>/dev/null || true
+    "${_gzmx_side_argv[@]}" "$remote_zmx run $session true >/dev/null 2>&1" </dev/null 2>/dev/null || true
     local _banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
     # zmx print requires \r\n line endings; convert before base64 encoding so
     # multi-line text / special chars survive the local-zsh -> ssh -> remote
     # -> zmx hop without shell-expansion issues.
     { print -r -- "$_banner"; cat "$hist_file"; } | sed 's/$/\r/' | base64 | tr -d '\n' | \
-      "${_add_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $remote_zmx print $session" </dev/null 2>/dev/null || true
+      "${_gzmx_side_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $remote_zmx print $session" </dev/null 2>/dev/null || true
     _gzmx_wdebug "projection: reboot-restore injected host=$host session=$session"
     print -n $'\e]2;ghostty-zmx: restored '"$host"' ('"$session"')\a'
   else
@@ -176,7 +178,7 @@ _gzmx_session_state() {
   emulate -L zsh
   local host="$1" session="$2" remote_zmx="$3"
   local _raw _clients _ssh_rc
-  _raw="$("${_add_argv[@]}" "$remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)"; _ssh_rc=$?
+  _raw="$("${_gzmx_side_argv[@]}" "$remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)"; _ssh_rc=$?
   # If the ssh round-trip itself failed (network down, host unreachable),
   # we cannot tell whether the session survived. Return `unknown` so the
   # loop reconnects without running reboot-restore — which would clobber a
@@ -239,6 +241,13 @@ _gzmx_run_projection_loop() {
 
   local _attempt=0 _rc=0 _state _backoff _max_backoff _max_attempts _hist_file
   local _skip_reboot_restore=0
+  # Side-channel ssh argv: the no-pty transport argv with BatchMode and
+  # ConnectTimeout so side-channel calls (snapshot, session-state,
+  # reboot-restore) fail fast on auth issues and don't hang on unreachable
+  # hosts. _add_argv is the layout-row-add argv (also non-interactive, but
+  # kept separate to avoid changing its behavior).
+  local -a _gzmx_side_argv
+  _gzmx_side_argv=("${_add_argv[@]}" -o BatchMode=yes -o ConnectTimeout=10)
   _backoff="${GHOSTTY_ZMX_RECONNECT_INITIAL_BACKOFF:-1}"
   _max_backoff="${GHOSTTY_ZMX_RECONNECT_MAX_BACKOFF:-30}"
   _max_attempts="${GHOSTTY_ZMX_RECONNECT_MAX_ATTEMPTS:-0}"
