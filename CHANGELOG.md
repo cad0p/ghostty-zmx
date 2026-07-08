@@ -30,6 +30,7 @@ All notable changes to this project will be documented in this file.
 
 - *(v0.2)* Poller sources manager instead of inlining 400 lines of dup ([#23](https://github.com/cad0p/ghostty-zmx/pull/23))
 - *(v0.2)* Reaper sources manager instead of inlining ~20 helpers ([#41](https://github.com/cad0p/ghostty-zmx/pull/41))
+- Extract reaper.sh + poller.sh as real files ([#42](https://github.com/cad0p/ghostty-zmx/pull/42))
 
 ### 📚 Documentation
 
