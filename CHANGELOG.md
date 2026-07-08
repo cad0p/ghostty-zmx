@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [calver-released]
+
+<!-- USER-EDITABLE SECTION START -->
+<!-- Add your curated release notes here. -->
+<!-- USER-EDITABLE SECTION END -->
+
+### 🚀 Features
+
+- *(v0.2)* Remote SSH/tsh session inheritance ([#18](https://github.com/cad0p/ghostty-zmx/pull/18))
+- *(v0.2)* Ship frozen v0.1 fallback manager for 1.3.x surfaces ([#20](https://github.com/cad0p/ghostty-zmx/pull/20))
+- *(v0.2)* Early remote split inherit before zshrc ([#31](https://github.com/cad0p/ghostty-zmx/pull/31))
+- *(v0.2)* Ghostty-zmx install-server subcommand ([#34](https://github.com/cad0p/ghostty-zmx/pull/34))
+- *(v0.2)* Unify install/uninstall under ghostty-zmx CLI ([#35](https://github.com/cad0p/ghostty-zmx/pull/35))
+- *(v0.2)* E2E tsh Docker fixture + bug fixes (WIP) ([#36](https://github.com/cad0p/ghostty-zmx/pull/36))
+- *(v0.2)* Install-dev command + debug subcommand + log rotation ([#40](https://github.com/cad0p/ghostty-zmx/pull/40))
+
+### 🐛 Bug Fixes
+
+- *(v0.2)* Correct widget error on unreachable host + newline formatting ([#21](https://github.com/cad0p/ghostty-zmx/pull/21))
+- *(v0.2)* Stray poller self-heal, close-no-reopen, split-inherits-remote ([#25](https://github.com/cad0p/ghostty-zmx/pull/25))
+- *(v0.2)* Record intercepted ssh handoffs in zsh history ([#26](https://github.com/cad0p/ghostty-zmx/pull/26))
+- *(v0.2)* Migrate stale zprofile manager source ([#32](https://github.com/cad0p/ghostty-zmx/pull/32))
+- *(v0.2)* Use probed remote zmx path for attach ([#33](https://github.com/cad0p/ghostty-zmx/pull/33))
+
+### 🚜 Refactor
+
+- *(v0.2)* Poller sources manager instead of inlining 400 lines of dup ([#23](https://github.com/cad0p/ghostty-zmx/pull/23))
+- *(v0.2)* Reaper sources manager instead of inlining ~20 helpers ([#41](https://github.com/cad0p/ghostty-zmx/pull/41))
+- Extract reaper.sh + poller.sh as real files ([#42](https://github.com/cad0p/ghostty-zmx/pull/42))
+
+### 📚 Documentation
+
+- Document Homebrew install paths ([#17](https://github.com/cad0p/ghostty-zmx/pull/17))
+
+
 ## [0.1.4] - 2026-06-12
 
 <!-- USER-EDITABLE SECTION START -->
