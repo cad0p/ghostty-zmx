@@ -177,20 +177,6 @@ if [[ "$session" == gzr-* ]]; then
   fi
 fi
 
-# Run the transport in the FOREGROUND via exec so it keeps the controlling TTY.
-# The layout row was already written state=present above; the transport's
-# remote `zmx attach` attaches to the remote session. This runs as the
-# surface's own command (the ssh -t), so the attach happens on the remote
-# side with a real pty.
-# Backgrounding ssh ("$@" &) detaches it from the TTY, so `ssh -t` cannot
-# allocate a pseudo-terminal ("Pseudo-terminal will not be allocated because
-# stdin is not a terminal"), the remote `zmx attach` runs non-interactively and
-# exits immediately, and Ghostty recloses the surface (leaving a pid=0 ghost).
-# exec preserves the TTY and the env markers set above; the wrapper process is
-# replaced by the transport, so the `--session <gzr>` marker leaves `ps args`, but
-# the descendant-walk scan still matches `zmx attach <gzr>` in the transport's
-# args and GHOSTTY_ZMX_PROJECTION_SESSION in its env.
-#
 # Suppress tsh's terminal-capability probing. The Teleport `tsh` client emits
 # an OSC 11 (foreground-color) and CSI 6n (cursor-position) query to the LOCAL
 # terminal on every SSH connection (confirmed: `tsh ssh -T host /bin/true`
