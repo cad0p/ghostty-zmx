@@ -846,7 +846,12 @@ ghostty_zmx_inherit_remote_context_if_any() {
       _parent_cwd="$(print -r -- "$_parent_cwd" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     fi
     if [[ -z "$_parent_cwd" ]]; then
-      _parent_pid="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$_remote_zmx list" ; } 2>/dev/null )"
+      # Pin ZMX_DIR inline (mirrors cli/projection-loop's _gzmx_zmx_dir and
+      # ghostty_zmx_projection_command_string): tsh/ssh do not forward env, so
+      # without the prefix zmx queries the default socket dir (TMPDIR) and
+      # can't find the parent session. The prefix is emitted inside the ssh
+      # remote command string, so the REMOTE shell expands $HOME.
+      _parent_pid="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$(ghostty_zmx_zmx_dir_prefix)$_remote_zmx list" ; } 2>/dev/null )"
       _parent_pid="$(print -r -- "$_parent_pid" | tr -d '\r' | awk -v n="$parent_session" '
         { for (i=1; i<=NF; i++) if ($i ~ "^name=" n "$") {
           for (j=i; j<=NF; j++) if ($j ~ /^pid=/) { sub(/^pid=/, "", $j); print $j; exit }
@@ -860,11 +865,15 @@ ghostty_zmx_inherit_remote_context_if_any() {
       _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session tty=$_parent_tty cwd=$_parent_cwd"
     fi
     local _remote_cmd
+    # Pin ZMX_DIR inline before `zmx attach` so the new split/tab session is
+    # created in the pinned dir, not TMPDIR (same gap as the poller snapshot
+    # path — F14). The prefix is emitted inside the ssh remote command string,
+    # so the REMOTE shell expands $HOME.
     if [[ "$_parent_cwd" == /* ]]; then
-      _remote_cmd="cd -P '$_parent_cwd' && $_remote_zmx attach $session"
+      _remote_cmd="cd -P '$_parent_cwd' && $(ghostty_zmx_zmx_dir_prefix)$_remote_zmx attach $session"
     else
       _ghostty_zmx_debug "inherit cwd-default host=$host session=$session parent=$parent_session (cwd unknown)"
-      _remote_cmd="$_remote_zmx attach $session"
+      _remote_cmd="$(ghostty_zmx_zmx_dir_prefix)$_remote_zmx attach $session"
     fi
     exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "$_remote_cmd" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"
