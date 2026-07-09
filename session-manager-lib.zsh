@@ -450,6 +450,39 @@ ghostty_zmx_remote_prefix_for_host() {
   awk -F '\t' -v host="$host" '$1 == host { print $5; exit }' "$hosts_file" 2>/dev/null
 }
 
+# The deterministic zmx socket directory for ghostty-zmx-managed remote sessions.
+# zmx resolves its socket dir by priority: ZMX_DIR > XDG_RUNTIME_DIR > TMPDIR.
+# The projection runs `ssh host 'zmx attach ...'` as a NON-interactive command,
+# where XDG_RUNTIME_DIR is unset (pam_systemd sets it only for interactive
+# logins). Without ZMX_DIR the session lands in TMPDIR (/tmp/zmx-<uid>), but
+# the pane's interactive shell has XDG_RUNTIME_DIR=/run/user/<uid> (pam_systemd)
+# and queries a different dir → `zmx ls` in the pane cannot see the gzr-*
+# session it's attached to. Pinning ZMX_DIR to a fixed, host-independent path
+# (under $HOME, so it exists on every Unix) makes both the non-interactive
+# projection command and the interactive pane shell agree on the same dir.
+# Side effect (intended): ghostty-zmx sessions live in a dedicated dir,
+# invisible to a plain `zmx ls` — enforcing the "we only manage gzr-*" boundary
+# at the filesystem level. Manual sessions (e.g. `zmx attach pi`) stay in the
+# default dir, untouched.
+ghostty_zmx_zmx_dir() {
+  print -r -- "${HOME}/.local/state/ghostty-zmx/zmx"
+}
+
+# A shell-safe "mkdir -p <dir>; ZMX_DIR=<dir> " prefix for inline remote
+# commands. tsh/ssh do not forward env, so ZMX_DIR must be set inline before each
+# remote zmx call. Uses plain $HOME: the prefix is emitted inside the outer
+# single quotes of the projection command string, so the LOCAL zsh does not
+# expand it; ssh passes it through verbatim and the REMOTE shell expands it.
+# (A backslash-escaped \$HOME would yield the literal string '$HOME' on the
+# remote; single-quotes around $HOME crash zmx with a panic — so plain
+# $HOME relying on the outer single-quote protection is the correct form.)
+# mkdir -p is needed because zmx does not create ZMX_DIR for read-only commands
+# (version, list) — without it, those fail with 'error: FileNotFound' when the
+# dir doesn't exist yet. Used by the projection command builder.
+ghostty_zmx_zmx_dir_prefix() {
+  print -r -- 'mkdir -p $HOME/.local/state/ghostty-zmx/zmx 2>/dev/null; ZMX_DIR=$HOME/.local/state/ghostty-zmx/zmx '
+}
+
 ghostty_zmx_remote_zmx_for_host() {
   emulate -L zsh
   local host="$1" hosts_file="$(ghostty_zmx_remote_hosts_file)" zmx_path

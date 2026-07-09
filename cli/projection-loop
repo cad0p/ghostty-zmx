@@ -125,7 +125,7 @@ _gzmx_snapshot_session() {
   mkdir -p "$dir" 2>/dev/null || return 1
   hist_file="$dir/${session}.txt"
   tmp="${hist_file}.tmp.$$"
-  if "${_gzmx_side_argv[@]}" "$remote_zmx history $session 2>/dev/null" </dev/null | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
+  if "${_gzmx_side_argv[@]}" "$_gzmx_zmx_dir $remote_zmx history $session 2>/dev/null" </dev/null | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
     [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     _gzmx_wdebug "projection: snapshot host=$host session=$session file=$hist_file"
   else
@@ -149,18 +149,18 @@ _gzmx_reboot_restore_check() {
   # for stdin/password input. A hang on stdin makes the check falsely report
   # "missing", which then clobbers a LIVE Cmd-Q-preserved session via the
   # zmx run + zmx print injection below.
-  if "${_gzmx_side_argv[@]}" "$remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
+  if "${_gzmx_side_argv[@]}" "$_gzmx_zmx_dir $remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
     _session_exists=1
   fi
   if [[ "$_session_exists" -eq 0 ]]; then
     _gzmx_wdebug "projection: reboot-restore session missing — creating fresh + injecting host=$host session=$session"
-    "${_gzmx_side_argv[@]}" "$remote_zmx run $session true >/dev/null 2>&1" </dev/null 2>/dev/null || true
+    "${_gzmx_side_argv[@]}" "$_gzmx_zmx_dir $remote_zmx run $session true >/dev/null 2>&1" </dev/null 2>/dev/null || true
     local _banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
     # zmx print requires \r\n line endings; convert before base64 encoding so
     # multi-line text / special chars survive the local-zsh -> ssh -> remote
     # -> zmx hop without shell-expansion issues.
     { print -r -- "$_banner"; cat "$hist_file"; } | sed 's/$/\r/' | base64 | tr -d '\n' | \
-      "${_gzmx_side_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $remote_zmx print $session" </dev/null 2>/dev/null || true
+      "${_gzmx_side_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $_gzmx_zmx_dir $remote_zmx print $session" </dev/null 2>/dev/null || true
     _gzmx_wdebug "projection: reboot-restore injected host=$host session=$session"
     print -n $'\e]2;ghostty-zmx: restored '"$host"' ('"$session"')\a'
   else
@@ -180,7 +180,7 @@ _gzmx_session_state() {
   emulate -L zsh
   local host="$1" session="$2" remote_zmx="$3"
   local _raw _clients _ssh_rc
-  _raw="$("${_gzmx_side_argv[@]}" "$remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)"; _ssh_rc=$?
+  _raw="$("${_gzmx_side_argv[@]}" "$_gzmx_zmx_dir $remote_zmx list 2>/dev/null" </dev/null 2>/dev/null)"; _ssh_rc=$?
   # If the ssh round-trip itself failed (network down, host unreachable),
   # we cannot tell whether the session survived. Return `unknown` so the
   # loop reconnects without running reboot-restore — which would clobber a
@@ -267,6 +267,19 @@ _gzmx_run_projection_loop() {
 
   local _attempt=0 _rc=0 _state _backoff _max_backoff _max_attempts _hist_file
   local _skip_reboot_restore=0
+  # Deterministic ZMX_DIR for remote zmx calls. The projection runs
+  # `ssh host 'zmx ...'` as a NON-interactive command, where XDG_RUNTIME_DIR
+  # is unset (pam_systemd sets it only for interactive logins). Without
+  # ZMX_DIR, zmx falls back to TMPDIR (/tmp/zmx-<uid>), but the pane's
+  # interactive shell queries /run/user/<uid> — a mismatch where `zmx ls`
+  # in the pane cannot see the session. Pin ZMX_DIR inline so both agree.
+  # Plain $HOME: emitted inside ssh's remote-command string (single-quoted by
+  # the caller), so the LOCAL zsh does not expand it; the REMOTE shell expands
+  # it. (Backslash-escaped \$HOME yields the literal string '$HOME'; single-
+  # quotes around $HOME crash zmx with a panic.)
+  # mkdir -p first because zmx does not create ZMX_DIR for read-only commands.
+  # Mirrors ghostty_zmx_zmx_dir_prefix in session-manager-lib.zsh.
+  local _gzmx_zmx_dir='mkdir -p $HOME/.local/state/ghostty-zmx/zmx 2>/dev/null; ZMX_DIR=$HOME/.local/state/ghostty-zmx/zmx'
   # Side-channel ssh argv: the no-pty transport argv with BatchMode and
   # ConnectTimeout so side-channel calls (snapshot, session-state,
   # reboot-restore) fail fast on auth issues and don't hang on unreachable

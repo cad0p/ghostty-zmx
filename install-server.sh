@@ -78,6 +78,18 @@ remote_env_block='# BEGIN ghostty-zmx remote-env
 if [[ -n "${SSH_CONNECTION:-}" ]]; then
   [[ -n "${TERM_PROGRAM:-}" ]] || export TERM_PROGRAM=ghostty
   [[ -n "${COLORTERM:-}" ]] || export COLORTERM=truecolor
+  # Pin ZMX_DIR so the interactive shell queries the same socket dir the
+  # projection created the session in. zmx resolves ZMX_DIR > XDG_RUNTIME_DIR
+  # > TMPDIR; the projection (non-interactive ssh) has no XDG_RUNTIME_DIR, so
+  # without this pin the session lands in TMPDIR (/tmp/zmx-<uid>) while this
+  # interactive shell (XDG_RUNTIME_DIR set by pam_systemd) queries
+  # /run/user/<uid>/zmx — a mismatch where `zmx ls` in the pane cannot see the
+  # gzr-* session it is attached to. See ghostty_zmx_zmx_dir.
+  # mkdir first: zmx does not create ZMX_DIR for read-only commands (version,
+  # list), so it must exist before any zmx call in this shell.
+  _gzmx_zmx_dir="$HOME/.local/state/ghostty-zmx/zmx"
+  mkdir -p "$_gzmx_zmx_dir" 2>/dev/null
+  export ZMX_DIR="$_gzmx_zmx_dir"
   # Restore a working TERM when the transport left it dumb/empty (the
   # projection wrapper sets TERM=dumb locally to suppress the tsh probe; tsh
   # forwards it to the remote). Only override dumb/empty — never clobber a

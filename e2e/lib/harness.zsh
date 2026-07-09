@@ -706,8 +706,17 @@ GZMX_E2E_FIXTURE_ZMX=""
 gzmx_e2e_fixture_zmx() {
   emulate -L zsh
   [[ -n "$GZMX_E2E_FIXTURE_ZMX" ]] && { print -r -- "$GZMX_E2E_FIXTURE_ZMX"; return 0 }
-  GZMX_E2E_FIXTURE_ZMX="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+  # Return the zmx binary path prefixed with the ZMX_DIR env assignment so every
+  # remote `ssh host "$zmx_bin list"` call queries the deterministic socket dir
+  # (matching where the projection creates the session). Without this, the harness
+  # side-channel ssh would query the default dir (TMPDIR) and not see gzr-* sessions.
+  # Plain $HOME: the ssh remote command is single-quoted by the caller, so the
+  # remote shell expands it. mkdir -p first because zmx doesn't create ZMX_DIR
+  # for read-only commands (list, version).
+  local _zmx
+  _zmx="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
     "command -v zmx 2>/dev/null || ls $GZMX_E2E_FIXTURE_HOME/.local/bin/zmx 2>/dev/null || echo zmx" 2>/dev/null)"
+  GZMX_E2E_FIXTURE_ZMX="mkdir -p \$HOME/.local/state/ghostty-zmx/zmx 2>/dev/null; ZMX_DIR=\$HOME/.local/state/ghostty-zmx/zmx $_zmx"
   print -r -- "$GZMX_E2E_FIXTURE_ZMX"
 }
 

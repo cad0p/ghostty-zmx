@@ -1275,10 +1275,17 @@ ghostty_zmx_projection_command_string() {
   if [[ -n "${PATH:-}" ]]; then
     env_prefix="env PATH=${(q)PATH} "
   fi
+  # Prefix the remote `zmx attach` with `ZMX_DIR=<dir>` inline: tsh/ssh do not
+  # forward env, and the non-interactive remote command has no XDG_RUNTIME_DIR
+  # (pam_systemd sets it only for interactive logins). Without ZMX_DIR the
+  # session would land in TMPDIR (/tmp/zmx-<uid>) while the pane's interactive
+  # shell queries /run/user/<uid> — a mismatch where `zmx ls` in the pane
+  # cannot see the gzr-* session it's attached to. See ghostty_zmx_zmx_dir.
+  local _zmx_dir_prefix="$(ghostty_zmx_zmx_dir_prefix)"
   # The `zmx attach <session>` substring is preserved for process-arg scanning
   # (find_live_projection), including when remote_zmx is an absolute path such
   # as /home/user/.local/bin/zmx.
-  print -r -- "${env_prefix}$wrapper projection --host $host --workspace $workspace --session $session -- $prefix '$remote_zmx attach $session'"
+  print -r -- "${env_prefix}$wrapper projection --host $host --workspace $workspace --session $session -- $prefix '${_zmx_dir_prefix}$remote_zmx attach $session'"
 }
 
 ghostty_zmx_projection_launcher_command() {
