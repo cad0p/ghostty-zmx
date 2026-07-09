@@ -1672,9 +1672,14 @@ ghostty_zmx_snapshot_remote_session() {
   # ssh concatenates trailing args into the remote command string, so inline the
   # session name (hex+dashes — shell-safe) rather than using $0. Use the probed
   # absolute zmx path when available; do not source remote ~/.zshrc here.
+  # Pin ZMX_DIR inline (mirrors cli/projection-loop's _gzmx_zmx_dir and
+  # ghostty_zmx_projection_command_string): tsh/ssh do not forward env, so
+  # without the prefix zmx queries the default socket dir (TMPDIR) and returns
+  # empty. The prefix is emitted inside the ssh remote command string, so the
+  # REMOTE shell expands $HOME (not the local zsh).
   # A failure (host down, session gone) leaves the prior snapshot in place.
   remote_zmx="$(ghostty_zmx_remote_zmx_for_host "$host")"
-  if ${(z)prefix} "$remote_zmx history $session 2>/dev/null" | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
+  if ${(z)prefix} "$(ghostty_zmx_zmx_dir_prefix)$remote_zmx history $session 2>/dev/null" | tail -n "$scrollback" > "$tmp" 2>/dev/null; then
     [[ -s "$tmp" ]] && mv "$tmp" "$hist_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
     _ghostty_zmx_debug "remote snapshot host=$host session=$session file=$hist_file"
   else
