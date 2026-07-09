@@ -15,6 +15,10 @@
 #      creates fresh + injects banner + saved scrollback.
 #   7. Verify the fresh session's zmx history contains both the banner and marker.
 #   8. Verify clients=1 (reattached to the fresh session).
+# Phase 2: kill the remote session WHILE the projection loop is live (no Cmd-Q).
+#   The loop's session-state check must return 'gone' (not 'unknown') and
+#   trigger reboot-restore. Catches the regression where a socket-dir mismatch
+#   in the side-channel ssh makes the loop return 'unknown' and skip restore.
 source "${0:A:h}/lib/harness.zsh"
 
 gzmx_e2e_init
@@ -144,5 +148,61 @@ gzmx_e2e_pass "projection re-attached to fresh session (clients=1)"
 grep -q "reboot-restore session missing" "$GZMX_E2E_STATE_HOME/debug.log" 2>/dev/null \
   && gzmx_e2e_pass "wrapper logged reboot-restore injection" \
   || gzmx_e2e_warn "reboot-restore log line not found (best-effort)"
+
+# --- Phase 2: session kill WHILE the projection loop is live (no Cmd-Q) ---
+# The loop's session-state check must return 'gone' (ssh OK, session missing)
+# and trigger reboot-restore — NOT 'unknown' (which skips restore and
+# reconnects silently). On real hosts (pcad-dev) a socket-dir mismatch in
+# the side-channel ssh made it return 'unknown'; this phase catches that
+# regression by killing the session while the loop is attached.
+# Re-inject a fresh marker (the phase-1 restore created a fresh session).
+MARKER2="GZMX_E2E_LIVEKILL_$$"
+ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+  "$zmx_bin send $GZMX_E2E_SESSION 'echo $MARKER2'" 2>/dev/null
+sleep 1
+ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+  "$zmx_bin send $GZMX_E2E_SESSION $'\r'" 2>/dev/null
+sleep 1
+gzmx_e2e_assert_remote_history_contains "$GZMX_E2E_SESSION" "$MARKER2"
+gzmx_e2e_pass "phase-2 marker injected before live session kill"
+
+# Trigger a client disconnect so the loop snapshots the scrollback (gives
+# reboot-restore something to inject after the kill).
+_wrapper_pid="$(awk -F '\t' -v h="$GZMX_E2E_FIXTURE_HOST" -v s="$GZMX_E2E_SESSION" '$1==h && $3==s { print $5; exit }' "$GZMX_E2E_DATA_HOME/remote-projections" 2>/dev/null)"
+_ssh_child="$(pgrep -P "$_wrapper_pid" 2>/dev/null | head -1)"
+if [[ "$_ssh_child" =~ ^[0-9]+$ ]]; then
+  gzmx_e2e_log "triggering client disconnect (kill ssh pid=$_ssh_child) to snapshot scrollback..."
+  kill -TERM "$_ssh_child" 2>/dev/null
+  gzmx_e2e_wait_remote_clients 1 30
+  gzmx_e2e_pass "client disconnect + reconnect (scrollback snapshotted)"
+fi
+
+# Now KILL the remote session while the loop is live (server-side kill, not
+# client disconnect). The loop should detect 'gone' and reboot-restore.
+gzmx_e2e_log "killing remote session $GZMX_E2E_SESSION (server-side, loop live)..."
+ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+  "$zmx_bin kill $GZMX_E2E_SESSION" 2>/dev/null
+sleep 2
+
+# Wait for the loop to detect the kill and reboot-restore.
+gzmx_e2e_log "waiting for live-kill reboot-restore (up to 30s)..."
+_live_banner=0
+_hist2=""
+for (( i=0; i<30; i++ )); do
+  _hist2="$(ssh -o ConnectTimeout=5 -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+    "$zmx_bin history $GZMX_E2E_SESSION 2>/dev/null" 2>/dev/null)" || true
+  if [[ "$_hist2" == *"restored saved scrollback"* ]]; then
+    _live_banner=1
+    break
+  fi
+  sleep 1
+done
+[[ $_live_banner -eq 1 ]] \
+  && gzmx_e2e_pass "reboot-restore ran after live session kill (loop detected 'gone', not 'unknown')" \
+  || gzmx_e2e_fail "no reboot-restore after live session kill (loop returned 'unknown', skipped restore)"
+
+[[ "$_hist2" == *"$MARKER2"* ]] \
+  && gzmx_e2e_pass "phase-2 marker restored via live-kill scrollback injection" \
+  || gzmx_e2e_warn "phase-2 marker not in restored scrollback (best-effort)"
 
 gzmx_e2e_pass "scenario 08 (remote reboot scrollback restore) complete"
