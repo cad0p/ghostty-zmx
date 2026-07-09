@@ -83,6 +83,19 @@ gzmx_e2e_log "waiting for reconnect (up to 30s)..."
 gzmx_e2e_wait_remote_clients 1 30
 gzmx_e2e_assert_window_count 2
 
+# Assert the projection WRAPPER process survived the ssh kill. The wrapper
+# forks ssh as a child and runs the reconnect loop; if it died instead, the
+# surface command exited and Ghostty showed the 'Press any key to close'
+# banner — the pre-PR bug. kill -0 on the wrapper pid is the hermetic proxy:
+# verified empirically that pre-PR (exec ssh) the pid dies + banner shows,
+# post-PR (fork+loop) the pid lives + no banner. The poller could re-project
+# a dead wrapper (clients=1, window=2) and mask the regression without this.
+if [[ "$_wrapper_pid" =~ ^[0-9]+$ ]] && kill -0 "$_wrapper_pid" 2>/dev/null; then
+  gzmx_e2e_pass "wrapper survived ssh kill (pid $_wrapper_pid alive — no 'Press any key' banner)"
+else
+  gzmx_e2e_fail "wrapper pid $_wrapper_pid died after ssh kill — surface command exited (banner shown)"
+fi
+
 # Verify the reattached session has the SAME name (reattach, not a fresh one).
 _reattached_session="$(awk -F '\t' '/name=gzr-/ {sub(/.*name=gzr-/, "gzr-"); sub(/[ \t].*/, ""); print; exit}' \
   <(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
