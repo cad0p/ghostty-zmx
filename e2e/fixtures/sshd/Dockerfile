@@ -43,5 +43,17 @@ RUN case "$TARGETARCH" in \
 RUN echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/gzmx/.zshrc
 
 USER root
+
+# Simulate pam_systemd setting XDG_RUNTIME_DIR for INTERACTIVE shells only.
+# Real Linux hosts set XDG_RUNTIME_DIR=/run/user/<uid> via pam_systemd at
+# login (interactive), but NON-interactive ssh commands (the projection's
+# `ssh host 'zmx attach ...'`) do NOT get it. This divergence is the root
+# cause of the socket-dir mismatch bug: the projection creates the session in
+# zmx's fallback dir (/tmp/zmx-<uid>), but the pane's interactive shell
+# queries /run/user/<uid>/zmx. Without this simulation the e2e fixture (no
+# systemd) has both paths agree on /tmp and cannot reproduce the bug.
+# gzmx is uid 1000 in this image (useradd default).
+RUN mkdir -p /run/user/1000 && chown gzmx:gzmx /run/user/1000 && chmod 700 /run/user/1000 && \
+    echo 'export XDG_RUNTIME_DIR=/run/user/1000' >> /home/gzmx/.zshrc
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]
