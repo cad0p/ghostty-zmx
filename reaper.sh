@@ -100,9 +100,18 @@ sleep "$reaperStartupDelay"
 # session the user intentionally detached (zmx detach) to reattach later
 # would be killed here; that is an accepted trade-off (documented as a
 # known limitation).
-while IFS= read -r orphan; do
-  _ghostty_zmx_cleanup_detached_session "$orphan" "startup-orphan-sweep"
-done < <(_ghostty_zmx_managed_detached_sessions)
+# IMPORTANT: Only run the startup sweep if Ghostty is still alive. If Ghostty
+# has already exited, the poller has already snapshotted the sessions for
+# restore, and the exit-handling code after the loop will take care of cleanup.
+# Running the startup sweep on a dead Ghostty would delete the poller's
+# snapshot (see _ghostty_zmx_cleanup_detached_session -> _ghostty_zmx_forget_snapshot).
+if kill -0 "$ghosttyPID" 2>/dev/null; then
+  while IFS= read -r orphan; do
+    _ghostty_zmx_cleanup_detached_session "$orphan" "startup-orphan-sweep"
+  done < <(_ghostty_zmx_managed_detached_sessions)
+else
+  _reaper_debug "ghostty already exited; skipping startup-orphan-sweep"
+fi
 # Heartbeat this install's registry file before entering the loop, so the
 # cross-install tracked set is fresh even if the first loop iteration sleeps.
 # This marks all live zmx-* sessions as tracked by THIS install, so other
