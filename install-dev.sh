@@ -304,6 +304,7 @@ install_live_files() {
     cli/install-server
     cli/debug
     cli/remote-layout
+    cli/projection-loop
     uninstall.sh
     install-server.sh
     install-lib.sh
@@ -326,6 +327,7 @@ install_live_files() {
   install -m 0755 "$repo_dir/cli/install-server" "$install_dir/cli/install-server"
   install -m 0755 "$repo_dir/cli/debug" "$install_dir/cli/debug"
   install -m 0755 "$repo_dir/cli/remote-layout" "$install_dir/cli/remote-layout"
+  install -m 0755 "$repo_dir/cli/projection-loop" "$install_dir/cli/projection-loop"
   install -m 0755 "$repo_dir/uninstall.sh" "$install_dir/uninstall.sh"
   install -m 0755 "$repo_dir/install-server.sh" "$install_dir/install-server.sh"
   install -m 0644 "$repo_dir/install-lib.sh" "$install_dir/install-lib.sh"

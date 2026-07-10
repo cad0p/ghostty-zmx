@@ -117,8 +117,13 @@ case "$cmd" in
     # e.g. ~/.local/bin added in .zshrc). The helper is #!/bin/sh (dash on Debian);
     # sourcing .zshrc with '. "$HOME/.zshrc"' runs it in dash, which breaks on
     # zsh-specific syntax and leaves zmx unfound. zsh -ic sources .zshrc correctly.
+    # ZMX_DIR is set inline so the kill targets the ghostty-zmx-managed socket
+    # dir (matches where the projection created the session). Without it, zmx
+    # kill would query the default dir and miss the gzr-* session.
+    # mkdir -p first (zmx doesn't create ZMX_DIR for read-only commands).
+    # Plain $HOME (remote shell expands it; backslash form yields literal '$HOME').
     # Double quotes so sh expands $session; inner quotes are escaped for zsh.
-    zsh -ic "zmx kill \"$session\"" 2>/dev/null || true
+    zsh -ic "mkdir -p \$HOME/.local/state/ghostty-zmx/zmx 2>/dev/null; ZMX_DIR=\$HOME/.local/state/ghostty-zmx/zmx zmx kill \"$session\"" 2>/dev/null || true
     # deleted phase
     acquire_lock || { echo "close: lock-busy (deleted phase)" >&2; exit 70; }
     _t=$(now); _r=$(next_rev)

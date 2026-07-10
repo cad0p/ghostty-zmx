@@ -253,7 +253,16 @@ ghostty_zmx_descendants_matching() {
   emulate -L zsh
   local root="$1" needle="$2" depth=0 maxdepth=6 queue=() p args
   [[ "$root" =~ ^[0-9]+$ && -n "$needle" ]] || return 1
-  queue=("$root")
+  # The root is the Ghostty-reported terminal pid, which (when a surface
+  # command is set) is the `login` process. login's own `ps args` contain the
+  # full command string — including `--session <gzr>` — because it is all
+  # passed as the `-c` argument. Checking the root at depth 0 would therefore
+  # falsely match login itself and return the login pid as match_pid,
+  # instead of descending to the actual wrapper or ssh child. Start the queue
+  # with the root's children and only check descendants, so match_pid is
+  # always a process below the terminal (the zsh -f wrapper or the ssh
+  # transport), never the terminal/login process itself.
+  queue=($(pgrep -P "$root" 2>/dev/null))
   while (( ${#queue} > 0 )) && (( depth < maxdepth )); do
     local next=()
     for p in "${queue[@]}"; do
@@ -439,6 +448,39 @@ ghostty_zmx_remote_prefix_for_host() {
   local host="$1" hosts_file="$(ghostty_zmx_remote_hosts_file)"
   [[ -f "$hosts_file" ]] || return 1
   awk -F '\t' -v host="$host" '$1 == host { print $5; exit }' "$hosts_file" 2>/dev/null
+}
+
+# The deterministic zmx socket directory for ghostty-zmx-managed remote sessions.
+# zmx resolves its socket dir by priority: ZMX_DIR > XDG_RUNTIME_DIR > TMPDIR.
+# The projection runs `ssh host 'zmx attach ...'` as a NON-interactive command,
+# where XDG_RUNTIME_DIR is unset (pam_systemd sets it only for interactive
+# logins). Without ZMX_DIR the session lands in TMPDIR (/tmp/zmx-<uid>), but
+# the pane's interactive shell has XDG_RUNTIME_DIR=/run/user/<uid> (pam_systemd)
+# and queries a different dir → `zmx ls` in the pane cannot see the gzr-*
+# session it's attached to. Pinning ZMX_DIR to a fixed, host-independent path
+# (under $HOME, so it exists on every Unix) makes both the non-interactive
+# projection command and the interactive pane shell agree on the same dir.
+# Side effect (intended): ghostty-zmx sessions live in a dedicated dir,
+# invisible to a plain `zmx ls` — enforcing the "we only manage gzr-*" boundary
+# at the filesystem level. Manual sessions (e.g. `zmx attach pi`) stay in the
+# default dir, untouched.
+ghostty_zmx_zmx_dir() {
+  print -r -- "${HOME}/.local/state/ghostty-zmx/zmx"
+}
+
+# A shell-safe "mkdir -p <dir>; ZMX_DIR=<dir> " prefix for inline remote
+# commands. tsh/ssh do not forward env, so ZMX_DIR must be set inline before each
+# remote zmx call. Uses plain $HOME: the prefix is emitted inside the outer
+# single quotes of the projection command string, so the LOCAL zsh does not
+# expand it; ssh passes it through verbatim and the REMOTE shell expands it.
+# (A backslash-escaped \$HOME would yield the literal string '$HOME' on the
+# remote; single-quotes around $HOME crash zmx with a panic — so plain
+# $HOME relying on the outer single-quote protection is the correct form.)
+# mkdir -p is needed because zmx does not create ZMX_DIR for read-only commands
+# (version, list) — without it, those fail with 'error: FileNotFound' when the
+# dir doesn't exist yet. Used by the projection command builder.
+ghostty_zmx_zmx_dir_prefix() {
+  print -r -- 'mkdir -p $HOME/.local/state/ghostty-zmx/zmx 2>/dev/null; ZMX_DIR=$HOME/.local/state/ghostty-zmx/zmx '
 }
 
 ghostty_zmx_remote_zmx_for_host() {
@@ -804,7 +846,12 @@ ghostty_zmx_inherit_remote_context_if_any() {
       _parent_cwd="$(print -r -- "$_parent_cwd" | tr -d '\r\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     fi
     if [[ -z "$_parent_cwd" ]]; then
-      _parent_pid="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$_remote_zmx list" ; } 2>/dev/null )"
+      # Pin ZMX_DIR inline (mirrors cli/projection-loop's _gzmx_zmx_dir and
+      # ghostty_zmx_projection_command_string): tsh/ssh do not forward env, so
+      # without the prefix zmx queries the default socket dir (TMPDIR) and
+      # can't find the parent session. The prefix is emitted inside the ssh
+      # remote command string, so the REMOTE shell expands $HOME.
+      _parent_pid="$( { ${(z)$(ghostty_zmx_notty_prefix "$prefix")} "$(ghostty_zmx_zmx_dir_prefix)$_remote_zmx list" ; } 2>/dev/null )"
       _parent_pid="$(print -r -- "$_parent_pid" | tr -d '\r' | awk -v n="$parent_session" '
         { for (i=1; i<=NF; i++) if ($i ~ "^name=" n "$") {
           for (j=i; j<=NF; j++) if ($j ~ /^pid=/) { sub(/^pid=/, "", $j); print $j; exit }
@@ -818,11 +865,15 @@ ghostty_zmx_inherit_remote_context_if_any() {
       _ghostty_zmx_debug "inherit cwd host=$host session=$session parent=$parent_session tty=$_parent_tty cwd=$_parent_cwd"
     fi
     local _remote_cmd
+    # Pin ZMX_DIR inline before `zmx attach` so the new split/tab session is
+    # created in the pinned dir, not TMPDIR (same gap as the poller snapshot
+    # path — F14). The prefix is emitted inside the ssh remote command string,
+    # so the REMOTE shell expands $HOME.
     if [[ "$_parent_cwd" == /* ]]; then
-      _remote_cmd="cd -P '$_parent_cwd' && $_remote_zmx attach $session"
+      _remote_cmd="cd -P '$_parent_cwd' && $(ghostty_zmx_zmx_dir_prefix)$_remote_zmx attach $session"
     else
       _ghostty_zmx_debug "inherit cwd-default host=$host session=$session parent=$parent_session (cwd unknown)"
-      _remote_cmd="$_remote_zmx attach $session"
+      _remote_cmd="$(ghostty_zmx_zmx_dir_prefix)$_remote_zmx attach $session"
     fi
     exec "$wrapper_path" projection --host "$host" --workspace "$workspace_id" --session "$session" -- "${notty_prefix[@]}" "$_remote_cmd" <"$cur_tty" >"$cur_tty" 2>&1
   done < "$projections_file"

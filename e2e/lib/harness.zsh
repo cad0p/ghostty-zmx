@@ -275,6 +275,7 @@ gzmx_e2e_ghostty_launch() {
     --env=GHOSTTY_ZMX_E2E_SSH_CONFIG="$GZMX_E2E_SSHCONFIG" \
     --env=GHOSTTY_ZMX_E2E_FIXTURE_USER="$GZMX_E2E_FIXTURE_USER" \
     --env=GHOSTTY_ZMX_E2E_FIXTURE_HOST="$GZMX_E2E_FIXTURE_HOST" \
+    --env=GHOSTTY_ZMX_RECONNECT_MAX_ATTEMPTS=3 \
     --window-save-state=never \
     --confirm-close-surface=false \
     >/dev/null 2>&1
@@ -705,8 +706,17 @@ GZMX_E2E_FIXTURE_ZMX=""
 gzmx_e2e_fixture_zmx() {
   emulate -L zsh
   [[ -n "$GZMX_E2E_FIXTURE_ZMX" ]] && { print -r -- "$GZMX_E2E_FIXTURE_ZMX"; return 0 }
-  GZMX_E2E_FIXTURE_ZMX="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
+  # Return the zmx binary path prefixed with the ZMX_DIR env assignment so every
+  # remote `ssh host "$zmx_bin list"` call queries the deterministic socket dir
+  # (matching where the projection creates the session). Without this, the harness
+  # side-channel ssh would query the default dir (TMPDIR) and not see gzr-* sessions.
+  # Plain $HOME: the ssh remote command is single-quoted by the caller, so the
+  # remote shell expands it. mkdir -p first because zmx doesn't create ZMX_DIR
+  # for read-only commands (list, version).
+  local _zmx
+  _zmx="$(ssh -F "$GZMX_E2E_SSHCONFIG" "$GZMX_E2E_FIXTURE_HOST" \
     "command -v zmx 2>/dev/null || ls $GZMX_E2E_FIXTURE_HOME/.local/bin/zmx 2>/dev/null || echo zmx" 2>/dev/null)"
+  GZMX_E2E_FIXTURE_ZMX="mkdir -p \$HOME/.local/state/ghostty-zmx/zmx 2>/dev/null; ZMX_DIR=\$HOME/.local/state/ghostty-zmx/zmx $_zmx"
   print -r -- "$GZMX_E2E_FIXTURE_ZMX"
 }
 
@@ -734,6 +744,19 @@ gzmx_e2e_wait_remote_clients() {
     sleep 0.25
   done
   gzmx_e2e_fail "remote clients never reached $expected (last=$actual)"
+}
+
+# Wait for N attached local clients on zmx-* sessions (polls local zmx list).
+# Mirrors gzmx_e2e_wait_remote_clients but for local sessions.
+gzmx_e2e_wait_local_clients() {
+  emulate -L zsh
+  local expected="$1" seconds="${2:-30}" actual i
+  for (( i=1; i<=seconds*4; i++ )); do
+    actual="$(zmx list 2>/dev/null | grep 'name=zmx-' | grep -c 'clients=[1-9]' 2>/dev/null)"
+    [[ "$actual" == "$expected" ]] && { gzmx_e2e_pass "local clients == $expected (after ${i} polls)"; return 0; }
+    sleep 0.25
+  done
+  gzmx_e2e_fail "local clients never reached $expected (last=$actual)"
 }
 
 # Wait for a projection row to reach `attached` state with a non-dash window id.

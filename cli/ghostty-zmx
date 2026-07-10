@@ -177,71 +177,6 @@ if [[ "$session" == gzr-* ]]; then
   fi
 fi
 
-# Remote reboot scrollback restore: if the remote zmx session is missing
-# (remote host rebooted, zmx daemon lost) and a local scrollback snapshot
-# exists, inject the saved scrollback into a fresh remote session before
-# attaching. The snapshot is namespaced by host under
-# ~/.local/state/ghostty-zmx/history/<host>/<session>.txt. Mirrors the v0.1
-# local reboot scrollback restore, but the zmx run/print calls run over ssh -T
-# (no pty). Quoting: the snapshot is base64-encoded locally and decoded on the
-# remote so multi-line text / special chars survive the local-zsh -> ssh ->
-# remote-zsh -> zmx hop without shell-expansion issues.
-if [[ "$session" == gzr-* ]]; then
-  local _hist_file="${GHOSTTY_ZMX_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/ghostty-zmx}/history/$host/${session}.txt"
-  if [[ -s "$_hist_file" ]]; then
-    _gzmx_wdebug "reboot-restore host=$host session=$session snapshot=$_hist_file"
-    # Check whether the remote session already exists (reattach, not reboot).
-    # Use _add_argv (transport argv without the 'zmx attach ...' remote command
-    # arg) so the injection ssh calls don't carry the attach command. ssh joins
-    # trailing args into the remote command string, so inline the session name
-    # directly (hex+dashes — shell-safe).
-    #
-    # CRITICAL: redirect stdin from /dev/null and pass -o BatchMode=yes so the
-    # ssh does not hang waiting for stdin/password input. Without </dev/null,
-    # `zmx list --short` over ssh -T can block on stdin reads (the remote
-    # pipeline's grep inherits the ssh stdin), causing the check to hang for
-    # the full ssh connect timeout. A hang makes the `!` branch fire falsely
-    # ("session missing"), which then clobbers a LIVE preserved session via
-    # `zmx run` (create) + scrollback injection — destroying a Cmd-Q-
-    # preserved session on reopen. BatchMode also fails fast on auth issues
-    # instead of prompting.
-    local _session_exists=0
-    if "${_add_argv[@]}" "$_remote_zmx list --short 2>/dev/null | grep -qxF $session" </dev/null 2>/dev/null; then
-      _session_exists=1
-    fi
-    if [[ "$_session_exists" -eq 0 ]]; then
-      _gzmx_wdebug "reboot-restore session missing — creating fresh + injecting host=$host session=$session"
-      # Session missing: create a fresh one, then inject banner + snapshot.
-      # zmx attach is idempotent (creates if missing), but we create explicitly
-      # with `zmx run` so the scrollback injection has a target session.
-      "${_add_argv[@]}" "$_remote_zmx run $session true >/dev/null 2>&1" </dev/null 2>/dev/null || true
-      local _banner='[ghostty-zmx restored saved scrollback from a previous boot; process state was not restored]'
-      # zmx print requires \r\n line endings (plain \n does not render in the
-      # session display). Convert the banner + snapshot before base64 encoding.
-      { print -r -- "$_banner"; cat "$_hist_file"; } | sed 's/$/\r/' | base64 | tr -d '\n' | \
-        "${_add_argv[@]}" "b64=\$(cat); printf \"%s\" \"\$b64\" | base64 -d | $_remote_zmx print $session" </dev/null 2>/dev/null || true
-      _gzmx_wdebug "reboot-restore injected host=$host session=$session"
-      print -n $'\e]2;ghostty-zmx: restored '"$host"' ('"$session"')\a'
-    else
-      _gzmx_wdebug "reboot-restore session exists — reattach host=$host session=$session"
-    fi
-  fi
-fi
-
-# Run the transport in the FOREGROUND via exec so it keeps the controlling TTY.
-# The layout row was already written state=present above; the transport's
-# remote `zmx attach` attaches to the remote session. This runs as the
-# surface's own command (the ssh -t), so the attach happens on the remote
-# side with a real pty.
-# Backgrounding ssh ("$@" &) detaches it from the TTY, so `ssh -t` cannot
-# allocate a pseudo-terminal ("Pseudo-terminal will not be allocated because
-# stdin is not a terminal"), the remote `zmx attach` runs non-interactively and
-# exits immediately, and Ghostty recloses the surface (leaving a pid=0 ghost).
-# exec preserves the TTY and the env markers set above; the wrapper process is
-# replaced by the transport, so the `--session <gzr>` marker leaves `ps args`, but
-# the descendant-walk scan still matches `zmx attach <gzr>` in the transport's
-# args and GHOSTTY_ZMX_PROJECTION_SESSION in its env.
-#
 # Suppress tsh's terminal-capability probing. The Teleport `tsh` client emits
 # an OSC 11 (foreground-color) and CSI 6n (cursor-position) query to the LOCAL
 # terminal on every SSH connection (confirmed: `tsh ssh -T host /bin/true`
@@ -262,4 +197,17 @@ fi
 if [[ "${1##*/}" == "tsh" && "${2:-}" == "ssh" ]]; then
   export TERM=dumb
 fi
-exec "$@"
+# Run the transport in a reconnect loop (autossh-inspired) so a dropped
+# ssh/tsh connection reattaches to the surviving remote zmx session instead
+# of leaving the pane at Ghostty's close prompt. TERM=dumb above persists
+# across loop iterations via env inheritance. GHOSTTY_ZMX_RECONNECT=0 is the
+# kill switch: it restores the original `exec "$@"` behavior (for bisection
+# or users who prefer manual reconnect) while still running the cold-start
+# reboot-restore check so the Cmd-Q/reopen scrollback-restore feature is
+# preserved. See cli/projection-loop.
+if [[ "${GHOSTTY_ZMX_RECONNECT:-1}" == "1" ]]; then
+  source "$_GZMX_WRAPPER_DIR/projection-loop" || { print -u2 "ghostty-zmx: projection-loop not found in $_GZMX_WRAPPER_DIR (incomplete install)"; exit 127; }
+else
+  typeset _GZMX_PROJECTION_COLD_START_ONLY=1
+  source "$_GZMX_WRAPPER_DIR/projection-loop" || { print -u2 "ghostty-zmx: projection-loop not found in $_GZMX_WRAPPER_DIR (incomplete install)"; exit 127; }
+fi
