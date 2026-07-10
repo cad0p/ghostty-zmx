@@ -746,6 +746,19 @@ gzmx_e2e_wait_remote_clients() {
   gzmx_e2e_fail "remote clients never reached $expected (last=$actual)"
 }
 
+# Wait for N attached local clients on zmx-* sessions (polls local zmx list).
+# Mirrors gzmx_e2e_wait_remote_clients but for local sessions.
+gzmx_e2e_wait_local_clients() {
+  emulate -L zsh
+  local expected="$1" seconds="${2:-30}" actual i
+  for (( i=1; i<=seconds*4; i++ )); do
+    actual="$(zmx list 2>/dev/null | grep 'name=zmx-' | grep -c 'clients=[1-9]' 2>/dev/null)"
+    [[ "$actual" == "$expected" ]] && { gzmx_e2e_pass "local clients == $expected (after ${i} polls)"; return 0; }
+    sleep 0.25
+  done
+  gzmx_e2e_fail "local clients never reached $expected (last=$actual)"
+}
+
 # Wait for a projection row to reach `attached` state with a non-dash window id.
 # The widget's post-open synchronous wait can leave the row at `opening` for a
 # few seconds after the remote ssh has already connected (clients==1). Tests
